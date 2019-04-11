@@ -94,4 +94,10 @@ class Migration(migrations.Migration):
             name='seating_plan',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='subevents', to='pretixbase.SeatingPlan'),
         ),
+        migrations.AddField(
+            model_name='seat',
+            name='seat_guid',
+            field=models.CharField(db_index=True, default='', max_length=190),
+            preserve_default=False,
+        ),
     ]
