@@ -189,6 +189,9 @@
                     action="{% eventurl request.event "presale:event.cart.add" cart_namespace=cart_namespace %}?next={{ cart_redirect|urlencode }}">
                 {% csrf_token %}
                 <input type="hidden" name="subevent" value="{{ subevent.id|default_if_none:"" }}" />
+
+                {% eventsignal event "pretix.presale.signals.product_list_top" request=request %}
+
                 {% for tup in items_by_category %}
                     <section>
                         {% if tup.0 %}
