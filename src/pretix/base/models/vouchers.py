@@ -9,6 +9,8 @@ from django.utils.crypto import get_random_string
 from django.utils.timezone import now
 from django.utils.translation import pgettext_lazy, ugettext_lazy as _
 
+from pretix.base.models import SeatCategoryMapping
+
 from ..decimal import round_decimal
 from .base import LoggedModel
 from .event import Event, SubEvent
@@ -389,3 +391,8 @@ class Voucher(LoggedModel):
         """
 
         return Order.objects.filter(all_positions__voucher__in=[self]).distinct()
+
+    def seating_available(self):
+        if self.quota_id:
+            return SeatCategoryMapping.objects.filter(product__quotas__pk=self.quota_id).exists()
+        return self.item.seat_category_mappings.exists()
