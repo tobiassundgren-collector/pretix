@@ -2592,13 +2592,13 @@ class CartSeatingTest(CartTestMixin, TestCase):
         self.event.seat_category_mappings.create(
             layout_category='Stalls', product=self.ticket
         )
-        self.seat_a1 = self.event.seats.create(name="A1", product=self.ticket)
-        self.seat_a2 = self.event.seats.create(name="A2", product=self.ticket)
-        self.seat_a3 = self.event.seats.create(name="A3", product=self.ticket)
+        self.seat_a1 = self.event.seats.create(name="A1", product=self.ticket, seat_guid="A1")
+        self.seat_a2 = self.event.seats.create(name="A2", product=self.ticket, seat_guid="A2")
+        self.seat_a3 = self.event.seats.create(name="A3", product=self.ticket, seat_guid="A3")
 
     def test_add_with_seat_without_variation(self):
         self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
-            'seat_%d' % self.ticket.id: self.seat_a1.pk,
+            'seat_%d' % self.ticket.id: self.seat_a1.seat_guid,
         }, follow=True)
         objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
         self.assertEqual(len(objs), 1)
@@ -2611,7 +2611,7 @@ class CartSeatingTest(CartTestMixin, TestCase):
         v1 = self.ticket.variations.create(value='Regular', active=True)
         self.quota_tickets.variations.add(v1)
         self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
-            'seat_%d' % self.ticket.id: self.seat_a1.pk,
+            'seat_%d' % self.ticket.id: self.seat_a1.seat_guid,
         }, follow=True)
         objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
         self.assertEqual(len(objs), 0)
@@ -2620,7 +2620,7 @@ class CartSeatingTest(CartTestMixin, TestCase):
         v1 = self.ticket.variations.create(value='Regular', active=True)
         self.quota_tickets.variations.add(v1)
         self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
-            'seat_%d_%d' % (self.ticket.id, v1.pk): self.seat_a1.pk,
+            'seat_%d_%d' % (self.ticket.id, v1.pk): self.seat_a1.seat_guid,
         }, follow=True)
         objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
         self.assertEqual(len(objs), 1)
@@ -2637,7 +2637,7 @@ class CartSeatingTest(CartTestMixin, TestCase):
         objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
         self.assertEqual(len(objs), 1)
         self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
-            'seat_%d' % self.ticket.id: self.seat_a1.pk,
+            'seat_%d' % self.ticket.id: self.seat_a1.seat_guid,
         }, follow=True)
         objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
         self.assertEqual(len(objs), 1)
@@ -2649,7 +2649,7 @@ class CartSeatingTest(CartTestMixin, TestCase):
             price=23, expires=now() + timedelta(minutes=10)
         )
         self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
-            'seat_%d' % self.ticket.id: self.seat_a1.pk,
+            'seat_%d' % self.ticket.id: self.seat_a1.seat_guid,
         }, follow=True)
         objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
         self.assertEqual(len(objs), 0)
