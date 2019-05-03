@@ -1111,12 +1111,7 @@ img.aligncenter {
   background-position: center center !important;
   margin-right: 5px;
 }
-.top-nav ul li a .mail-icon {
-  background: url("css/icons/mail-icon.png") no-repeat;
-}
-.top-nav ul li a .phone-icon {
-  background: url("css/icons/phone-icon.png") no-repeat;
-}
+
 .top-nav ul li a:hover {
   text-decoration: none;
 }
@@ -1606,14 +1601,12 @@ h1.page-title{  text-transform: uppercase; font-size:20pt;}
   color:#ccc!important;
 }
 .pagination-wrapper .prev {
-  background: url("css/icons/prev.png") no-repeat;
   background-position: left center;
   padding-left: 15px;
   cursor: pointer;
 
 }
 .pagination-wrapper .next {
-  background: url("css/icons/next.png") no-repeat;
   background-position: right center;
   padding-right: 15px;
   cursor: pointer;
@@ -2087,32 +2080,15 @@ textarea {
 @media (min-width: 992px) {
   .share .box-share ul li {
     height: 55px;
-    width: 220px;css/icons/
+    width: 220px;
   }
-  .share .box-share ul .facebook a {
-    background: url("css/icons/facebook.png") no-repeat;
-  }
-  .share .box-share ul .twitter a {
-    background: url("css/icons/twitter.png") no-repeat;
-  }
-  .share .box-share ul .google a {
-    background: url("css/icons/google.png") no-repeat;
-  }
-}
+ }
 @media (max-width: 991px) {
   .share .box-share ul li {
     height: 37px;
     width: 37px;
   }
-  .share .box-share ul .facebook a {
-    background: url("css/icons/facebook-small.jpg") no-repeat;
-  }
-  .share .box-share ul .twitter a {
-    background: url("css/icons/twitter-small.jpg") no-repeat;
-  }
-  .share .box-share ul .google a {
-    background: url("css/icons/google-small.jpg") no-repeat;
-  }
+ 
 }
 @media (min-width: 768px) {
   .share {
@@ -2574,24 +2550,7 @@ textarea {
   margin-right: 10px;
   background-repeat: no-repeat !important;
 }
-.stats .clock-icon-while {
-  background: url("css/icons/clock-icon-while.png");
-}
-.stats .comment-icon-while {
-  background: url("css/icons/comment-icon-while.png");
-}
-.stats .clock-icon {
-  background: url("css/icons/clock-icon.png");
-}
-.stats .comment-icon {
-  background: url("css/icons/comments-icon.png");
-}
-.stats .user-icon {
-  background: url("css/icons/user-icon.png");
-}
-.stats .paper-icon {
-  background: url("css/icons/user-icon.png");
-}
+
 .articles .article-item .stats  span{
   line-height: 1;
 }
