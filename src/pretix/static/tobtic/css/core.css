@@ -978,7 +978,7 @@ img.aligncenter {
     cursor: pointer;
     color: #888;
     padding: 12px 45px 12px 20px;
-    /*background: url(images/down-arrow.png) no-repeat;*/
+
     -webkit-appearance: none;
     -moz-appearance: none;
     -ms-appearance: none;
