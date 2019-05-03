@@ -18,6 +18,21 @@
             <link rel="stylesheet" type="text/x-scss" href="{% static "pretixpresale/scss/main.scss" %}"/>
         {% endcompress %}
     {% endif %}
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:300,400,600,700">
+    <link rel="stylesheet" href="{% static "tobtic/css/bootstrap.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/bootstrap-select.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/bootstrap-slider.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/jquery.scrolling-tabs.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/bootstrap-checkbox.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/flexslider.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/featherlight.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/font-awesome.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/bootstrap.offcanvas.min.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/core.css" %}">
+  
+    <link rel="stylesheet" href="{% static "tobtic/css/style.css" %}">
+    <link rel="stylesheet" href="{% static "tobtic/css/responsive.css" %}">
+
 
     {% compress js %}
         <script type="text/javascript" src="{% static "jquery/js/jquery-2.1.1.min.js" %}"></script>
@@ -104,5 +119,20 @@
     {% endcompress %}
 {% endif %}
 {{ html_foot|safe }}
+{% compress js %}
+<script type="text/javascript" src="{% static "tobtic/js/jquery-3.2.0.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/bootstrap-slider.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/bootstrap-select.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/jquery.scrolling-tabs.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/jquery.countdown.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/jquery.flexslider-min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/jquery.imagemapster.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/tooltip.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/bootstrap.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/featherlight.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/featherlight.gallery.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/bootstrap.offcanvas.min.js" %}"></script>
+		<script type="text/javascript" src="{% static "tobtic/js/main.js" %}"></script>
+        {% endcompress %}
 </body>
 </html>
