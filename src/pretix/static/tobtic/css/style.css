@@ -49,30 +49,30 @@
 
 @font-face {
   font-family: "Montserrat-Regular";
-  src: url("../fonts/Montserrat-Regular.otf");
+  src: url("fonts/Montserrat-Regular.otf");
 }
 @font-face {
   font-family: "Montserrat-Light";
-  src: url("../fonts/Montserrat-Light.otf");
+  src: url("fonts/Montserrat-Light.otf");
 }
 @font-face {
   font-family: "Montserrat-Bold";
-  src: url("../fonts/Montserrat-Bold.otf");
+  src: url("fonts/Montserrat-Bold.otf");
 }
 
 @font-face {
   font-family: "Montserrat-Hairline";
-  src: url("../fonts/Montserrat-Hairline.ttf");
+  src: url("fonts/Montserrat-Hairline.ttf");
 }
 
 @font-face {
   font-family: "Champagne-Limousines-Bold";
-  src: url("../fonts/Champagne-Limousines-Bold.ttf");
+  src: url("fonts/Champagne-Limousines-Bold.ttf");
 }
 
 @font-face {
   font-family: "Champagne-Limousines";
-  src: url("../fonts/Champagne-Limousines.ttf");
+  src: url("fonts/Champagne-Limousines.ttf");
 }
 
 
