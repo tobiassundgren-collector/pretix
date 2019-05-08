@@ -1,0 +1,190 @@
+<html lang="sv">
+
+<body class="d-flex flex-column h-100">
+
+    <head>
+        <meta charset="utf-8">
+        <title>Biljetter till evenemang över hela Sverige - TobTic</title>
+        <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css"
+            integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+        <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css"
+            integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU"
+            crossorigin="anonymous" />
+        <link rel="stylesheet" href="css/style.css" as="style" />
+        <meta name="description"
+            content="Köp biljetter till konserter, föreställningar och evenemang över hela Sverige." />
+        <link rel="icon" type="image/png" href="favicon-32x32.png" sizes="32x32" />
+        <link rel="icon" type="image/png" href="favicon-16x16.png" sizes="16x16" />
+    </head>
+
+    <span class="position-absolute trigger">
+        <!-- hidden trigger to apply 'stuck' styles --></span>
+
+    <nav class="navbar navbar-expand-sm sticky-top  tobtic-navbar">
+        <div class="container">
+            <a href="/" class="logo navbar-brand" title="Till startsidan">
+                <svg width="100" height="40">
+                    <use xlink:href="/img/map.svg#logo"></use>
+                </svg><br />
+            </a>
+            <button class="navbar-toggler navbar-toggler-right" type="button" data-toggle="collapse"
+                data-target="#navbar1">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="navbar-collapse collapse" id="navbar1">
+                <ul class="navbar-nav my-2 mr-auto">
+                </ul>
+                <ul class="navbar-nav my-2">
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">Sök evenemang<span class="sr-only">(current)</span></a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">Arrangör</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#">Om TobTic</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <main role="main" class="flex-shrink-0">
+        <div class="container">
+            <div class="row justify-content-center py-3 px-5">
+                <div class="col-sm">
+                    &nbsp;
+                </div>
+                <div class="col-sm-8">
+                    <img src="img/upcoming-event-2.jpg" class="img-fluid" alt="Responsive image">
+                </div>
+                <div class="col-sm">
+                    &nbsp;
+                </div>
+            </div>
+            <div class="row justify-content-center py-1 px-5">
+                <div class="col  text-center">
+                    <h1>PRIDEGALA 2019</h1>
+                </div>
+            </div>
+            <div class="row justify-content-center py-1 px-5">
+                <div class="col-sm">
+                    &nbsp;
+                </div>
+                <div class="col-sm-8">
+
+                    <div class="card text-center">
+                        <div class="card-body">
+                            29 jun 2019<br />
+                            Apollon, Folkets Hus Kulturhuset i Trollhättan<br />
+                            <button type="button" class="btn btn-success">Köp biljetter</button>
+                        </div>
+                    </div>
+
+                </div>
+
+                <div class="col-sm">
+                    &nbsp;
+                </div>
+
+            </div>
+            <div class="row justify-content-center py-3 px-5">
+                <div class="col-sm-12">
+
+                    ”Klockan 12:00 öppnar den färgsprakande folkfesten som bjuder på underhållning, musik och mingel vid
+                    festivalområdet utanför Högskolan Väst.
+
+                    Vid 15:00 avgår Prideparaden som slingrar sig runt på stadens gator för att sedan gå i mål utanför
+                    Folkets Hus Kulturhuset där vi senare kommer att ha en glittrande galakväll!
+
+                    Klockan 21:00 öppnas dörrarna till Folkets Hus Kulturhuset och röda mattan rullas ut.
+
+                    En glittrig galakväll i Apollon med fantastiska artister, show, DJ och klackarna i taket fram till
+                    02:00! Trollhättans första Pridegala någonsin, tillsammans skriver vi historia!”
+
+                    Åldersgräns: 18 år
+
+                    Sluttid: 02:00
+                    
+                </div>
+            </div>
+            <div class="row justify-content-center py-5 px-5">
+                    <div class="col">
+                            <div id="map"></div>
+                    </div>
+                </div>
+        </div>
+    </main>
+
+    <footer class="footer mt-auto py-4">
+        <div class="container">
+            <div class="row">
+                <div class="col-sm mx-3">
+                    <h6>
+                        Kundservice
+                    </h6>
+                    <p>Bara kontakt via epost</p>
+                </div>
+                <div class="col-sm mx-3">
+                    <h6>
+                        Om TobTic
+                    </h6>
+                    <p>
+                        Orgnr: 1234123-1231<br />
+                        Epost: test@tobtic.com
+                    </p>
+
+                </div>
+                <div class="col-sm mx-3">
+                    <p>
+                        <a href="https://www.pretix.com" class="footer-link-rounded-border">Event ticketing powered by
+                            <span class="pretix-bold">pretix</span></a><br /><br />
+                        <a href="https://www.stripe.com"><img src="img/powered_by_stripe.png" /></a>
+                    </p>
+
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!--container-->
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"
+        integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo"
+        crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"
+        integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1"
+        crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"
+        integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM"
+        crossorigin="anonymous"></script>
+    <script src="js/main.js" type="javascript"></script>
+    <script src="js/svg4everybody.min.js" type="javascript"></script>
+    <script>
+        (new IntersectionObserver(function (e, o) {
+            if (e[0].intersectionRatio > 0) {
+                document.documentElement.removeAttribute('class');
+            } else {
+                document.documentElement.setAttribute('class', 'stuck');
+            };
+        })).observe(document.querySelector('.trigger'));
+
+        function initMap() {
+            // The location of Uluru
+            var uluru = { lat: 57.6563658, lng: 12.1275618 };
+            // The map, centered at Uluru
+            var map = new google.maps.Map(
+                document.getElementById('map'), { zoom: 12, center: uluru });
+            // The marker, positioned at Uluru
+            var marker = new google.maps.Marker({ position: uluru, map: map });
+        }
+    </script>
+    <!--Load the API from the specified URL
+    * The async attribute allows the browser to render the page while the API loads
+    * The key parameter will contain your own API key (which is not needed for this tutorial)
+    * The callback parameter executes the initMap() function
+    -->
+    <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDZuM2poq9TG2N2m0_YThdZiMSrwNaNRF0&callback=initMap">
+    </script>
+</body>
+
+</html>
