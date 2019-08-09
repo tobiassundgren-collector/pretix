@@ -12,6 +12,7 @@ from django.template.loader import get_template
 from django.urls import reverse
 from django.utils.http import urlquote
 from django.utils.translation import ugettext as __, ugettext_lazy as _
+from paypalrestsdk.exceptions import BadRequest
 from paypalrestsdk.openid_connect import Tokeninfo
 
 from pretix.base.decimal import round_decimal
@@ -166,7 +167,17 @@ class Paypal(BasePaymentProvider):
             kwargs['cart_namespace'] = request.resolver_match.kwargs['cart_namespace']
 
         if request.event.settings.payment_paypal_connect_user_id:
-            userinfo = Tokeninfo.create_with_refresh_token(request.event.settings.payment_paypal_connect_refresh_token).userinfo()
+            try:
+                userinfo = Tokeninfo.create_with_refresh_token(request.event.settings.payment_paypal_connect_refresh_token).userinfo()
+            except BadRequest as ex:
+                ex = json.loads(ex.content)
+                messages.error(request, '{}: {} ({})'.format(
+                    _('We had trouble communicating with PayPal'),
+                    ex['error_description'],
+                    ex['correlation_id'])
+                )
+                return
+
             request.event.settings.payment_paypal_connect_user_id = userinfo.email
             payee = {
                 "email": request.event.settings.payment_paypal_connect_user_id,
@@ -178,6 +189,7 @@ class Paypal(BasePaymentProvider):
             payee = {}
 
         payment = paypalrestsdk.Payment({
+            'header': {'PayPal-Partner-Attribution-Id': 'ramiioSoftwareentwicklung_SP'},
             'intent': 'sale',
             'payer': {
                 "payment_method": "paypal",
@@ -435,6 +447,7 @@ class Paypal(BasePaymentProvider):
             payee = {}
 
         payment = paypalrestsdk.Payment({
+            'header': {'PayPal-Partner-Attribution-Id': 'ramiioSoftwareentwicklung_SP'},
             'intent': 'sale',
             'payer': {
                 "payment_method": "paypal",

@@ -66,7 +66,7 @@ source_suffix = '.rst'
 #source_encoding = 'utf-8-sig'
 
 # The master toctree document.
-master_doc = 'contents'
+master_doc = 'index'
 
 # General information about the project.
 project = 'pretix'
@@ -234,7 +234,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-  ('contents', 'pretix.tex', 'pretix Documentation',
+  ('index', 'pretix.tex', 'pretix Documentation',
    'Raphael Michel', 'manual'),
 ]
 

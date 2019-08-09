@@ -45,8 +45,8 @@ In addition, you will need quotas. If you do not care how many of your tickets a
 
 If you want to limit the number of student tickets to 50 to ensure a certain minimum revenue, but do not want to limit the number of regular tickets artificially, we suggest you to create the same quota of 200 that is linked to both products, and then create a **second quota** of 50 that is only linked to the student ticket. This way, the system will reduce both quotas whenever a student ticket is sold and only the larger quota when a regular ticket is sold.
 
-Use case: Early-bird tiers
---------------------------
+Use case: Early-bird tiers based on dates
+-----------------------------------------
 
 Let's say you run a conference that has the following pricing scheme:
 
@@ -58,9 +58,53 @@ Of course, you could just set up one product and change its price at the given d
 
 Create three products (e.g. "super early bird", "early bird", "regular ticket") with the respective prices and one shared quota of your total event capacity. Then, set the **available from** and **available until** configuration fields of the products to automatically turn them on and off based on the current date.
 
-.. note::
+Use case: Early-bird tiers based on ticket numbers
+--------------------------------------------------
 
-   pretix currently can't do early-bird tiers based on **ticket number** instead of time. We're planning this feature for later in 2019. For now, you'll need to monitor that manually.
+Let's say you run a conference with 400 tickets that has the following pricing scheme:
+
+* First 100 tickets ("super early bird"): € 450
+* Next 100 tickets ("early bird"): € 550
+* Remaining tickets ("regular"): € 650
+
+First of all, create three products:
+
+* "Super early bird ticket"
+* "Early bird ticket"
+* "Regular ticket"
+
+Then, create three quotas:
+
+* "Super early bird" with a **size of 100** and the "Super early bird ticket" product selected. At "Advanced options",
+  select the box "Close this quota permanently once it is sold out".
+
+* "Early bird and lower" with a **size of 200** and both of the "Super early bird ticket" and "Early bird ticket"
+  products selected. At "Advanced options", select the box "Close this quota permanently once it is sold out".
+
+* "All participants" with a **size of 400**, all three products selected and **no additional options**.
+
+Next, modify the product "Regular ticket". In the section "Availability", you should look for the option "Only show
+after sellout of" and select your quota "Early bird and lower". Do the same for the "Early bird ticket" with the quota
+"Super early bird ticket".
+
+This will ensure the following things:
+
+* Each ticket level is only visible after the previous level is sold out.
+
+* As soon as one level is really sold out, it's not coming back, because the quota "closes", i.e. locks in place.
+
+* By creating a total quota of 400 with all tickets included, you can still make sure to sell the maximum number of
+  tickets, even if e.g. early-bird tickets are canceled.
+
+Optionally, if you want to hide the early bird prices once they are sold out, go to "Settings", then "Display" and
+select "Hide all products that are sold out". Of course, it might be a nice idea to keep showing the prices to remind
+people to buy earlier next time ;)
+
+Please note that there might be short time intervals where the prices switch back and forth: When the last early bird
+tickets are in someone's cart (but not yet sold!), the early bird tickets will show as "Reserved" and the regular
+tickets start showing up. However, if the customers holding the reservations do not complete their order,
+the early bird tickets will become available again. This is not avoidable if we want to prevent malicious users
+from blocking all the cheap tickets without an actual sale happening.
 
 Use case: Up-selling of ticket extras
 -------------------------------------
@@ -85,7 +129,13 @@ Use case: Conference with workshops
 
 When running a conference, you might also organize a number of workshops with smaller capacity. To be able to plan, it would be great to know which workshops an attendee plans to attend.
 
+Option A: Questions
+"""""""""""""""""""
+
 Your first and simplest option is to just create a multiple-choice question. This has the upside of making it easy for users to change their mind later on, but will not allow you to restrict the number of attendees signing up for a given workshop – or even charge extra for a given workshop.
+
+Option B: Add-on products with fixed time slots
+"""""""""""""""""""""""""""""""""""""""""""""""
 
 The usually better option is to go with add-on products. Let's take for example the following conference schedule, in which the lecture can be attended by anyone, but the workshops only have space for 20 persons each:
 
@@ -116,6 +166,42 @@ Assuming you already created one or more products for your general conference ad
 * Four quotas for each of the workshops
 
 * One add-on configuration on your base product that allows users to choose between 0 and 2 products from the category "Workshops"
+
+Option C: Add-on products with variable time slots
+""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The above option only works if your conference uses fixed time slots and every workshop uses exactly one time slot. If
+your schedule looks like this, it's not going to work great:
+
++-------------+------------+-----------+
+| Time        | Room A     | Room B    |
++=============+============+===========+
+| 09:00-11:00 | Talk 1     | Long      |
++-------------+------------+ Workshop 1|
+| 11:00-13:00 | Talk 2     |           |
++-------------+------------+-----------+
+| 14:00-16:00 | Long       | Talk 3    |
++-------------+ workshop 2 +-----------+
+| 16:00-18:00 |            | Talk 4    |
++-------------+------------+-----------+
+
+In this case, we recommend that you go to *Settings*, then *Plugins* and activate the plugin **Agenda constraints**.
+
+Then, create a product (without variations) for every single part that should be bookable (talks 1-4 and long workshops
+1 and 2) as well as appropriate quotas for each of them.
+
+All of these products should be part of the same category. In your base product (e.g. your conference ticket), you
+can then create an add-on product configuration allowing users to add products from this category.
+
+If you edit these products, you will be able to enter the "Start date" and "End date" of the talk or workshop close
+to the bottom of the page. If you fill in these values, pretix will automatically ensure no overlapping talks are
+booked.
+
+.. note::
+
+    This option is currently only available on pretix Hosted. If you are interested in using it with pretix Enterprise,
+    please contact sales@pretix.eu.
+
 
 Use case: Discounted packages
 -----------------------------

@@ -115,7 +115,7 @@ def generate_widget_js(lang):
         ]
         for fname in files:
             f = finders.find(fname)
-            with open(f, 'r') as fp:
+            with open(f, 'r', encoding='utf-8') as fp:
                 code.append(fp.read())
 
         if settings.DEBUG:
@@ -198,9 +198,14 @@ class WidgetAPIProductList(EventListMixin, View):
                         'free_price': item.free_price,
                         'avail': [
                             item.cached_availability[0],
-                            item.cached_availability[1] if self.request.event.settings.show_quota_left else None
+                            item.cached_availability[1] if item.do_show_quota_left else None
                         ] if not item.has_variations else None,
-                        'original_price': item.original_price,
+                        'original_price': (
+                            (item.original_price.net
+                             if self.request.event.settings.display_net_prices
+                             else item.original_price.gross)
+                            if item.original_price else None
+                        ),
                         'variations': [
                             {
                                 'id': var.id,
@@ -208,10 +213,22 @@ class WidgetAPIProductList(EventListMixin, View):
                                 'order_max': var.order_max,
                                 'description': str(rich_text(var.description, safelinks=False)) if var.description else None,
                                 'price': price_dict(item, var.display_price),
-                                'original_price': getattr(var, 'original_price') or item.original_price,
+                                'original_price': (
+                                    (
+                                        var.original_price.net
+                                        if self.request.event.settings.display_net_prices
+                                        else var.original_price.gross
+                                    ) if var.original_price else None
+                                ) or (
+                                    (
+                                        item.original_price.net
+                                        if self.request.event.settings.display_net_prices
+                                        else item.original_price.gross
+                                    ) if item.original_price else None
+                                ),
                                 'avail': [
                                     var.cached_availability[0],
-                                    var.cached_availability[1] if self.request.event.settings.show_quota_left else None
+                                    var.cached_availability[1] if item.do_show_quota_left else None
                                 ],
                             } for var in item.available_variations
                         ]
@@ -348,13 +365,17 @@ class WidgetAPIProductList(EventListMixin, View):
 
             if hasattr(self.request, 'event'):
                 add_subevents_for_days(
-                    self.request.event.subevents_annotated('web'),
+                    filter_qs_by_attr(self.request.event.subevents_annotated('web'), self.request),
                     before, after, ebd, set(), self.request.event,
                     kwargs.get('cart_namespace')
                 )
             else:
                 timezones = set()
-                add_events_for_days(self.request, Event.annotated(self.request.organizer.events, 'web'), before, after, ebd, timezones)
+                add_events_for_days(
+                    self.request,
+                    filter_qs_by_attr(Event.annotated(self.request.organizer.events, 'web'), self.request),
+                    before, after, ebd, timezones
+                )
                 add_subevents_for_days(filter_qs_by_attr(SubEvent.annotated(SubEvent.objects.filter(
                     event__organizer=self.request.organizer,
                     event__is_public=True,
@@ -372,7 +393,7 @@ class WidgetAPIProductList(EventListMixin, View):
         else:
             if hasattr(self.request, 'event'):
                 evs = self.request.event.subevents_sorted(
-                    self.request.event.subevents_annotated(self.request.sales_channel)
+                    filter_qs_by_attr(self.request.event.subevents_annotated(self.request.sales_channel), self.request)
                 )
                 tz = pytz.timezone(request.event.settings.timezone)
                 data['events'] = [
@@ -434,6 +455,7 @@ class WidgetAPIProductList(EventListMixin, View):
             'display_net_prices': request.event.settings.display_net_prices,
             'show_variations_expanded': request.event.settings.show_variations_expanded,
             'waiting_list_enabled': request.event.settings.waiting_list_enabled,
+            'voucher_explanation_text': str(request.event.settings.voucher_explanation_text),
             'error': None,
             'cart_exists': False
         }
@@ -496,6 +518,8 @@ class WidgetAPIProductList(EventListMixin, View):
             data['items_by_category'] = []
             data['display_add_to_cart'] = False
             data['itemnum'] = 0
+
+        data['has_seating_plan'] = ev.seating_plan is not None
 
         vouchers_exist = self.request.event.get_cache().get('vouchers_exist')
         if vouchers_exist is None:

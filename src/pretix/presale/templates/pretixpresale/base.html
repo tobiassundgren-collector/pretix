@@ -27,6 +27,7 @@
     {% endcompress %}
     {% endif %}
 
+    {% include "pretixpresale/fragment_js.html" %}
     <meta name="referrer" content="origin">
     {{ html_head|safe }}
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0">
@@ -102,55 +103,12 @@
             {% for f in footer %}
             <a href="{% safelink f.url %}" target="_blank" rel="noopener">{{ f.label }}</a>
             &middot;
-            {% endfor %}
-            {% include "pretixpresale/base_footer.html" %}
-        </footer>
-    </div>
-    <footer class="footer mt-auto py-4">
-        <div class="container">
-            <div class="row">
-                <div class="col-sm mx-3">
-                    <h6>
-                        Kundservice
-                    </h6>
-                    <p>Bara kontakt via epost</p>
-                </div>
-                <div class="col-sm mx-3">
-                    <h6>
-                        Om TobTic
-                    </h6>
-                    <p>
-                        Orgnr: 1234123-1231<br />
-                        Epost: test@tobtic.com
-                    </p>
-
-                </div>
-                <div class="col-sm mx-3">
-                    <p>
-                        <a href="https://www.pretix.com" class="footer-link-rounded-border">Event ticketing powered by
-                            <span class="pretix-bold">pretix</span></a><br /><br />
-                        <a href="https://www.stripe.com"><img src="{% static "tobtic/img/powered_by_stripe.png" %}" /></a>
-                    </p>
-
-                </div>
-            </div>
-        </div>
+        {% endfor %}
+        {% include "pretixpresale/base_footer.html" %}
     </footer>
-    <div id="ajaxerr">
-    </div>
-    <div id="loadingmodal">
-        <div class="modal-card">
-            <div class="modal-card-icon">
-                <i class="fa fa-cog big-rotating-icon"></i>
-            </div>
-            <div class="modal-card-content">
-                <h3></h3>
-                <p class="text"></p>
-                <p class="status">{% trans "If this takes longer than a few minutes, please contact us." %}</p>
-            </div>
-        </div>
-    </div>
-    {% if DEBUG %}
+</div>
+{% include "pretixpresale/fragment_modals.html" %}
+{% if DEBUG %}
     <script type="text/javascript" src="{% url 'javascript-catalog' lang=request.LANGUAGE_CODE %}" async></script>
     {% else %}
     <script src="{% statici18n LANGUAGE_CODE %}" async></script>

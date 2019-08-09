@@ -6,8 +6,10 @@ from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.http import Http404
 from django.shortcuts import redirect
+from django.template.response import TemplateResponse
 from django.urls import resolve
 from django.utils.translation import ugettext_lazy as _
+from django_scopes import scope
 
 from pretix.base.middleware import LocaleMiddleware
 from pretix.base.models import Event, Organizer
@@ -17,9 +19,14 @@ from pretix.presale.signals import process_request, process_response
 SessionStore = import_module(settings.SESSION_ENGINE).SessionStore
 
 
+@scope(organizer=None)
 def _detect_event(request, require_live=True, require_plugin=None):
     if hasattr(request, '_event_detected'):
         return
+
+    db = 'default'
+    if request.method == 'GET':
+        db = settings.DATABASE_REPLICA
 
     url = resolve(request.path_info)
     try:
@@ -31,24 +38,24 @@ def _detect_event(request, require_live=True, require_plugin=None):
                 path = "/" + request.get_full_path().split("/", 2)[-1]
                 return redirect(path)
 
-            request.event = request.organizer.events\
-                .get(
-                    slug=url.kwargs['event'],
-                    organizer=request.organizer,
-                )
+            request.event = request.organizer.events.using(db).get(
+                slug=url.kwargs['event'],
+                organizer=request.organizer,
+            )
             request.organizer = request.organizer
         else:
             # We are on our main domain
             if 'event' in url.kwargs and 'organizer' in url.kwargs:
                 request.event = Event.objects\
                     .select_related('organizer')\
+                    .using(db)\
                     .get(
                         slug=url.kwargs['event'],
                         organizer__slug=url.kwargs['organizer']
                     )
                 request.organizer = request.event.organizer
             elif 'organizer' in url.kwargs:
-                request.organizer = Organizer.objects.get(
+                request.organizer = Organizer.objects.using(db).get(
                     slug=url.kwargs['organizer']
                 )
             else:
@@ -147,10 +154,15 @@ def _event_view(function=None, require_live=True, require_plugin=None):
             if ret:
                 return ret
             else:
-                response = func(request=request, *args, **kwargs)
-                for receiver, r in process_response.send(request.event, request=request, response=response):
-                    response = r
-                return response
+                with scope(organizer=getattr(request, 'organizer', None)):
+                    response = func(request=request, *args, **kwargs)
+                    for receiver, r in process_response.send(request.event, request=request, response=response):
+                        response = r
+
+                    if isinstance(response, TemplateResponse):
+                        response = response.render()
+
+                    return response
 
         for attrname in dir(func):
             # Preserve flags like csrf_exempt

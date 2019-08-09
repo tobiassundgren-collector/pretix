@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404
 from django.utils.timezone import make_aware, now
 from django.utils.translation import ugettext as _
 from django_filters.rest_framework import DjangoFilterBackend, FilterSet
+from django_scopes import scopes_disabled
 from rest_framework import mixins, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import (
@@ -50,17 +51,17 @@ from pretix.base.signals import (
 )
 from pretix.base.templatetags.money import money_filter
 
+with scopes_disabled():
+    class OrderFilter(FilterSet):
+        email = django_filters.CharFilter(field_name='email', lookup_expr='iexact')
+        code = django_filters.CharFilter(field_name='code', lookup_expr='iexact')
+        status = django_filters.CharFilter(field_name='status', lookup_expr='iexact')
+        modified_since = django_filters.IsoDateTimeFilter(field_name='last_modified', lookup_expr='gte')
+        created_since = django_filters.IsoDateTimeFilter(field_name='datetime', lookup_expr='gte')
 
-class OrderFilter(FilterSet):
-    email = django_filters.CharFilter(field_name='email', lookup_expr='iexact')
-    code = django_filters.CharFilter(field_name='code', lookup_expr='iexact')
-    status = django_filters.CharFilter(field_name='status', lookup_expr='iexact')
-    modified_since = django_filters.IsoDateTimeFilter(field_name='last_modified', lookup_expr='gte')
-    created_since = django_filters.IsoDateTimeFilter(field_name='datetime', lookup_expr='gte')
-
-    class Meta:
-        model = Order
-        fields = ['code', 'status', 'email', 'locale', 'testmode', 'require_approval']
+        class Meta:
+            model = Order
+            fields = ['code', 'status', 'email', 'locale', 'testmode', 'require_approval']
 
 
 class OrderViewSet(viewsets.ModelViewSet):
@@ -92,8 +93,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                     'positions',
                     OrderPosition.objects.all().prefetch_related(
                         'checkins', 'item', 'variation', 'answers', 'answers__options', 'answers__question',
-                        'item__category', 'addon_to',
-                        Prefetch('addons', OrderPosition.objects.select_related('item', 'variation'))
+                        'item__category', 'addon_to', 'seat',
+                        Prefetch('addons', OrderPosition.objects.select_related('item', 'variation', 'seat'))
                     )
                 )
             )
@@ -102,7 +103,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 Prefetch(
                     'positions',
                     OrderPosition.objects.all().prefetch_related(
-                        'checkins', 'item', 'variation', 'answers', 'answers__options', 'answers__question',
+                        'checkins', 'item', 'variation', 'answers', 'answers__options', 'answers__question', 'seat',
                     )
                 )
             )
@@ -482,6 +483,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 )
 
             if 'email' in self.request.data and serializer.instance.email != self.request.data.get('email'):
+                serializer.instance.email_known_to_work = False
                 serializer.instance.log_action(
                     'pretix.event.order.contact.changed',
                     user=self.request.user,
@@ -530,48 +532,49 @@ class OrderViewSet(viewsets.ModelViewSet):
             self.get_object().gracefully_delete(user=self.request.user if self.request.user.is_authenticated else None, auth=self.request.auth)
 
 
-class OrderPositionFilter(FilterSet):
-    order = django_filters.CharFilter(field_name='order', lookup_expr='code__iexact')
-    has_checkin = django_filters.rest_framework.BooleanFilter(method='has_checkin_qs')
-    attendee_name = django_filters.CharFilter(method='attendee_name_qs')
-    search = django_filters.CharFilter(method='search_qs')
+with scopes_disabled():
+    class OrderPositionFilter(FilterSet):
+        order = django_filters.CharFilter(field_name='order', lookup_expr='code__iexact')
+        has_checkin = django_filters.rest_framework.BooleanFilter(method='has_checkin_qs')
+        attendee_name = django_filters.CharFilter(method='attendee_name_qs')
+        search = django_filters.CharFilter(method='search_qs')
 
-    def search_qs(self, queryset, name, value):
-        return queryset.filter(
-            Q(secret__istartswith=value)
-            | Q(attendee_name_cached__icontains=value)
-            | Q(addon_to__attendee_name_cached__icontains=value)
-            | Q(attendee_email__icontains=value)
-            | Q(addon_to__attendee_email__icontains=value)
-            | Q(order__code__istartswith=value)
-            | Q(order__invoice_address__name_cached__icontains=value)
-            | Q(order__email__icontains=value)
-        )
+        def search_qs(self, queryset, name, value):
+            return queryset.filter(
+                Q(secret__istartswith=value)
+                | Q(attendee_name_cached__icontains=value)
+                | Q(addon_to__attendee_name_cached__icontains=value)
+                | Q(attendee_email__icontains=value)
+                | Q(addon_to__attendee_email__icontains=value)
+                | Q(order__code__istartswith=value)
+                | Q(order__invoice_address__name_cached__icontains=value)
+                | Q(order__email__icontains=value)
+            )
 
-    def has_checkin_qs(self, queryset, name, value):
-        return queryset.filter(checkins__isnull=not value)
+        def has_checkin_qs(self, queryset, name, value):
+            return queryset.filter(checkins__isnull=not value)
 
-    def attendee_name_qs(self, queryset, name, value):
-        return queryset.filter(Q(attendee_name_cached__iexact=value) | Q(addon_to__attendee_name_cached__iexact=value))
+        def attendee_name_qs(self, queryset, name, value):
+            return queryset.filter(Q(attendee_name_cached__iexact=value) | Q(addon_to__attendee_name_cached__iexact=value))
 
-    class Meta:
-        model = OrderPosition
-        fields = {
-            'item': ['exact', 'in'],
-            'variation': ['exact', 'in'],
-            'secret': ['exact'],
-            'order__status': ['exact', 'in'],
-            'addon_to': ['exact', 'in'],
-            'subevent': ['exact', 'in'],
-            'pseudonymization_id': ['exact'],
-            'voucher__code': ['exact'],
-            'voucher': ['exact'],
-        }
+        class Meta:
+            model = OrderPosition
+            fields = {
+                'item': ['exact', 'in'],
+                'variation': ['exact', 'in'],
+                'secret': ['exact'],
+                'order__status': ['exact', 'in'],
+                'addon_to': ['exact', 'in'],
+                'subevent': ['exact', 'in'],
+                'pseudonymization_id': ['exact'],
+                'voucher__code': ['exact'],
+                'voucher': ['exact'],
+            }
 
 
 class OrderPositionViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = OrderPositionSerializer
-    queryset = OrderPosition.objects.none()
+    queryset = OrderPosition.all.none()
     filter_backends = (DjangoFilterBackend, OrderingFilter)
     ordering = ('order__datetime', 'positionid')
     ordering_fields = ('order__code', 'order__datetime', 'positionid', 'attendee_name', 'order__status',)
@@ -608,13 +611,13 @@ class OrderPositionViewSet(mixins.DestroyModelMixin, viewsets.ReadOnlyModelViewS
                     )
                 ))
             ).select_related(
-                'item', 'variation', 'item__category', 'addon_to'
+                'item', 'variation', 'item__category', 'addon_to', 'seat'
             )
         else:
             qs = qs.prefetch_related(
                 'checkins', 'answers', 'answers__options', 'answers__question'
             ).select_related(
-                'item', 'order', 'order__event', 'order__event__organizer'
+                'item', 'order', 'order__event', 'order__event__organizer', 'seat'
             )
         return qs
 
@@ -959,22 +962,23 @@ class RefundViewSet(CreateModelMixin, viewsets.ReadOnlyModelViewSet):
         serializer.save()
 
 
-class InvoiceFilter(FilterSet):
-    refers = django_filters.CharFilter(method='refers_qs')
-    number = django_filters.CharFilter(method='nr_qs')
-    order = django_filters.CharFilter(field_name='order', lookup_expr='code__iexact')
+with scopes_disabled():
+    class InvoiceFilter(FilterSet):
+        refers = django_filters.CharFilter(method='refers_qs')
+        number = django_filters.CharFilter(method='nr_qs')
+        order = django_filters.CharFilter(field_name='order', lookup_expr='code__iexact')
 
-    def refers_qs(self, queryset, name, value):
-        return queryset.annotate(
-            refers_nr=Concat('refers__prefix', 'refers__invoice_no')
-        ).filter(refers_nr__iexact=value)
+        def refers_qs(self, queryset, name, value):
+            return queryset.annotate(
+                refers_nr=Concat('refers__prefix', 'refers__invoice_no')
+            ).filter(refers_nr__iexact=value)
 
-    def nr_qs(self, queryset, name, value):
-        return queryset.filter(nr__iexact=value)
+        def nr_qs(self, queryset, name, value):
+            return queryset.filter(nr__iexact=value)
 
-    class Meta:
-        model = Invoice
-        fields = ['order', 'number', 'is_cancellation', 'refers', 'locale']
+        class Meta:
+            model = Invoice
+            fields = ['order', 'number', 'is_cancellation', 'refers', 'locale']
 
 
 class RetryException(APIException):

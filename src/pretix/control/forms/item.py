@@ -6,6 +6,9 @@ from django.urls import reverse
 from django.utils.translation import (
     pgettext_lazy, ugettext as __, ugettext_lazy as _,
 )
+from django_scopes.forms import (
+    SafeModelChoiceField, SafeModelMultipleChoiceField,
+)
 from i18nfield.forms import I18nFormField, I18nTextarea
 
 from pretix.base.channels import get_all_sales_channels
@@ -52,7 +55,12 @@ class QuestionForm(I18nModelForm):
                 pk=self.instance.pk
             )
         self.fields['identifier'].required = False
+        self.fields['dependency_values'].required = False
         self.fields['help_text'].widget.attrs['rows'] = 3
+
+    def clean_dependency_values(self):
+        val = self.data.getlist('dependency_values')
+        return val
 
     def clean_dependency_question(self):
         dep = val = self.cleaned_data.get('dependency_question')
@@ -67,8 +75,8 @@ class QuestionForm(I18nModelForm):
 
     def clean(self):
         d = super().clean()
-        if d.get('dependency_question') and not d.get('dependency_value'):
-            raise ValidationError({'dependency_value': [_('This field is required')]})
+        if d.get('dependency_question') and not d.get('dependency_values'):
+            raise ValidationError({'dependency_values': [_('This field is required')]})
         if d.get('dependency_question') and d.get('ask_during_checkin'):
             raise ValidationError(_('Dependencies between questions are not supported during check-in.'))
         return d
@@ -82,16 +90,21 @@ class QuestionForm(I18nModelForm):
             'type',
             'required',
             'ask_during_checkin',
+            'hidden',
             'identifier',
             'items',
             'dependency_question',
-            'dependency_value'
+            'dependency_values'
         ]
         widgets = {
             'items': forms.CheckboxSelectMultiple(
                 attrs={'class': 'scrolling-multiple-choice'}
             ),
-            'dependency_value': forms.Select,
+            'dependency_values': forms.SelectMultiple,
+        }
+        field_classes = {
+            'items': SafeModelMultipleChoiceField,
+            'dependency_question': SafeModelChoiceField,
         }
 
 
@@ -156,8 +169,12 @@ class QuotaForm(I18nModelForm):
         fields = [
             'name',
             'size',
-            'subevent'
+            'subevent',
+            'close_when_sold_out'
         ]
+        field_classes = {
+            'subevent': SafeModelChoiceField,
+        }
 
     def save(self, *args, **kwargs):
         creating = not self.instance.pk
@@ -205,6 +222,8 @@ class ItemCreateForm(I18nModelForm):
             empty_label=_('Do not copy'),
             required=False
         )
+        if self.event.tax_rules.exists():
+            self.fields['tax_rule'].required = True
 
         if not self.event.has_subevents:
             choices = [
@@ -339,8 +358,17 @@ class ItemCreateForm(I18nModelForm):
             'admission',
             'default_price',
             'tax_rule',
-            'allow_cancel'
         ]
+
+
+class ShowQuotaNullBooleanSelect(forms.NullBooleanSelect):
+    def __init__(self, attrs=None):
+        choices = (
+            ('1', _('(Event default)')),
+            ('2', _('Yes')),
+            ('3', _('No')),
+        )
+        super(forms.NullBooleanSelect, self).__init__(attrs, choices)
 
 
 class TicketNullBooleanSelect(forms.NullBooleanSelect):
@@ -363,6 +391,8 @@ class ItemUpdateForm(I18nModelForm):
             'over 65. This ticket includes access to all parts of the event, except the VIP '
             'area.'
         )
+        if self.event.tax_rules.exists():
+            self.fields['tax_rule'].required = True
         self.fields['description'].widget.attrs['rows'] = '4'
         self.fields['sales_channels'] = forms.MultipleChoiceField(
             label=_('Sales channels'),
@@ -372,6 +402,19 @@ class ItemUpdateForm(I18nModelForm):
             widget=forms.CheckboxSelectMultiple
         )
         change_decimal_field(self.fields['default_price'], self.event.currency)
+        self.fields['hidden_if_available'].queryset = self.event.quotas.all()
+        self.fields['hidden_if_available'].widget = Select2(
+            attrs={
+                'data-model-select2': 'generic',
+                'data-select2-url': reverse('control:event.items.quotas.select2', kwargs={
+                    'event': self.event.slug,
+                    'organizer': self.event.organizer.slug,
+                }),
+                'data-placeholder': _('Quota')
+            }
+        )
+        self.fields['hidden_if_available'].widget.choices = self.fields['hidden_if_available'].choices
+        self.fields['hidden_if_available'].required = False
 
     class Meta:
         model = Item
@@ -394,25 +437,33 @@ class ItemUpdateForm(I18nModelForm):
             'require_approval',
             'hide_without_voucher',
             'allow_cancel',
+            'allow_waitinglist',
             'max_per_order',
             'min_per_order',
             'checkin_attention',
             'generate_tickets',
             'original_price',
             'require_bundling',
+            'show_quota_left',
+            'hidden_if_available',
         ]
         field_classes = {
             'available_from': SplitDateTimeField,
             'available_until': SplitDateTimeField,
+            'hidden_if_available': SafeModelChoiceField,
         }
         widgets = {
             'available_from': SplitDateTimePickerWidget(),
             'available_until': SplitDateTimePickerWidget(attrs={'data-date-after': '#id_available_from_0'}),
-            'generate_tickets': TicketNullBooleanSelect()
+            'generate_tickets': TicketNullBooleanSelect(),
+            'show_quota_left': ShowQuotaNullBooleanSelect()
         }
 
 
 class ItemVariationsFormSet(I18nFormSet):
+    template = "pretixcontrol/item/include_variations.html"
+    title = _('Variations')
+
     def clean(self):
         super().clean()
         for f in self.forms:
@@ -469,6 +520,9 @@ class ItemVariationForm(I18nModelForm):
 
 
 class ItemAddOnsFormSet(I18nFormSet):
+    title = _('Add-ons')
+    template = "pretixcontrol/item/include_addons.html"
+
     def __init__(self, *args, **kwargs):
         self.event = kwargs.get('event')
         super().__init__(*args, **kwargs)
@@ -534,6 +588,9 @@ class ItemAddOnForm(I18nModelForm):
 
 
 class ItemBundleFormSet(I18nFormSet):
+    template = "pretixcontrol/item/include_bundles.html"
+    title = _('Bundled products')
+
     def __init__(self, *args, **kwargs):
         self.event = kwargs.get('event')
         self.item = kwargs.pop('item')

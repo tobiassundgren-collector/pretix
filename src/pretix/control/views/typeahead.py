@@ -11,7 +11,8 @@ from django.utils.formats import get_format
 from django.utils.timezone import make_aware
 from django.utils.translation import pgettext, ugettext as _
 
-from pretix.base.models import Organizer, User
+from pretix.base.models import Order, Organizer, SubEvent, User, Voucher
+from pretix.control.forms.event import EventWizardCopyForm
 from pretix.control.permissions import event_permission_required
 from pretix.helpers.daterange import daterange
 from pretix.helpers.i18n import i18ncomp
@@ -66,13 +67,45 @@ def serialize_event(e):
     }
 
 
+def serialize_order(o):
+    return {
+        'type': 'order',
+        'event': str(o.event),
+        'title': _('Order {}').format(str(o.code)),
+        'url': reverse('control:event.order', kwargs={
+            'event': o.event.slug,
+            'organizer': o.event.organizer.slug,
+            'code': o.code
+        })
+    }
+
+
+def serialize_voucher(v):
+    return {
+        'type': 'voucher',
+        'event': str(v.event),
+        'title': _('Voucher {}').format(str(v.code)),
+        'url': reverse('control:event.voucher', kwargs={
+            'event': v.event.slug,
+            'organizer': v.event.organizer.slug,
+            'voucher': v.pk
+        })
+    }
+
+
 def event_list(request):
     query = request.GET.get('query', '')
     try:
         page = int(request.GET.get('page', '1'))
     except ValueError:
         page = 1
-    qs = request.user.get_events_with_any_permission(request).filter(
+
+    if 'can_copy' in request.GET:
+        qs = EventWizardCopyForm.copy_from_queryset(request.user, request.session)
+    else:
+        qs = request.user.get_events_with_any_permission(request)
+
+    qs = qs.filter(
         Q(name__icontains=i18ncomp(query)) | Q(slug__icontains=query) |
         Q(organizer__name__icontains=i18ncomp(query)) | Q(organizer__slug__icontains=query)
     ).annotate(
@@ -100,6 +133,8 @@ def event_list(request):
 
 def nav_context_list(request):
     query = request.GET.get('query', '')
+    organizer = request.GET.get('organizer', None)
+
     try:
         page = int(request.GET.get('page', '1'))
     except ValueError:
@@ -123,6 +158,28 @@ def nav_context_list(request):
     if query:
         qs_orga = qs_orga.filter(Q(name__icontains=query) | Q(slug__icontains=query))
 
+    if query:
+        qs_orders = Order.objects.filter(code__icontains=query).select_related('event', 'event__organizer')
+        if not request.user.has_active_staff_session(request.session.session_key):
+            qs_orders = qs_orders.filter(
+                Q(event__organizer_id__in=request.user.teams.filter(
+                    all_events=True, can_view_orders=True).values_list('organizer', flat=True))
+                | Q(event_id__in=request.user.teams.filter(
+                    can_view_orders=True).values_list('limit_events__id', flat=True))
+            )
+
+        qs_vouchers = Voucher.objects.filter(code__icontains=query).select_related('event', 'event__organizer')
+        if not request.user.has_active_staff_session(request.session.session_key):
+            qs_vouchers = qs_vouchers.filter(
+                Q(event__organizer_id__in=request.user.teams.filter(
+                    all_events=True, can_view_vouchers=True).values_list('organizer', flat=True))
+                | Q(event_id__in=request.user.teams.filter(
+                    can_view_vouchers=True).values_list('limit_events__id', flat=True))
+            )
+    else:
+        qs_vouchers = Voucher.objects.none()
+        qs_orders = Order.objects.none()
+
     show_user = not query or (
         query and request.user.email and query.lower() in request.user.email.lower()
     ) or (
@@ -137,9 +194,66 @@ def nav_context_list(request):
         serialize_orga(e) for e in qs_orga[offset:offset + (pagesize if query else 5)]
     ] + [
         serialize_event(e) for e in qs_events.select_related('organizer')[offset:offset + (pagesize if query else 5)]
+    ] + [
+        serialize_order(e) for e in qs_orders[offset:offset + (pagesize if query else 5)]
+    ] + [
+        serialize_voucher(e) for e in qs_vouchers[offset:offset + (pagesize if query else 5)]
     ]
+
+    if show_user and organizer:
+        try:
+            organizer = Organizer.objects.get(pk=organizer)
+        except Organizer.DoesNotExist:
+            pass
+        else:
+            if request.user.has_organizer_permission(organizer, request=request):
+                organizer = serialize_orga(organizer)
+                if organizer in results:
+                    results.remove(organizer)
+                results.insert(1, organizer)
+
     doc = {
         'results': results,
+        'pagination': {
+            "more": total >= (offset + pagesize)
+        }
+    }
+    return JsonResponse(doc)
+
+
+@event_permission_required("can_view_orders")
+def seat_select2(request, **kwargs):
+    query = request.GET.get('query', '')
+    try:
+        page = int(request.GET.get('page', '1'))
+    except ValueError:
+        page = 1
+
+    if request.event.has_subevents:
+        try:
+            qs = request.event.subevents.get(active=True, pk=request.GET.get('subevent', 0)).free_seats
+        except SubEvent.DoesNotExist:
+            qs = request.event.seats.none()
+    else:
+        qs = request.event.free_seats
+    qs = qs.filter(
+        Q(name__icontains=query) | Q(seat_guid__icontains=query)
+    ).order_by('name').select_related('product', 'subevent')
+
+    total = qs.count()
+    pagesize = 20
+    offset = (page - 1) * pagesize
+    doc = {
+        'results': [
+            {
+                'id': e.pk,
+                'text': '{} ({})'.format(e.name, str(e.product)),
+                'product': e.product_id,
+                'event': str(e.subevent) if e.subevent else ''
+
+            }
+            for e in qs[offset:offset + pagesize]
+        ],
         'pagination': {
             "more": total >= (offset + pagesize)
         }
@@ -187,6 +301,53 @@ def subevent_select2(request, **kwargs):
                 'text': '{} – {}'.format(e.name, e.get_date_range_display()),
             }
             for e in qs[offset:offset + pagesize]
+        ],
+        'pagination': {
+            "more": total >= (offset + pagesize)
+        }
+    }
+    return JsonResponse(doc)
+
+
+@event_permission_required(None)
+def quotas_select2(request, **kwargs):
+    query = request.GET.get('query', '')
+    try:
+        page = int(request.GET.get('page', '1'))
+    except ValueError:
+        page = 1
+
+    qf = Q(name__icontains=query) | Q(subevent__name__icontains=i18ncomp(query))
+    tz = request.event.timezone
+
+    dt = None
+    for f in get_format('DATE_INPUT_FORMATS'):
+        try:
+            dt = datetime.strptime(query, f)
+            break
+        except (ValueError, TypeError):
+            continue
+
+    if dt and request.event.has_subevents:
+        dt_start = make_aware(datetime.combine(dt.date(), time(hour=0, minute=0, second=0)), tz)
+        dt_end = make_aware(datetime.combine(dt.date(), time(hour=23, minute=59, second=59)), tz)
+        qf |= Q(subevent__date_from__gte=dt_start) & Q(subevent__date_from__lte=dt_end)
+
+    qs = request.event.quotas.filter(
+        qf
+    ).order_by('-subevent__date_from', 'name')
+
+    total = qs.count()
+    pagesize = 20
+    offset = (page - 1) * pagesize
+    doc = {
+        'results': [
+            {
+                'id': q.pk,
+                'name': str(q.name),
+                'text': q.name
+            }
+            for q in qs[offset:offset + pagesize]
         ],
         'pagination': {
             "more": total >= (offset + pagesize)
@@ -332,7 +493,10 @@ def organizer_select2(request):
     if term:
         qs = qs.filter(Q(name__icontains=term) | Q(slug__icontains=term))
     if not request.user.has_active_staff_session(request.session.session_key):
-        qs = qs.filter(pk__in=request.user.teams.values_list('organizer', flat=True))
+        if 'can_create' in request.GET:
+            qs = qs.filter(pk__in=request.user.teams.filter(can_create_events=True).values_list('organizer', flat=True))
+        else:
+            qs = qs.filter(pk__in=request.user.teams.values_list('organizer', flat=True))
 
     total = qs.count()
     pagesize = 20

@@ -2,9 +2,10 @@ from django import forms
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.core.exceptions import ValidationError
-from django.core.validators import RegexValidator
+from django.core.validators import RegexValidator, validate_email
 from django.db.models import Q
 from django.forms import formset_factory
+from django.urls import reverse
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django.utils.timezone import get_current_timezone_name
@@ -18,15 +19,17 @@ from i18nfield.forms import (
 )
 from pytz import common_timezones, timezone
 
+from pretix.base.channels import get_all_sales_channels
 from pretix.base.forms import I18nModelForm, PlaceholderValidator, SettingsForm
 from pretix.base.models import Event, Organizer, TaxRule
 from pretix.base.models.event import EventMetaValue, SubEvent
 from pretix.base.reldate import RelativeDateField, RelativeDateTimeField
-from pretix.base.settings import PERSON_NAME_SCHEMES
+from pretix.base.settings import PERSON_NAME_SCHEMES, PERSON_NAME_TITLE_GROUPS
 from pretix.control.forms import (
-    ExtFileField, MultipleLanguagesWidget, SingleLanguageWidget, SlugWidget,
-    SplitDateTimeField, SplitDateTimePickerWidget,
+    ExtFileField, FontSelect, MultipleLanguagesWidget, SingleLanguageWidget,
+    SlugWidget, SplitDateTimeField, SplitDateTimePickerWidget,
 )
+from pretix.control.forms.widgets import Select2
 from pretix.multidomain.urlreverse import build_absolute_uri
 from pretix.plugins.banktransfer.payment import BankTransfer
 from pretix.presale.style import get_fonts
@@ -51,16 +54,28 @@ class EventWizardFoundationForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         self.user = kwargs.pop('user')
+        self.session = kwargs.pop('session')
         super().__init__(*args, **kwargs)
+        qs = Organizer.objects.all()
+        if not self.user.has_active_staff_session(self.session.session_key):
+            qs = qs.filter(
+                id__in=self.user.teams.filter(can_create_events=True).values_list('organizer', flat=True)
+            )
         self.fields['organizer'] = forms.ModelChoiceField(
             label=_("Organizer"),
-            queryset=Organizer.objects.filter(
-                id__in=self.user.teams.filter(can_create_events=True).values_list('organizer', flat=True)
+            queryset=qs,
+            widget=Select2(
+                attrs={
+                    'data-model-select2': 'generic',
+                    'data-select2-url': reverse('control:organizers.select2') + '?can_create=1',
+                    'data-placeholder': _('Organizer')
+                }
             ),
-            widget=forms.RadioSelect,
             empty_label=None,
             required=True
         )
+        self.fields['organizer'].widget.choices = self.fields['organizer'].choices
+
         if len(self.fields['organizer'].choices) == 1:
             self.fields['organizer'].initial = self.fields['organizer'].queryset.first()
 
@@ -116,6 +131,7 @@ class EventWizardBasicsForm(I18nModelForm):
         self.locales = kwargs.get('locales')
         self.has_subevents = kwargs.pop('has_subevents')
         kwargs.pop('user')
+        kwargs.pop('session')
         super().__init__(*args, **kwargs)
         self.initial['timezone'] = get_current_timezone_name()
         self.fields['locale'].choices = [(a, b) for a, b in settings.LANGUAGES if a in self.locales]
@@ -173,7 +189,9 @@ class EventChoiceField(forms.ModelChoiceField):
 class EventWizardCopyForm(forms.Form):
 
     @staticmethod
-    def copy_from_queryset(user):
+    def copy_from_queryset(user, session):
+        if user.has_active_staff_session(session.session_key):
+            return Event.objects.all()
         return Event.objects.filter(
             Q(organizer_id__in=user.teams.filter(
                 all_events=True, can_change_event_settings=True, can_change_items=True
@@ -185,16 +203,25 @@ class EventWizardCopyForm(forms.Form):
     def __init__(self, *args, **kwargs):
         kwargs.pop('organizer')
         kwargs.pop('locales')
+        self.session = kwargs.pop('session')
         kwargs.pop('has_subevents')
         self.user = kwargs.pop('user')
         super().__init__(*args, **kwargs)
+
         self.fields['copy_from_event'] = EventChoiceField(
             label=_("Copy configuration from"),
-            queryset=EventWizardCopyForm.copy_from_queryset(self.user),
-            widget=forms.RadioSelect,
+            queryset=EventWizardCopyForm.copy_from_queryset(self.user, self.session),
+            widget=Select2(
+                attrs={
+                    'data-model-select2': 'event',
+                    'data-select2-url': reverse('control:events.typeahead') + '?can_copy=1',
+                    'data-placeholder': _('Do not copy')
+                }
+            ),
             empty_label=_('Do not copy'),
             required=False
         )
+        self.fields['copy_from_event'].widget.choices = self.fields['copy_from_event'].choices
 
 
 class EventMetaValueForm(forms.ModelForm):
@@ -279,7 +306,7 @@ class EventSettingsForm(SettingsForm):
     )
     display_net_prices = forms.BooleanField(
         label=_("Show net prices instead of gross prices in the product list (not recommended!)"),
-        help_text=_("Independent of your choice, the cart will show gross prices as this the price that needs to be "
+        help_text=_("Independent of your choice, the cart will show gross prices as this is the price that needs to be "
                     "paid"),
         required=False
     )
@@ -298,7 +325,7 @@ class EventSettingsForm(SettingsForm):
     )
     timezone = forms.ChoiceField(
         choices=((a, a) for a in common_timezones),
-        label=_("Default timezone"),
+        label=_("Event timezone"),
     )
     locales = forms.MultipleChoiceField(
         choices=settings.LANGUAGES,
@@ -356,6 +383,12 @@ class EventSettingsForm(SettingsForm):
                     "orders might lead to unexpected behaviour when sorting or changing names."),
         required=True,
     )
+    name_scheme_titles = forms.ChoiceField(
+        label=_("Allowed titles"),
+        help_text=_("If the naming scheme you defined above allows users to input a title, you can use this to "
+                    "restrict the set of selectable titles."),
+        required=False,
+    )
     attendee_emails_asked = forms.BooleanField(
         label=_("Ask for email addresses per ticket"),
         help_text=_("Normally, pretix asks for one email address per order and the order confirmation will be sent "
@@ -408,6 +441,96 @@ class EventSettingsForm(SettingsForm):
         required=False,
         help_text=_("We'll show this publicly to allow attendees to contact you.")
     )
+    show_variations_expanded = forms.BooleanField(
+        label=_("Show variations of a product expanded by default"),
+        required=False
+    )
+    hide_sold_out = forms.BooleanField(
+        label=_("Hide all products that are sold out"),
+        required=False
+    )
+    meta_noindex = forms.BooleanField(
+        label=_('Ask search engines not to index the ticket shop'),
+        required=False
+    )
+    redirect_to_checkout_directly = forms.BooleanField(
+        label=_('Directly redirect to check-out after a product has been added to the cart.'),
+        required=False
+    )
+    frontpage_subevent_ordering = forms.ChoiceField(
+        label=pgettext('subevent', 'Date ordering'),
+        choices=[
+            ('date_ascending', _('Event start time')),
+            ('date_descending', _('Event start time (descending)')),
+            ('name_ascending', _('Name')),
+            ('name_descending', _('Name (descending)')),
+        ],  # When adding a new ordering, remember to also define it in the event model
+    )
+    logo_image = ExtFileField(
+        label=_('Logo image'),
+        ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
+        required=False,
+        help_text=_('If you provide a logo image, we will by default not show your events name and date '
+                    'in the page header. We will show your logo with a maximal height of 120 pixels.')
+    )
+    frontpage_text = I18nFormField(
+        label=_("Frontpage text"),
+        required=False,
+        widget=I18nTextarea
+    )
+    presale_has_ended_text = I18nFormField(
+        label=_("End of presale text"),
+        required=False,
+        widget=I18nTextarea,
+        widget_kwargs={'attrs': {'rows': '2'}},
+        help_text=_("This text will be shown above the ticket shop once the designated sales timeframe for this event "
+                    "is over. You can use it to describe other options to get a ticket, such as a box office.")
+    )
+    voucher_explanation_text = I18nFormField(
+        label=_("Voucher explanation"),
+        required=False,
+        widget=I18nTextarea,
+        widget_kwargs={'attrs': {'rows': '2'}},
+        help_text=_("This text will be shown next to the input for a voucher code. You can use it e.g. to explain "
+                    "how to obtain a voucher code.")
+    )
+    primary_color = forms.CharField(
+        label=_("Primary color"),
+        required=False,
+        validators=[
+            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
+                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
+        ],
+        widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
+    )
+    theme_color_success = forms.CharField(
+        label=_("Accent color for success"),
+        help_text=_("We strongly suggest to use a shade of green."),
+        required=False,
+        validators=[
+            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
+                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
+        ],
+        widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
+    )
+    theme_color_danger = forms.CharField(
+        label=_("Accent color for errors"),
+        help_text=_("We strongly suggest to use a dark shade of red."),
+        required=False,
+        validators=[
+            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
+                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
+        ],
+        widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
+    )
+    primary_font = forms.ChoiceField(
+        label=_('Font'),
+        choices=[
+            ('Open Sans', 'Open Sans')
+        ],
+        widget=FontSelect,
+        help_text=_('Only respected by modern browsers.')
+    )
 
     def clean(self):
         data = super().clean()
@@ -426,6 +549,7 @@ class EventSettingsForm(SettingsForm):
         return data
 
     def __init__(self, *args, **kwargs):
+        event = kwargs['obj']
         super().__init__(*args, **kwargs)
         self.fields['confirm_text'].widget.attrs['rows'] = '3'
         self.fields['confirm_text'].widget.attrs['placeholder'] = _(
@@ -439,6 +563,18 @@ class EventSettingsForm(SettingsForm):
             ))
             for k, v in PERSON_NAME_SCHEMES.items()
         )
+        self.fields['name_scheme_titles'].choices = [('', _('Free text input'))] + [
+            (k, '{scheme}: {samples}'.format(
+                scheme=v[0],
+                samples=', '.join(v[1])
+            ))
+            for k, v in PERSON_NAME_TITLE_GROUPS.items()
+        ]
+        if not event.has_subevents:
+            del self.fields['frontpage_subevent_ordering']
+        self.fields['primary_font'].choices += [
+            (a, a) for a in get_fonts()
+        ]
 
 
 class CancelSettingsForm(SettingsForm):
@@ -651,6 +787,12 @@ class InvoiceSettingsForm(SettingsForm):
                     "used at most once over all of your events. This setting only affects future invoices."),
         required=False,
     )
+    invoice_numbers_prefix_cancellations = forms.CharField(
+        label=_("Invoice number prefix for cancellations"),
+        help_text=_("This will be prepended to invoice numbers of cancellations. If you leave this field empty, "
+                    "the same numbering scheme will be used that you configured for regular invoices."),
+        required=False,
+    )
     invoice_generate = forms.ChoiceField(
         label=_("Generate invoices"),
         required=False,
@@ -663,6 +805,13 @@ class InvoiceSettingsForm(SettingsForm):
             ('paid', _('Automatically on payment')),
         ),
         help_text=_("Invoices will never be automatically generated for free orders.")
+    )
+    invoice_generate_sales_channels = forms.MultipleChoiceField(
+        label=_('Generate invoices for Sales channels'),
+        choices=[],
+        widget=forms.CheckboxSelectMultiple,
+        help_text=_("If you have enabled invoice generation in the previous setting, you can limit it here to specific "
+                    "sales channels.")
     )
     invoice_attendee_name = forms.BooleanField(
         label=_("Show attendee names on invoices"),
@@ -777,8 +926,22 @@ class InvoiceSettingsForm(SettingsForm):
             (r.identifier, r.verbose_name) for r in event.get_invoice_renderers().values()
         ]
         self.fields['invoice_numbers_prefix'].widget.attrs['placeholder'] = event.slug.upper() + '-'
+        if event.settings.invoice_numbers_prefix:
+            self.fields['invoice_numbers_prefix_cancellations'].widget.attrs['placeholder'] = event.settings.invoice_numbers_prefix
+        else:
+            self.fields['invoice_numbers_prefix_cancellations'].widget.attrs['placeholder'] = event.slug.upper() + '-'
         locale_names = dict(settings.LANGUAGES)
         self.fields['invoice_language'].choices = [('__user__', _('The user\'s language'))] + [(a, locale_names[a]) for a in event.settings.locales]
+        self.fields['invoice_generate_sales_channels'].choices = (
+            (c.identifier, c.verbose_name) for c in get_all_sales_channels().values()
+        )
+
+
+def multimail_validate(val):
+    s = val.split(',')
+    for part in s:
+        validate_email(part.strip())
+    return s
 
 
 class MailSettingsForm(SettingsForm):
@@ -790,12 +953,20 @@ class MailSettingsForm(SettingsForm):
     )
     mail_from = forms.EmailField(
         label=_("Sender address"),
-        help_text=_("Sender address for outgoing emails")
+        help_text=_("Sender address for outgoing emails"),
     )
-    mail_bcc = forms.EmailField(
+    mail_from_name = forms.CharField(
+        label=_("Sender name"),
+        help_text=_("Sender name used in conjunction with the sender address for outgoing emails. "
+                    "Defaults to your event name."),
+        required=False
+    )
+    mail_bcc = forms.CharField(
         label=_("Bcc address"),
         help_text=_("All emails will be sent to this address as a Bcc copy"),
-        required=False
+        validators=[multimail_validate],
+        required=False,
+        max_length=255
     )
 
     mail_text_signature = I18nFormField(
@@ -818,7 +989,7 @@ class MailSettingsForm(SettingsForm):
     )
 
     mail_text_order_placed = I18nFormField(
-        label=_("Text"),
+        label=_("Text sent to order contact address"),
         required=False,
         widget=I18nTextarea,
         help_text=_("Available placeholders: {event}, {total_with_currency}, {total}, {currency}, {date}, "
@@ -826,20 +997,62 @@ class MailSettingsForm(SettingsForm):
         validators=[PlaceholderValidator(['{event}', '{total_with_currency}', '{total}', '{currency}', '{date}',
                                           '{payment_info}', '{url}', '{invoice_name}', '{invoice_company}'])]
     )
+    mail_send_order_placed_attendee = forms.BooleanField(
+        label=_("Send an email to attendees"),
+        help_text=_('If the order contains attendees with email addresses different from the person who orders the '
+                    'tickets, the following email will be sent out to the attendees.'),
+        required=False,
+    )
+    mail_text_order_placed_attendee = I18nFormField(
+        label=_("Text sent to attendees"),
+        required=False,
+        widget=I18nTextarea,
+        help_text=_("Available placeholders: {event}, {url}, {attendee_name}"),
+        validators=[PlaceholderValidator(['{event}', '{url}', '{attendee_name}'])],
+    )
+
     mail_text_order_paid = I18nFormField(
-        label=_("Text"),
+        label=_("Text sent to order contact address"),
         required=False,
         widget=I18nTextarea,
         help_text=_("Available placeholders: {event}, {url}, {invoice_name}, {invoice_company}, {payment_info}"),
         validators=[PlaceholderValidator(['{event}', '{url}', '{invoice_name}', '{invoice_company}', '{payment_info}'])]
     )
+    mail_send_order_paid_attendee = forms.BooleanField(
+        label=_("Send an email to attendees"),
+        help_text=_('If the order contains attendees with email addresses different from the person who orders the '
+                    'tickets, the following email will be sent out to the attendees.'),
+        required=False,
+    )
+    mail_text_order_paid_attendee = I18nFormField(
+        label=_("Text sent to attendees"),
+        required=False,
+        widget=I18nTextarea,
+        help_text=_("Available placeholders: {event}, {url}, {attendee_name}"),
+        validators=[PlaceholderValidator(['{event}', '{url}', '{attendee_name}'])],
+    )
+
     mail_text_order_free = I18nFormField(
-        label=_("Text"),
+        label=_("Text sent to order contact address"),
         required=False,
         widget=I18nTextarea,
         help_text=_("Available placeholders: {event}, {url}, {invoice_name}, {invoice_company}"),
         validators=[PlaceholderValidator(['{event}', '{url}', '{invoice_name}', '{invoice_company}'])]
     )
+    mail_send_order_free_attendee = forms.BooleanField(
+        label=_("Send an email to attendees"),
+        help_text=_('If the order contains attendees with email addresses different from the person who orders the '
+                    'tickets, the following email will be sent out to the attendees.'),
+        required=False,
+    )
+    mail_text_order_free_attendee = I18nFormField(
+        label=_("Text sent to attendees"),
+        required=False,
+        widget=I18nTextarea,
+        help_text=_("Available placeholders: {event}, {url}, {attendee_name}"),
+        validators=[PlaceholderValidator(['{event}', '{url}', '{attendee_name}'])],
+    )
+
     mail_text_order_changed = I18nFormField(
         label=_("Text"),
         required=False,
@@ -863,7 +1076,7 @@ class MailSettingsForm(SettingsForm):
     )
     mail_days_order_expire_warning = forms.IntegerField(
         label=_("Number of days"),
-        required=False,
+        required=True,
         min_value=0,
         help_text=_("This email will be sent out this many days before the order expires. If the "
                     "value is 0, the mail will never be sent.")
@@ -899,11 +1112,24 @@ class MailSettingsForm(SettingsForm):
                                           '{invoice_name}', '{invoice_company}'])]
     )
     mail_text_download_reminder = I18nFormField(
-        label=_("Text"),
+        label=_("Text sent to order contact address"),
         required=False,
         widget=I18nTextarea,
         help_text=_("Available placeholders: {event}, {url}"),
         validators=[PlaceholderValidator(['{event}', '{url}'])]
+    )
+    mail_send_download_reminder_attendee = forms.BooleanField(
+        label=_("Send an email to attendees"),
+        help_text=_('If the order contains attendees with email addresses different from the person who orders the '
+                    'tickets, the following email will be sent out to the attendees.'),
+        required=False,
+    )
+    mail_text_download_reminder_attendee = I18nFormField(
+        label=_("Text sent to attendees"),
+        required=False,
+        widget=I18nTextarea,
+        help_text=_("Available placeholders: {attendee_name}, {event}, {url}"),
+        validators=[PlaceholderValidator(['{attendee_name}', '{event}', '{url}'])]
     )
     mail_days_download_reminder = forms.IntegerField(
         label=_("Number of days"),
@@ -985,12 +1211,25 @@ class MailSettingsForm(SettingsForm):
             (r.identifier, r.verbose_name) for r in event.get_html_mail_renderers().values()
         ]
         keys = list(event.meta_data.keys())
-        for k, v in self.fields.items():
+        name_scheme = PERSON_NAME_SCHEMES[event.settings.name_scheme]
+        for k, v in list(self.fields.items()):
             if k.startswith('mail_text_'):
                 v.help_text = str(v.help_text) + ', ' + ', '.join({
                     '{meta_' + p + '}' for p in keys
                 })
                 v.validators[0].limit_value += ['{meta_' + p + '}' for p in keys]
+
+                if '{attendee_name}' in v.validators[0].limit_value:
+                    for f, l, w in name_scheme['fields']:
+                        if f == 'full_name':
+                            continue
+                        v.help_text = str(v.help_text) + ', ' + '{attendee_name_%s}' % f
+                        v.validators[0].limit_value += ['{attendee_name_' + f + '}']
+
+            if k.endswith('_attendee') and not event.settings.attendee_emails_asked:
+                # If we don't ask for attendee emails, we can't send them anything and we don't need to clutter
+                # the user interface with it
+                del self.fields[k]
 
     def clean(self):
         data = self.cleaned_data
@@ -1002,103 +1241,6 @@ class MailSettingsForm(SettingsForm):
 
         if data.get('smtp_use_tls') and data.get('smtp_use_ssl'):
             raise ValidationError(_('You can activate either SSL or STARTTLS security, but not both at the same time.'))
-
-
-class DisplaySettingsForm(SettingsForm):
-    primary_color = forms.CharField(
-        label=_("Primary color"),
-        required=False,
-        validators=[
-            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
-                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
-        ],
-        widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
-    )
-    theme_color_success = forms.CharField(
-        label=_("Accent color for success"),
-        help_text=_("We strongly suggest to use a shade of green."),
-        required=False,
-        validators=[
-            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
-                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
-        ],
-        widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
-    )
-    theme_color_danger = forms.CharField(
-        label=_("Accent color for errors"),
-        help_text=_("We strongly suggest to use a dark shade of red."),
-        required=False,
-        validators=[
-            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
-                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
-        ],
-        widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
-    )
-    logo_image = ExtFileField(
-        label=_('Logo image'),
-        ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
-        required=False,
-        help_text=_('If you provide a logo image, we will by default not show your events name and date '
-                    'in the page header. We will show your logo with a maximal height of 120 pixels.')
-    )
-    primary_font = forms.ChoiceField(
-        label=_('Font'),
-        choices=[
-            ('Open Sans', 'Open Sans')
-        ],
-        help_text=_('Only respected by modern browsers.')
-    )
-    frontpage_text = I18nFormField(
-        label=_("Frontpage text"),
-        required=False,
-        widget=I18nTextarea
-    )
-    presale_has_ended_text = I18nFormField(
-        label=_("End of presale text"),
-        required=False,
-        widget=I18nTextarea,
-        widget_kwargs={'attrs': {'rows': '2'}},
-        help_text=_("This text will be shown above the ticket shop once the designated sales timeframe for this event "
-                    "is over. You can use it to describe other options to get a ticket, such as a box office.")
-    )
-    voucher_explanation_text = I18nFormField(
-        label=_("Voucher explanation"),
-        required=False,
-        widget=I18nTextarea,
-        widget_kwargs={'attrs': {'rows': '2'}},
-        help_text=_("This text will be shown next to the input for a voucher code. You can use it e.g. to explain "
-                    "how to obtain a voucher code.")
-    )
-    show_variations_expanded = forms.BooleanField(
-        label=_("Show variations of a product expanded by default"),
-        required=False
-    )
-    frontpage_subevent_ordering = forms.ChoiceField(
-        label=pgettext('subevent', 'Date ordering'),
-        choices=[
-            ('date_ascending', _('Event start time')),
-            ('date_descending', _('Event start time (descending)')),
-            ('name_ascending', _('Name')),
-            ('name_descending', _('Name (descending)')),
-        ],  # When adding a new ordering, remember to also define it in the event model
-    )
-    meta_noindex = forms.BooleanField(
-        label=_('Ask search engines not to index the ticket shop'),
-        required=False
-    )
-    redirect_to_checkout_directly = forms.BooleanField(
-        label=_('Directly redirect to check-out after a product has been added to the cart.'),
-        required=False
-    )
-
-    def __init__(self, *args, **kwargs):
-        event = kwargs['obj']
-        super().__init__(*args, **kwargs)
-        self.fields['primary_font'].choices += [
-            (a, a) for a in get_fonts()
-        ]
-        if not event.has_subevents:
-            del self.fields['frontpage_subevent_ordering']
 
 
 class TicketSettingsForm(SettingsForm):

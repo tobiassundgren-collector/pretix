@@ -144,6 +144,11 @@ $(function () {
     $('.toggle-variation-description').click(function () {
         $(this).parent().find('.addon-variation-description').slideToggle();
     });
+    $('input[type=radio][description]').change(function () {
+        if ($(this).prop("checked")) {
+            $(this).parent().parent().find('.addon-variation-description').stop().slideDown();
+        }
+    });
 
     // Copy answers
     $(".js-copy-answers").click(function (e) {
@@ -181,6 +186,7 @@ $(function () {
         $(".subevent-list").hide();
         $(".subevent-toggle").css("display", "block").click(function () {
             $(".subevent-list").slideToggle(300);
+            $(".subevent-toggle").slideToggle(300)
         });
     }
 
@@ -196,15 +202,21 @@ $(function () {
                     is_enabled = true;
                 }
             });
+            $(".input-seat-selection option").each(function() {
+                if ($(this).val() && $(this).val() !== "" && $(this).prop('selected')) {
+                    is_enabled = true;
+                }
+            });
         }
-        if (!is_enabled) {
+        if (!is_enabled && !$(".has-seating").length) {
             $("#btn-add-to-cart").prop("disabled", !is_enabled).popover({'content': gettext("Please enter a quantity for one of the ticket types."), 'placement': 'top', 'trigger': 'hover focus'});
         } else {
             $("#btn-add-to-cart").prop("disabled", false).popover("destroy")
         }
     };
     update_cart_form();
-    $(".product-row input[type=checkbox], .variations input[type=checkbox], .product-row input[type=radio], .variations input[type=radio], .input-item-count").on("change mouseup keyup", update_cart_form);
+    $(".product-row input[type=checkbox], .variations input[type=checkbox], .product-row input[type=radio], .variations input[type=radio], .input-item-count, .input-seat-selection")
+        .on("change mouseup keyup", update_cart_form);
 
     $(".table-calendar td.has-events").click(function () {
         var $tr = $(this).closest(".table-calendar").find(".selected-day");

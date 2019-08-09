@@ -2,16 +2,6 @@ from django.dispatch import Signal
 
 from pretix.base.signals import DeprecatedSignal, EventPluginSignal
 
-restriction_formset = EventPluginSignal(
-    providing_args=["item"]
-)
-"""
-This signal is sent out to build configuration forms for all restriction formsets
-(see plugin API documentation for details).
-
-As with all plugin signals, the ``sender`` keyword argument will contain the event.
-"""
-
 html_page_start = Signal(
     providing_args=[]
 )
@@ -45,6 +35,12 @@ a fontawesome icon name with the key ``icon``, it will  be respected depending
 on the type of navigation. You should also return an ``active`` key with a boolean
 set to ``True``, when this item should be marked as active. The ``request`` object
 will have an attribute ``event``.
+
+You can optionally create sub-items to create hierarchical navigation. There are two
+ways to achieve this: Either you specify a key ``children`` on your top navigation item
+that contains a list of navigation items (as dictionaries), or you specify a ``parent``
+key with the ``url`` value of the designated parent item.
+The latter method also allows you to register navigation items as a sub-item of existing ones.
 
 If you use this, you should read the documentation on :ref:`how to deal with URLs <urlconf>`
 in pretix.
@@ -82,6 +78,12 @@ should contain at least the keys ``label`` and ``url``. You can also return
 a fontawesome icon name with the key ``icon``, it will  be respected depending
 on the type of navigation. You should also return an ``active`` key with a boolean
 set to ``True``, when this item should be marked as active.
+
+You can optionally create sub-items to create hierarchical navigation. There are two
+ways to achieve this: Either you specify a key ``children`` on your top navigation item
+that contains a list of navigation items (as dictionaries), or you specify a ``parent``
+key with the ``url`` value of the designated parent item.
+The latter method also allows you to register navigation items as a sub-item of existing ones.
 
 If you use this, you should read the documentation on :ref:`how to deal with URLs <urlconf>`
 in pretix.
@@ -183,6 +185,12 @@ should contain at least the keys ``label`` and ``url``. You should also return
 an ``active`` key with a boolean set to ``True``, when this item should be marked
 as active.
 
+You can optionally create sub-items to create hierarchical navigation. There are two
+ways to achieve this: Either you specify a key ``children`` on your top navigation item
+that contains a list of navigation items (as dictionaries), or you specify a ``parent``
+key with the ``url`` value of the designated parent item.
+The latter method also allows you to register navigation items as a sub-item of existing ones.
+
 If your linked view should stay in the tab-like context of this page, we recommend
 that you use ``pretix.control.views.organizer.OrganizerDetailViewMixin`` for your view
 and your template inherits from ``pretixcontrol/organizers/base.html``.
@@ -249,6 +257,40 @@ modification page. You are passed ``request`` and ``item`` arguments and are exp
 an instance of a form class that you bind yourself when appropriate. Your form will be executed
 as part of the standard validation and rendering cycle and rendered using default bootstrap
 styles. It is advisable to set a prefix for your form to avoid clashes with other plugins.
+
+As with all plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
+item_formsets = EventPluginSignal(
+    providing_args=['request', 'item']
+)
+"""
+This signal allows you to return additional formsets that should be rendered on the product
+modification page. You are passed ``request`` and ``item`` arguments and are expected to return
+an instance of a formset class that you bind yourself when appropriate. Your formset will be
+executed as part of the standard validation and rendering cycle and rendered using default
+bootstrap styles. It is advisable to set a prefix for your formset to avoid clashes with other
+plugins.
+
+Your formset needs to have two special properties: ``template`` with a template that will be
+included to render the formset and ``title`` that will be used as a headline. Your template
+will be passed a ``formset`` variable with your formset.
+
+As with all plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
+subevent_forms = EventPluginSignal(
+    providing_args=['request', 'subevent']
+)
+"""
+This signal allows you to return additional forms that should be rendered on the subevent creation
+or modification page. You are passed ``request`` and ``subevent`` arguments and are expected to return
+an instance of a form class that you bind yourself when appropriate. Your form will be executed
+as part of the standard validation and rendering cycle and rendered using default bootstrap
+styles. It is advisable to set a prefix for your form to avoid clashes with other plugins.
+
+``subevent`` can be ``None`` during creation. Before ``save()`` is called, a ``subevent`` property of
+your form instance will automatically being set to the subevent that has just been created.
 
 As with all plugin signals, the ``sender`` keyword argument will contain the event.
 """

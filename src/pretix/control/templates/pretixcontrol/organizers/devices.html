@@ -5,23 +5,12 @@
     <h1>
         {% trans "Connected devices" %}
     </h1>
-    <div class="alert alert-info">
+    <p>
         {% blocktrans trimmed %}
             This menu allows you to connect hardware devices such as box office terminals or scanning terminals to
             your account.
         {% endblocktrans %}
-        <strong>
-            {% blocktrans trimmed %}
-                Please note that this is a new feature that currently only works for beta-stage software, such as
-                pretixPOS. pretixdroid 1.x and pretixdesk 0.x are not supported by this feature. Future versions of
-                pretixdroid and pretixdesk will be supported through this menu.
-            {% endblocktrans %}
-        </strong>
-        <br><br>
-        {% blocktrans trimmed %}
-            To set up pretixdroid or pretixdesk, please go to the <strong>Check-in devices</strong> section of an event.
-        {% endblocktrans %}
-    </div>
+    </p>
     {% if devices|length == 0 %}
         <div class="empty-collection">
             <p>
@@ -58,9 +47,9 @@
                             {{ d.device_id }}
                         </td>
                         <td>
-                            {% if d.initialized and not d.api_token %}<del>{% endif %}
+                            {% if d.revoked %}<del>{% endif %}
                             {{ d.name }}
-                            {% if d.initialized and not d.api_token %}</del>{% endif %}
+                            {% if d.revoked %}</del>{% endif %}
                         </td>
                         <td>
                             {{ d.hardware_brand|default_if_none:"" }} {{ d.hardware_model|default_if_none:"" }}
@@ -74,7 +63,7 @@
                             {% else %}
                                 <em>{% trans "Not yet initialized" %}</em>
                             {% endif %}
-                            {% if d.initialized and not d.api_token %}
+                            {% if d.revoked %}
                                 <span class="label label-danger">{% trans "Revoked" %}</span>
                             {% endif %}
                         </td>

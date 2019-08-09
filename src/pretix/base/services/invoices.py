@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 import urllib.error
@@ -15,6 +16,7 @@ from django.utils import timezone
 from django.utils.timezone import now
 from django.utils.translation import pgettext, ugettext as _
 from django_countries.fields import Country
+from django_scopes import scope, scopes_disabled
 from i18nfield.strings import LazyI18nString
 
 from pretix.base.i18n import language
@@ -52,7 +54,10 @@ def build_invoice(invoice: Invoice) -> Invoice:
         additional = invoice.event.settings.get('invoice_additional_text', as_type=LazyI18nString)
         footer = invoice.event.settings.get('invoice_footer_text', as_type=LazyI18nString)
         if open_payment and open_payment.payment_provider:
-            payment = open_payment.payment_provider.render_invoice_text(invoice.order)
+            if 'payment' in inspect.signature(open_payment.payment_provider.render_invoice_text).parameters:
+                payment = open_payment.payment_provider.render_invoice_text(invoice.order, open_payment)
+            else:
+                payment = open_payment.payment_provider.render_invoice_text(invoice.order)
         elif invoice.order.status == Order.STATUS_PAID:
             payment = pgettext('invoice', 'The payment for this invoice has already been received.')
         else:
@@ -244,20 +249,23 @@ def generate_invoice(order: Order, trigger_pdf=True):
 
 @app.task(base=TransactionAwareTask)
 def invoice_pdf_task(invoice: int):
-    i = Invoice.objects.get(pk=invoice)
-    if i.shredded:
-        return None
-    if i.file:
-        i.file.delete()
-    with language(i.locale):
-        fname, ftype, fcontent = i.event.invoice_renderer.generate(i)
-        i.file.save(fname, ContentFile(fcontent))
-        i.save()
-        return i.file.name
+    with scopes_disabled():
+        i = Invoice.objects.get(pk=invoice)
+    with scope(organizer=i.order.event.organizer):
+        if i.shredded:
+            return None
+        if i.file:
+            i.file.delete()
+        with language(i.locale):
+            fname, ftype, fcontent = i.event.invoice_renderer.generate(i)
+            i.file.save(fname, ContentFile(fcontent))
+            i.save()
+            return i.file.name
 
 
 def invoice_qualified(order: Order):
-    if order.total == Decimal('0.00') or order.require_approval:
+    if order.total == Decimal('0.00') or order.require_approval or \
+            order.sales_channel not in order.event.settings.get('invoice_generate_sales_channels'):
         return False
     return True
 

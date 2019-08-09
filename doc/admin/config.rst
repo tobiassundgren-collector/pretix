@@ -78,6 +78,15 @@ Example::
     Enables or disables nagging staff users for leaving comments on their sessions for auditability.
     Defaults to ``off``.
 
+``obligatory_2fa``
+    Enables or disables obligatory usage of Two-Factor Authentication for users of the pretix backend.
+    Defaults to ``False``
+
+``trust_x_forwarded_for``
+    Specifies whether the ``X-Forwarded-For`` header can be trusted. Only set to ``on`` if you have a reverse
+    proxy that actively removes and re-adds the header to make sure the correct client IP is the first value.
+    Defaults to ``off``.
+
 
 Locale settings
 ---------------
@@ -125,6 +134,8 @@ Example::
     Indicates if the database backend is a MySQL/MariaDB Galera cluster and
     turns on some optimizations/special case handlers. Default: ``False``
 
+.. _`config-replica`:
+
 Database replica settings
 -------------------------
 
@@ -141,6 +152,8 @@ Example::
 
     [replica]
     host=192.168.0.2
+
+.. _`config-urls`:
 
 URLs
 ----
@@ -268,6 +281,24 @@ to speed up various operations::
 
 If redis is not configured, pretix will store sessions and locks in the database. If memcached
 is configured, memcached will be used for caching instead of redis.
+
+Translations
+------------
+
+pretix comes with a number of translations. Some of them are marked as "incubating", which means
+they can usually only be selected in development mode. If you want to use them nevertheless, you
+can activate them like this::
+
+    [languages]
+    allow_incubating=pt-br,da
+
+You can also tell pretix about additional paths where it will search for translations::
+
+    [languages]
+    path=/path/to/my/translations
+
+For a given language (e.g. ``pt-br``), pretix will then look in the
+specific sub-folder, e.g. ``/path/to/my/translations/pt_BR/LC_MESSAGES/django.po``.
 
 Celery task queue
 -----------------

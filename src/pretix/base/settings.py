@@ -93,6 +93,10 @@ DEFAULTS = {
         'default': '',
         'type': str,
     },
+    'invoice_numbers_prefix_cancellations': {
+        'default': '',
+        'type': str,
+    },
     'invoice_renderer': {
         'default': 'classic',
         'type': str,
@@ -144,6 +148,10 @@ DEFAULTS = {
     'invoice_generate': {
         'default': 'False',
         'type': str
+    },
+    'invoice_generate_sales_channels': {
+        'default': json.dumps(['web']),
+        'type': list
     },
     'invoice_address_from': {
         'default': '',
@@ -297,6 +305,10 @@ DEFAULTS = {
         'default': settings.MAIL_FROM,
         'type': str
     },
+    'mail_from_name': {
+        'default': None,
+        'type': str
+    },
     'mail_text_signature': {
         'type': LazyI18nString,
         'default': ""
@@ -326,6 +338,18 @@ The list is as follows:
 Best regards,
 Your {event} team"""))
     },
+    'mail_text_order_free_attendee': {
+        'type': LazyI18nString,
+        'default': LazyI18nString.from_gettext(ugettext_noop("""Hello {attendee_name},
+
+you have been registered for {event} successfully.
+
+You can view the details and status of your ticket here:
+{url}
+
+Best regards,
+Your {event} team"""))
+    },
     'mail_text_order_free': {
         'type': LazyI18nString,
         'default': LazyI18nString.from_gettext(ugettext_noop("""Hello,
@@ -338,6 +362,10 @@ You can change your order details and view the status of your order at
 
 Best regards,
 Your {event} team"""))
+    },
+    'mail_send_order_free_attendee': {
+        'type': bool,
+        'default': 'False'
     },
     'mail_text_order_placed_require_approval': {
         'type': LazyI18nString,
@@ -368,6 +396,22 @@ You can change your order details and view the status of your order at
 Best regards,
 Your {event} team"""))
     },
+    'mail_send_order_placed_attendee': {
+        'type': bool,
+        'default': 'False'
+    },
+    'mail_text_order_placed_attendee': {
+        'type': LazyI18nString,
+        'default': LazyI18nString.from_gettext(ugettext_noop("""Hello {attendee_name},
+
+a ticket for {event} has been ordered for you.
+
+You can view the details and status of your ticket here:
+{url}
+
+Best regards,
+Your {event} team"""))
+    },
     'mail_text_order_changed': {
         'type': LazyI18nString,
         'default': LazyI18nString.from_gettext(ugettext_noop("""Hello,
@@ -389,6 +433,22 @@ we successfully received your payment for {event}. Thank you!
 {payment_info}
 
 You can change your order details and view the status of your order at
+{url}
+
+Best regards,
+Your {event} team"""))
+    },
+    'mail_send_order_paid_attendee': {
+        'type': bool,
+        'default': 'False'
+    },
+    'mail_text_order_paid_attendee': {
+        'type': LazyI18nString,
+        'default': LazyI18nString.from_gettext(ugettext_noop("""Hello {attendee_name},
+
+a ticket for {event} that has been ordered for you is now paid.
+
+You can view the details and status of your ticket here:
 {url}
 
 Best regards,
@@ -491,6 +551,22 @@ Your {event} team"""))
     'mail_days_download_reminder': {
         'type': int,
         'default': None
+    },
+    'mail_send_download_reminder_attendee': {
+        'type': bool,
+        'default': 'False'
+    },
+    'mail_text_download_reminder_attendee': {
+        'type': LazyI18nString,
+        'default': LazyI18nString.from_gettext(ugettext_noop("""Hello {attendee_name},
+
+you are registered for {event}.
+
+If you did not do so already, you can download your ticket here:
+{url}
+
+Best regards,
+Your {event} team"""))
     },
     'mail_text_download_reminder': {
         'type': LazyI18nString,
@@ -629,6 +705,23 @@ Your {event} team"""))
         'type': str
     }
 }
+PERSON_NAME_TITLE_GROUPS = OrderedDict([
+    ('english_common', (_('Most common English titles'), (
+        'Mr',
+        'Ms',
+        'Mrs',
+        'Miss',
+        'Mx',
+        'Dr',
+        'Professor',
+        'Sir'
+    ))),
+    ('german_common', (_('Most common German titles'), (
+        'Dr.',
+        'Prof.',
+        'Prof. Dr.',
+    )))
+])
 PERSON_NAME_SCHEMES = OrderedDict([
     ('given_family', {
         'fields': (
@@ -640,6 +733,22 @@ PERSON_NAME_SCHEMES = OrderedDict([
             'given_name': pgettext_lazy('person_name_sample', 'John'),
             'family_name': pgettext_lazy('person_name_sample', 'Doe'),
             '_scheme': 'given_family',
+        },
+    }),
+    ('title_given_family', {
+        'fields': (
+            ('title', pgettext_lazy('person_name', 'Title'), 1),
+            ('given_name', _('Given name'), 2),
+            ('family_name', _('Family name'), 2),
+        ),
+        'concatenation': lambda d: ' '.join(
+            str(p) for p in [d.get('title', ''), d.get('given_name', ''), d.get('family_name', '')] if p
+        ),
+        'sample': {
+            'title': pgettext_lazy('person_name_sample', 'Dr'),
+            'given_name': pgettext_lazy('person_name_sample', 'John'),
+            'family_name': pgettext_lazy('person_name_sample', 'Doe'),
+            '_scheme': 'title_given_family',
         },
     }),
     ('title_given_family', {

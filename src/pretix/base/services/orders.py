@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 from collections import Counter, namedtuple
@@ -16,6 +17,7 @@ from django.utils.formats import date_format
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
 from django.utils.translation import ugettext as _
+from django_scopes import scopes_disabled
 
 from pretix.api.models import OAuthApplication
 from pretix.base.i18n import (
@@ -23,7 +25,7 @@ from pretix.base.i18n import (
 )
 from pretix.base.models import (
     CartPosition, Device, Event, Item, ItemVariation, Order, OrderPayment,
-    OrderPosition, Quota, User, Voucher,
+    OrderPosition, Quota, Seat, SeatCategoryMapping, User, Voucher,
 )
 from pretix.base.models.event import SubEvent
 from pretix.base.models.items import ItemBundle
@@ -39,14 +41,15 @@ from pretix.base.services import tickets
 from pretix.base.services.invoices import (
     generate_cancellation, generate_invoice, invoice_qualified,
 )
-from pretix.base.services.locking import LockTimeoutException
+from pretix.base.services.locking import LockTimeoutException, NoLockManager
 from pretix.base.services.mail import SendMailException
 from pretix.base.services.pricing import get_price
-from pretix.base.services.tasks import ProfiledTask
+from pretix.base.services.tasks import ProfiledEventTask, ProfiledTask
+from pretix.base.settings import PERSON_NAME_SCHEMES
 from pretix.base.signals import (
     allow_ticket_download, order_approved, order_canceled, order_changed,
     order_denied, order_expired, order_fee_calculation, order_placed,
-    periodic_task,
+    order_split, periodic_task, validate_order,
 )
 from pretix.celery_app import app
 from pretix.helpers.models import modelcopy
@@ -80,6 +83,8 @@ error_messages = {
                                    'affected positions have been removed from your cart.'),
     'some_subevent_ended': _('The presale period for one of the events in your cart has ended. The affected '
                              'positions have been removed from your cart.'),
+    'seat_invalid': _('One of the seats in your order was invalid, we removed the position from your cart.'),
+    'seat_unavailable': _('One of the seats in your order has been taken in the meantime, we removed the position from your cart.'),
 }
 
 logger = logging.getLogger(__name__)
@@ -222,9 +227,10 @@ def approve_order(order, user=None, send_mail: bool=True, auth=None, force=False
                 'total_with_currency': LazyCurrencyNumber(order.total, order.event.currency),
                 'date': LazyDate(order.expires),
                 'event': order.event.name,
-                'url': build_absolute_uri(order.event, 'presale:event.order', kwargs={
+                'url': build_absolute_uri(order.event, 'presale:event.order.open', kwargs={
                     'order': order.code,
-                    'secret': order.secret
+                    'secret': order.secret,
+                    'hash': order.email_confirm_hash()
                 }),
                 'invoice_name': invoice_name,
                 'invoice_company': invoice_company,
@@ -282,9 +288,10 @@ def deny_order(order, comment='', user=None, send_mail: bool=True, auth=None):
             'total_with_currency': LazyCurrencyNumber(order.total, order.event.currency),
             'date': LazyDate(order.expires),
             'event': order.event.name,
-            'url': build_absolute_uri(order.event, 'presale:event.order', kwargs={
+            'url': build_absolute_uri(order.event, 'presale:event.order.open', kwargs={
                 'order': order.code,
-                'secret': order.secret
+                'secret': order.secret,
+                'hash': order.email_confirm_hash()
             }),
             'comment': comment,
             'invoice_name': invoice_name,
@@ -375,9 +382,10 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
             email_context = {
                 'event': order.event.name,
                 'code': order.code,
-                'url': build_absolute_uri(order.event, 'presale:event.order', kwargs={
+                'url': build_absolute_uri(order.event, 'presale:event.order.open', kwargs={
                     'order': order.code,
-                    'secret': order.secret
+                    'secret': order.secret,
+                    'hash': order.email_confirm_hash()
                 })
             }
             with language(order.locale):
@@ -423,6 +431,7 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
     products_seen = Counter()
     changed_prices = {}
     deleted_positions = set()
+    seats_seen = set()
 
     def delete(cp):
         # Delete a cart position, including parents and children, if applicable
@@ -485,16 +494,31 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
             delete(cp)
             break
 
+        if (cp.requires_seat and not cp.seat) or (cp.seat and not cp.requires_seat) or (cp.seat and cp.seat.product != cp.item) or cp.seat in seats_seen:
+            err = err or error_messages['seat_invalid']
+            delete(cp)
+            break
+        if cp.seat:
+            seats_seen.add(cp.seat)
+
         if cp.item.require_voucher and cp.voucher is None:
             delete(cp)
             err = err or error_messages['voucher_required']
             break
 
-        if cp.item.hide_without_voucher and (cp.voucher is None or cp.voucher.item is None
-                                             or cp.voucher.item.pk != cp.item.pk):
+        if cp.item.hide_without_voucher and (cp.voucher is None or not cp.voucher.show_hidden_items or not cp.voucher.applies_to(cp.item, cp.variation)):
             delete(cp)
+            cp.delete()
             err = error_messages['voucher_required']
             break
+
+        if cp.seat:
+            # Unlike quotas (which we blindly trust as long as the position is not expired), we check seats every time, since we absolutely
+            # can not overbook a seat.
+            if not cp.seat.is_available(ignore_cart=cp) or cp.seat.blocked:
+                err = err or error_messages['seat_unavailable']
+                cp.delete()
+                continue
 
         if cp.expires >= now_dt and not cp.voucher:
             # Other checks are not necessary
@@ -531,7 +555,6 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
                 continue
 
         if price.gross != cp.price and not (cp.item.free_price and cp.price > price.gross):
-            positions[i] = cp
             cp.price = price.gross
             cp.includes_tax = bool(price.rate)
             cp.save()
@@ -555,7 +578,6 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
                     break
 
         if quota_ok:
-            positions[i] = cp
             cp.expires = now_dt + timedelta(
                 minutes=event.settings.get('reservation_time', as_type=int))
             cp.save()
@@ -570,6 +592,13 @@ def _get_fees(positions: List[CartPosition], payment_provider: BasePaymentProvid
               meta_info: dict, event: Event):
     fees = []
     total = sum([c.price for c in positions])
+
+    for recv, resp in order_fee_calculation.send(sender=event, invoice_address=address, total=total,
+                                                 meta_info=meta_info, positions=positions):
+        if resp:
+            fees += resp
+
+    total += sum(f.value for f in fees)
     if payment_provider:
         payment_fee = payment_provider.calculate_fee(total)
     else:
@@ -580,9 +609,6 @@ def _get_fees(positions: List[CartPosition], payment_provider: BasePaymentProvid
                       internal_type=payment_provider.identifier)
         fees.append(pf)
 
-    for recv, resp in order_fee_calculation.send(sender=event, invoice_address=address, total=total,
-                                                 meta_info=meta_info, positions=positions):
-        fees += resp
     return fees, pf
 
 
@@ -644,10 +670,80 @@ def _create_order(event: Event, email: str, positions: List[CartPosition], now_d
     return order, p
 
 
-def _perform_order(event: str, payment_provider: str, position_ids: List[str],
-                   email: str, locale: str, address: int, meta_info: dict=None, sales_channel: str='web'):
+def _order_placed_email(event: Event, order: Order, pprov: BasePaymentProvider, email_template, log_entry: str,
+                        invoice, payment: OrderPayment):
+    try:
+        invoice_name = order.invoice_address.name
+        invoice_company = order.invoice_address.company
+    except InvoiceAddress.DoesNotExist:
+        invoice_name = ""
+        invoice_company = ""
 
-    event = Event.objects.get(id=event)
+    if pprov:
+        if 'payment' in inspect.signature(pprov.order_pending_mail_render).parameters:
+            payment_info = str(pprov.order_pending_mail_render(order, payment))
+        else:
+            payment_info = str(pprov.order_pending_mail_render(order))
+    else:
+        payment_info = None
+
+    email_context = {
+        'total': LazyNumber(order.total),
+        'currency': event.currency,
+        'total_with_currency': LazyCurrencyNumber(order.total, event.currency),
+        'date': LazyDate(order.expires),
+        'event': event.name,
+        'url': build_absolute_uri(event, 'presale:event.order.open', kwargs={
+            'order': order.code,
+            'secret': order.secret,
+            'hash': order.email_confirm_hash()
+        }),
+        'payment_info': payment_info,
+        'invoice_name': invoice_name,
+        'invoice_company': invoice_company,
+    }
+    email_subject = _('Your order: %(code)s') % {'code': order.code}
+    try:
+        order.send_mail(
+            email_subject, email_template, email_context,
+            log_entry,
+            invoices=[invoice] if invoice and event.settings.invoice_email_attachment else [],
+            attach_tickets=True
+        )
+    except SendMailException:
+        logger.exception('Order received email could not be sent')
+
+
+def _order_placed_email_attendee(event: Event, order: Order, position: OrderPosition, email_template, log_entry: str):
+    name_scheme = PERSON_NAME_SCHEMES[event.settings.name_scheme]
+    email_context = {
+        'event': event.name,
+        'url': build_absolute_uri(event, 'presale:event.order.position', kwargs={
+            'order': order.code,
+            'secret': position.web_secret,
+            'position': position.positionid
+        }),
+        'attendee_name': position.attendee_name,
+    }
+    for f, l, w in name_scheme['fields']:
+        email_context['attendee_name_%s' % f] = position.attendee_name_parts.get(f, '')
+
+    email_subject = _('Your event registration: %(code)s') % {'code': order.code}
+
+    try:
+        order.send_mail(
+            email_subject, email_template, email_context,
+            log_entry,
+            invoices=[],
+            attach_tickets=True,
+            position=position
+        )
+    except SendMailException:
+        logger.exception('Order received email could not be sent to attendee')
+
+
+def _perform_order(event: Event, payment_provider: str, position_ids: List[str],
+                   email: str, locale: str, address: int, meta_info: dict=None, sales_channel: str='web'):
     if payment_provider:
         pprov = event.get_payment_providers().get(payment_provider)
         if not pprov:
@@ -661,13 +757,35 @@ def _perform_order(event: str, payment_provider: str, position_ids: List[str],
     addr = None
     if address is not None:
         try:
-            addr = InvoiceAddress.objects.get(pk=address)
+            with scopes_disabled():
+                addr = InvoiceAddress.objects.get(pk=address)
         except InvoiceAddress.DoesNotExist:
             pass
 
-    with event.lock() as now_dt:
-        positions = list(CartPosition.objects.filter(
-            id__in=position_ids).select_related('item', 'variation', 'subevent', 'addon_to').prefetch_related('addons'))
+    positions = CartPosition.objects.annotate(
+        requires_seat=Exists(
+            SeatCategoryMapping.objects.filter(
+                Q(product=OuterRef('item'))
+                & (Q(subevent=OuterRef('subevent')) if event.has_subevents else Q(subevent__isnull=True))
+            )
+        )
+    ).filter(
+        id__in=position_ids, event=event
+    )
+
+    validate_order.send(event, payment_provider=pprov, email=email, positions=positions,
+                        locale=locale, invoice_address=addr, meta_info=meta_info)
+
+    lockfn = NoLockManager
+    locked = False
+    if positions.filter(Q(voucher__isnull=False) | Q(expires__lt=now() + timedelta(minutes=2)) | Q(seat__isnull=False)).exists():
+        # Performance optimization: If no voucher is used and no cart position is dangerously close to its expiry date,
+        # creating this order shouldn't be prone to any race conditions and we don't need to lock the event.
+        locked = True
+        lockfn = event.lock
+
+    with lockfn() as now_dt:
+        positions = list(positions.select_related('item', 'variation', 'subevent', 'seat', 'addon_to').prefetch_related('addons'))
         if len(positions) == 0:
             raise OrderError(error_messages['empty'])
         if len(position_ids) != len(positions):
@@ -679,7 +797,7 @@ def _perform_order(event: str, payment_provider: str, position_ids: List[str],
         free_order_flow = payment and payment_provider == 'free' and order.total == Decimal('0.00') and not order.require_approval
         if free_order_flow:
             try:
-                payment.confirm(send_mail=False, lock=False)
+                payment.confirm(send_mail=False, lock=not locked)
             except Quota.QuotaExceededException:
                 pass
 
@@ -696,54 +814,32 @@ def _perform_order(event: str, payment_provider: str, position_ids: List[str],
         if order.require_approval:
             email_template = event.settings.mail_text_order_placed_require_approval
             log_entry = 'pretix.event.order.email.order_placed_require_approval'
+
+            email_attendees = False
         elif free_order_flow:
             email_template = event.settings.mail_text_order_free
             log_entry = 'pretix.event.order.email.order_free'
+
+            email_attendees = event.settings.mail_send_order_free_attendee
+            email_attendees_template = event.settings.mail_text_order_free_attendee
         else:
             email_template = event.settings.mail_text_order_placed
             log_entry = 'pretix.event.order.email.order_placed'
 
-        try:
-            invoice_name = order.invoice_address.name
-            invoice_company = order.invoice_address.company
-        except InvoiceAddress.DoesNotExist:
-            invoice_name = ""
-            invoice_company = ""
+            email_attendees = event.settings.mail_send_order_placed_attendee
+            email_attendees_template = event.settings.mail_text_order_placed_attendee
 
-        if pprov:
-            payment_info = str(pprov.order_pending_mail_render(order))
-        else:
-            payment_info = None
-
-        email_context = {
-            'total': LazyNumber(order.total),
-            'currency': event.currency,
-            'total_with_currency': LazyCurrencyNumber(order.total, event.currency),
-            'date': LazyDate(order.expires),
-            'event': event.name,
-            'url': build_absolute_uri(event, 'presale:event.order', kwargs={
-                'order': order.code,
-                'secret': order.secret
-            }),
-            'payment_info': payment_info,
-            'invoice_name': invoice_name,
-            'invoice_company': invoice_company,
-        }
-        email_subject = _('Your order: %(code)s') % {'code': order.code}
-        try:
-            order.send_mail(
-                email_subject, email_template, email_context,
-                log_entry,
-                invoices=[invoice] if invoice and event.settings.invoice_email_attachment else [],
-                attach_tickets=True
-            )
-        except SendMailException:
-            logger.exception('Order received email could not be sent')
+        _order_placed_email(event, order, pprov, email_template, log_entry, invoice, payment)
+        if email_attendees:
+            for p in order.positions.all():
+                if p.addon_to_id is None and p.attendee_email and p.attendee_email != order.email:
+                    _order_placed_email_attendee(event, order, p, email_attendees_template, log_entry)
 
     return order.id
 
 
 @receiver(signal=periodic_task)
+@scopes_disabled()
 def expire_orders(sender, **kwargs):
     eventcache = {}
 
@@ -758,6 +854,7 @@ def expire_orders(sender, **kwargs):
 
 
 @receiver(signal=periodic_task)
+@scopes_disabled()
 def send_expiry_warnings(sender, **kwargs):
     eventcache = {}
     today = now().replace(hour=0, minute=0, second=0)
@@ -791,9 +888,10 @@ def send_expiry_warnings(sender, **kwargs):
                     email_template = eventsettings.mail_text_order_expire_warning
                     email_context = {
                         'event': o.event.name,
-                        'url': build_absolute_uri(o.event, 'presale:event.order', kwargs={
+                        'url': build_absolute_uri(o.event, 'presale:event.order.open', kwargs={
                             'order': o.code,
-                            'secret': o.secret
+                            'secret': o.secret,
+                            'hash': o.email_confirm_hash()
                         }),
                         'expire_date': date_format(o.expires.astimezone(tz), 'SHORT_DATE_FORMAT'),
                         'invoice_name': invoice_name,
@@ -814,6 +912,7 @@ def send_expiry_warnings(sender, **kwargs):
 
 
 @receiver(signal=periodic_task)
+@scopes_disabled()
 def send_download_reminders(sender, **kwargs):
     today = now().replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -842,9 +941,10 @@ def send_download_reminders(sender, **kwargs):
                     email_template = e.settings.mail_text_download_reminder
                     email_context = {
                         'event': o.event.name,
-                        'url': build_absolute_uri(o.event, 'presale:event.order', kwargs={
+                        'url': build_absolute_uri(o.event, 'presale:event.order.open', kwargs={
                             'order': o.code,
-                            'secret': o.secret
+                            'secret': o.secret,
+                            'hash': o.email_confirm_hash()
                         }),
                     }
                     email_subject = _('Your ticket is ready for download: %(code)s') % {'code': o.code}
@@ -856,6 +956,60 @@ def send_download_reminders(sender, **kwargs):
                         )
                     except SendMailException:
                         logger.exception('Reminder email could not be sent')
+
+                    if e.settings.mail_send_download_reminder_attendee:
+                        name_scheme = PERSON_NAME_SCHEMES[e.settings.name_scheme]
+                        for p in o.positions.all():
+                            if p.addon_to_id is None and p.attendee_email and p.attendee_email != o.email:
+                                email_template = e.settings.mail_text_download_reminder_attendee
+                                email_context = {
+                                    'event': e.name,
+                                    'url': build_absolute_uri(e, 'presale:event.order.position', kwargs={
+                                        'order': o.code,
+                                        'secret': p.web_secret,
+                                        'position': p.positionid
+                                    }),
+                                    'attendee_name': p.attendee_name,
+                                }
+                                for f, l, w in name_scheme['fields']:
+                                    email_context['attendee_name_%s' % f] = p.attendee_name_parts.get(f, '')
+                                try:
+                                    o.send_mail(
+                                        email_subject, email_template, email_context,
+                                        'pretix.event.order.email.download_reminder_sent',
+                                        attach_tickets=True, position=p
+                                    )
+                                except SendMailException:
+                                    logger.exception('Reminder email could not be sent to attendee')
+
+
+def notify_user_changed_order(order, user=None, auth=None):
+    with language(order.locale):
+        try:
+            invoice_name = order.invoice_address.name
+            invoice_company = order.invoice_address.company
+        except InvoiceAddress.DoesNotExist:
+            invoice_name = ""
+            invoice_company = ""
+        email_template = order.event.settings.mail_text_order_changed
+        email_context = {
+            'event': order.event.name,
+            'url': build_absolute_uri(order.event, 'presale:event.order.open', kwargs={
+                'order': order.code,
+                'secret': order.secret,
+                'hash': order.email_confirm_hash()
+            }),
+            'invoice_name': invoice_name,
+            'invoice_company': invoice_company,
+        }
+        email_subject = _('Your order has been changed: %(code)s') % {'code': order.code}
+        try:
+            order.send_mail(
+                email_subject, email_template, email_context,
+                'pretix.event.order.email.order_changed', user, auth=auth
+            )
+        except SendMailException:
+            logger.exception('Order changed email could not be sent')
 
 
 class OrderChangeManager:
@@ -871,12 +1025,17 @@ class OrderChangeManager:
         'addon_to_required': _('This is an add-on product, please select the base position it should be added to.'),
         'addon_invalid': _('The selected base position does not allow you to add this product as an add-on.'),
         'subevent_required': _('You need to choose a subevent for the new position.'),
+        'seat_unavailable': _('The selected seat "{seat}" is not available.'),
+        'seat_subevent_mismatch': _('You selected seat "{seat}" for a date that does not match the selected ticket date. Please choose a seat again.'),
+        'seat_required': _('The selected product requires you to select a seat.'),
+        'seat_forbidden': _('The selected product does not allow to select a seat.'),
     }
     ItemOperation = namedtuple('ItemOperation', ('position', 'item', 'variation'))
     SubeventOperation = namedtuple('SubeventOperation', ('position', 'subevent'))
+    SeatOperation = namedtuple('SubeventOperation', ('position', 'seat'))
     PriceOperation = namedtuple('PriceOperation', ('position', 'price'))
     CancelOperation = namedtuple('CancelOperation', ('position',))
-    AddOperation = namedtuple('AddOperation', ('item', 'variation', 'price', 'addon_to', 'subevent'))
+    AddOperation = namedtuple('AddOperation', ('item', 'variation', 'price', 'addon_to', 'subevent', 'seat'))
     SplitOperation = namedtuple('SplitOperation', ('position',))
     RegenerateSecretOperation = namedtuple('RegenerateSecretOperation', ('position',))
 
@@ -889,6 +1048,7 @@ class OrderChangeManager:
         self._committed = False
         self._totaldiff = 0
         self._quotadiff = Counter()
+        self._seatdiff = Counter()
         self._operations = []
         self.notify = notify
         self._invoice_dirty = False
@@ -905,6 +1065,13 @@ class OrderChangeManager:
         self._quotadiff.update(new_quotas)
         self._quotadiff.subtract(position.quotas)
         self._operations.append(self.ItemOperation(position, item, variation))
+
+    def change_seat(self, position: OrderPosition, seat: Seat):
+        if position.seat:
+            self._seatdiff.subtract([position.seat])
+        if seat:
+            self._seatdiff.update([seat])
+        self._operations.append(self.SeatOperation(position, seat))
 
     def change_subevent(self, position: OrderPosition, subevent: SubEvent):
         price = get_price(position.item, position.variation, voucher=position.voucher, subevent=subevent,
@@ -961,12 +1128,14 @@ class OrderChangeManager:
         self._totaldiff += -position.price
         self._quotadiff.subtract(position.quotas)
         self._operations.append(self.CancelOperation(position))
+        if position.seat:
+            self._seatdiff.subtract([position.seat])
 
         if self.order.event.settings.invoice_include_free or position.price != Decimal('0.00'):
             self._invoice_dirty = True
 
     def add_position(self, item: Item, variation: ItemVariation, price: Decimal, addon_to: Order = None,
-                     subevent: SubEvent = None):
+                     subevent: SubEvent = None, seat: Seat = None):
         if price is None:
             price = get_price(item, variation, subevent=subevent, invoice_address=self._invoice_address)
         else:
@@ -985,6 +1154,14 @@ class OrderChangeManager:
         if self.order.event.has_subevents and not subevent:
             raise OrderError(self.error_messages['subevent_required'])
 
+        seated = item.seat_category_mappings.filter(subevent=subevent).exists()
+        if seated and not seat:
+            raise OrderError(self.error_messages['seat_required'])
+        elif not seated and seat:
+            raise OrderError(self.error_messages['seat_forbidden'])
+        if seat and subevent and seat.subevent_id != subevent:
+            raise OrderError(self.error_messages['seat_subevent_mismatch'].format(seat=seat.name))
+
         new_quotas = (variation.quotas.filter(subevent=subevent)
                       if variation else item.quotas.filter(subevent=subevent))
         if not new_quotas:
@@ -995,13 +1172,35 @@ class OrderChangeManager:
 
         self._totaldiff += price.gross
         self._quotadiff.update(new_quotas)
-        self._operations.append(self.AddOperation(item, variation, price, addon_to, subevent))
+        if seat:
+            self._seatdiff.update([seat])
+        self._operations.append(self.AddOperation(item, variation, price, addon_to, subevent, seat))
 
     def split(self, position: OrderPosition):
         if self.order.event.settings.invoice_include_free or position.price != Decimal('0.00'):
             self._invoice_dirty = True
 
         self._operations.append(self.SplitOperation(position))
+
+    def _check_seats(self):
+        for seat, diff in self._seatdiff.items():
+            if diff <= 0:
+                continue
+            if not seat.is_available() or diff > 1:
+                raise OrderError(self.error_messages['seat_unavailable'].format(seat=seat.name))
+
+        if self.event.has_subevents:
+            state = {}
+            for p in self.order.positions.all():
+                state[p] = {'seat': p.seat, 'subevent': p.subevent}
+            for op in self._operations:
+                if isinstance(op, self.SeatOperation):
+                    state[op.position]['seat'] = op.seat
+                elif isinstance(op, self.SubeventOperation):
+                    state[op.position]['subevent'] = op.subevent
+            for v in state.values():
+                if v['seat'] and v['seat'].subevent_id != v['subevent'].pk:
+                    raise OrderError(self.error_messages['seat_subevent_mismatch'].format(seat=v['seat'].name))
 
     def _check_quotas(self):
         for quota, diff in self._quotadiff.items():
@@ -1069,7 +1268,7 @@ class OrderChangeManager:
                 raise OrderError(self.error_messages['paid_to_free_exceeded'])
 
     def _perform_operations(self):
-        nextposid = self.order.positions.aggregate(m=Max('positionid'))['m'] + 1
+        nextposid = self.order.all_positions.aggregate(m=Max('positionid'))['m'] + 1
         split_positions = []
 
         for op in self._operations:
@@ -1088,6 +1287,17 @@ class OrderChangeManager:
                 op.position.item = op.item
                 op.position.variation = op.variation
                 op.position._calculate_tax()
+                op.position.save()
+            elif isinstance(op, self.SeatOperation):
+                self.order.log_action('pretix.event.order.changed.seat', user=self.user, auth=self.auth, data={
+                    'position': op.position.pk,
+                    'positionid': op.position.positionid,
+                    'old_seat': op.position.seat.name if op.position.seat else "-",
+                    'new_seat': op.seat.name if op.seat else "-",
+                    'old_seat_id': op.position.seat.pk if op.position.seat else None,
+                    'new_seat_id': op.seat.pk if op.seat else None,
+                })
+                op.position.seat = op.seat
                 op.position.save()
             elif isinstance(op, self.SubeventOperation):
                 self.order.log_action('pretix.event.order.changed.subevent', user=self.user, auth=self.auth, data={
@@ -1142,7 +1352,7 @@ class OrderChangeManager:
                     item=op.item, variation=op.variation, addon_to=op.addon_to,
                     price=op.price.gross, order=self.order, tax_rate=op.price.rate,
                     tax_value=op.price.tax, tax_rule=op.item.tax_rule,
-                    positionid=nextposid, subevent=op.subevent
+                    positionid=nextposid, subevent=op.subevent, seat=op.seat
                 )
                 nextposid += 1
                 self.order.log_action('pretix.event.order.changed.add', user=self.user, auth=self.auth, data={
@@ -1153,6 +1363,7 @@ class OrderChangeManager:
                     'price': op.price.gross,
                     'positionid': pos.positionid,
                     'subevent': op.subevent.pk if op.subevent else None,
+                    'seat': op.seat.pk if op.seat else None,
                 })
             elif isinstance(op, self.SplitOperation):
                 split_positions.append(op.position)
@@ -1203,6 +1414,14 @@ class OrderChangeManager:
             pass
 
         split_order.total = sum([p.price for p in split_positions if not p.canceled])
+
+        for fee in self.order.fees.exclude(fee_type=OrderFee.FEE_TYPE_PAYMENT):
+            new_fee = modelcopy(fee)
+            new_fee.pk = None
+            new_fee.order = split_order
+            split_order.total += new_fee.value
+            new_fee.save()
+
         if split_order.total != Decimal('0.00') and self.order.status != Order.STATUS_PAID:
             pp = self._get_payment_provider()
             if pp:
@@ -1217,13 +1436,6 @@ class OrderChangeManager:
             elif fee.pk:
                 fee.delete()
             split_order.total += fee.value
-
-        for fee in self.order.fees.exclude(fee_type=OrderFee.FEE_TYPE_PAYMENT):
-            new_fee = modelcopy(fee)
-            new_fee.pk = None
-            new_fee.order = split_order
-            split_order.total += new_fee.value
-            new_fee.save()
 
         split_order.save()
 
@@ -1245,6 +1457,8 @@ class OrderChangeManager:
 
         if split_order.total != Decimal('0.00') and self.order.invoices.filter(is_cancellation=False).last():
             generate_invoice(split_order)
+
+        order_split.send(sender=self.order.event, original=self.order, split_order=split_order)
         return split_order
 
     @cached_property
@@ -1330,33 +1544,6 @@ class OrderChangeManager:
         except InvoiceAddress.DoesNotExist:
             return None
 
-    def _notify_user(self, order):
-        with language(order.locale):
-            try:
-                invoice_name = order.invoice_address.name
-                invoice_company = order.invoice_address.company
-            except InvoiceAddress.DoesNotExist:
-                invoice_name = ""
-                invoice_company = ""
-            email_template = order.event.settings.mail_text_order_changed
-            email_context = {
-                'event': order.event.name,
-                'url': build_absolute_uri(self.order.event, 'presale:event.order', kwargs={
-                    'order': order.code,
-                    'secret': order.secret
-                }),
-                'invoice_name': invoice_name,
-                'invoice_company': invoice_company,
-            }
-            email_subject = _('Your order has been changed: %(code)s') % {'code': order.code}
-            try:
-                order.send_mail(
-                    email_subject, email_template, email_context,
-                    'pretix.event.order.email.order_changed', self.user, auth=self.auth
-                )
-            except SendMailException:
-                logger.exception('Order changed email could not be sent')
-
     def commit(self, check_quotas=True):
         if self._committed:
             # an order change can only be committed once
@@ -1376,6 +1563,7 @@ class OrderChangeManager:
                     raise OrderError(self.error_messages['not_pending_or_paid'])
                 if check_quotas:
                     self._check_quotas()
+                self._check_seats()
                 self._check_complete_cancel()
                 self._perform_operations()
             self._recalculate_total_and_payment_fee()
@@ -1386,9 +1574,9 @@ class OrderChangeManager:
         self._check_paid_to_free()
 
         if self.notify:
-            self._notify_user(self.order)
+            notify_user_changed_order(self.order, self.user, self.auth)
             if self.split_order:
-                self._notify_user(self.split_order)
+                notify_user_changed_order(self.split_order, self.user, self.auth)
 
         order_changed.send(self.order.event, order=self.order)
 
@@ -1409,8 +1597,8 @@ class OrderChangeManager:
         return pprov
 
 
-@app.task(base=ProfiledTask, bind=True, max_retries=5, default_retry_delay=1, throws=(OrderError,))
-def perform_order(self, event: str, payment_provider: str, positions: List[str],
+@app.task(base=ProfiledEventTask, bind=True, max_retries=5, default_retry_delay=1, throws=(OrderError,))
+def perform_order(self, event: Event, payment_provider: str, positions: List[str],
                   email: str=None, locale: str=None, address: int=None, meta_info: dict=None,
                   sales_channel: str='web'):
     with language(locale):
@@ -1425,6 +1613,7 @@ def perform_order(self, event: str, payment_provider: str, positions: List[str],
 
 
 @app.task(base=ProfiledTask, bind=True, max_retries=5, default_retry_delay=1, throws=(OrderError,))
+@scopes_disabled()
 def cancel_order(self, order: int, user: int=None, send_mail: bool=True, api_token=None, oauth_application=None,
                  device=None, cancellation_fee=None, try_auto_refund=False):
     try:

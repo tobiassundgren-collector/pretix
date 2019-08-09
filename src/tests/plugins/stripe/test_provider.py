@@ -5,7 +5,8 @@ from decimal import Decimal
 import pytest
 from django.test import RequestFactory
 from django.utils.timezone import now
-from stripe.error import APIConnectionError, CardError, StripeError
+from django_scopes import scope
+from stripe.error import APIConnectionError, CardError
 
 from pretix.base.models import Event, Order, OrderRefund, Organizer
 from pretix.base.payment import PaymentException
@@ -15,17 +16,18 @@ from pretix.plugins.stripe.payment import StripeCC
 @pytest.fixture
 def env():
     o = Organizer.objects.create(name='Dummy', slug='dummy')
-    event = Event.objects.create(
-        organizer=o, name='Dummy', slug='dummy',
-        date_from=now(), live=True
-    )
-    o1 = Order.objects.create(
-        code='FOOBAR', event=event, email='dummy@dummy.test',
-        status=Order.STATUS_PENDING,
-        datetime=now(), expires=now() + timedelta(days=10),
-        total=Decimal('13.37')
-    )
-    return event, o1
+    with scope(organizer=o):
+        event = Event.objects.create(
+            organizer=o, name='Dummy', slug='dummy',
+            date_from=now(), live=True
+        )
+        o1 = Order.objects.create(
+            code='FOOBAR', event=event, email='dummy@dummy.test',
+            status=Order.STATUS_PENDING,
+            datetime=now(), expires=now() + timedelta(days=10),
+            total=Decimal('13.37')
+        )
+        yield event, o1
 
 
 @pytest.fixture(autouse=True)
@@ -44,39 +46,51 @@ class MockedRefunds():
 
 
 class MockedCharge():
-    def __init__(self):
-        self.status = ''
-        self.paid = False
-        self.id = 'ch_123345345'
-        self.refunds = MockedRefunds()
+    status = ''
+    paid = False
+    id = 'ch_123345345'
+    refunds = MockedRefunds()
 
     def refresh(self):
         pass
+
+
+class Object():
+    pass
+
+
+class MockedPaymentintent():
+    status = ''
+    id = 'pi_1EUon12Tb35ankTnZyvC3SdE'
+    charges = Object()
+    charges.data = [MockedCharge()]
+    last_payment_error = None
 
 
 @pytest.mark.django_db
 def test_perform_success(env, factory, monkeypatch):
     event, order = env
 
-    def charge_create(**kwargs):
+    def paymentintent_create(**kwargs):
         assert kwargs['amount'] == 1337
         assert kwargs['currency'] == 'eur'
-        assert kwargs['source'] == 'tok_189fTT2eZvKYlo2CvJKzEzeu'
-        c = MockedCharge()
+        assert kwargs['payment_method'] == 'pm_189fTT2eZvKYlo2CvJKzEzeu'
+        c = MockedPaymentintent()
         c.status = 'succeeded'
-        c.paid = True
+        c.charges.data[0].paid = True
         return c
 
-    monkeypatch.setattr("stripe.Charge.create", charge_create)
+    monkeypatch.setattr("stripe.PaymentIntent.create", paymentintent_create)
+
     prov = StripeCC(event)
     req = factory.post('/', {
-        'stripe_token': 'tok_189fTT2eZvKYlo2CvJKzEzeu',
+        'stripe_payment_method_id': 'pm_189fTT2eZvKYlo2CvJKzEzeu',
         'stripe_last4': '4242',
         'stripe_brand': 'Visa'
     })
     req.session = {}
     prov.checkout_prepare(req, {})
-    assert 'payment_stripe_token' in req.session
+    assert 'payment_stripe_payment_method_id' in req.session
     payment = order.payments.create(
         provider='stripe_cc', amount=order.total
     )
@@ -91,25 +105,25 @@ def test_perform_success_zero_decimal_currency(env, factory, monkeypatch):
     event.currency = 'JPY'
     event.save()
 
-    def charge_create(**kwargs):
+    def paymentintent_create(**kwargs):
         assert kwargs['amount'] == 13
         assert kwargs['currency'] == 'jpy'
-        assert kwargs['source'] == 'tok_189fTT2eZvKYlo2CvJKzEzeu'
-        c = MockedCharge()
+        assert kwargs['payment_method'] == 'pm_189fTT2eZvKYlo2CvJKzEzeu'
+        c = MockedPaymentintent()
         c.status = 'succeeded'
-        c.paid = True
+        c.charges.data[0].paid = True
         return c
 
-    monkeypatch.setattr("stripe.Charge.create", charge_create)
+    monkeypatch.setattr("stripe.PaymentIntent.create", paymentintent_create)
     prov = StripeCC(event)
     req = factory.post('/', {
-        'stripe_token': 'tok_189fTT2eZvKYlo2CvJKzEzeu',
+        'stripe_payment_method_id': 'pm_189fTT2eZvKYlo2CvJKzEzeu',
         'stripe_last4': '4242',
         'stripe_brand': 'Visa'
     })
     req.session = {}
     prov.checkout_prepare(req, {})
-    assert 'payment_stripe_token' in req.session
+    assert 'payment_stripe_payment_method_id' in req.session
     payment = order.payments.create(
         provider='stripe_cc', amount=order.total
     )
@@ -122,19 +136,19 @@ def test_perform_success_zero_decimal_currency(env, factory, monkeypatch):
 def test_perform_card_error(env, factory, monkeypatch):
     event, order = env
 
-    def charge_create(**kwargs):
+    def paymentintent_create(**kwargs):
         raise CardError(message='Foo', param='foo', code=100)
 
-    monkeypatch.setattr("stripe.Charge.create", charge_create)
+    monkeypatch.setattr("stripe.PaymentIntent.create", paymentintent_create)
     prov = StripeCC(event)
     req = factory.post('/', {
-        'stripe_token': 'tok_189fTT2eZvKYlo2CvJKzEzeu',
+        'stripe_payment_method_id': 'pm_189fTT2eZvKYlo2CvJKzEzeu',
         'stripe_last4': '4242',
         'stripe_brand': 'Visa'
     })
     req.session = {}
     prov.checkout_prepare(req, {})
-    assert 'payment_stripe_token' in req.session
+    assert 'payment_stripe_payment_method_id' in req.session
     with pytest.raises(PaymentException):
         payment = order.payments.create(
             provider='stripe_cc', amount=order.total
@@ -148,19 +162,19 @@ def test_perform_card_error(env, factory, monkeypatch):
 def test_perform_stripe_error(env, factory, monkeypatch):
     event, order = env
 
-    def charge_create(**kwargs):
-        raise StripeError(message='Foo')
+    def paymentintent_create(**kwargs):
+        raise CardError(message='Foo', param='foo', code=100)
 
-    monkeypatch.setattr("stripe.Charge.create", charge_create)
+    monkeypatch.setattr("stripe.PaymentIntent.create", paymentintent_create)
     prov = StripeCC(event)
     req = factory.post('/', {
-        'stripe_token': 'tok_189fTT2eZvKYlo2CvJKzEzeu',
+        'stripe_payment_method_id': 'pm_189fTT2eZvKYlo2CvJKzEzeu',
         'stripe_last4': '4242',
         'stripe_brand': 'Visa'
     })
     req.session = {}
     prov.checkout_prepare(req, {})
-    assert 'payment_stripe_token' in req.session
+    assert 'payment_stripe_payment_method_id' in req.session
     with pytest.raises(PaymentException):
         payment = order.payments.create(
             provider='stripe_cc', amount=order.total
@@ -174,23 +188,28 @@ def test_perform_stripe_error(env, factory, monkeypatch):
 def test_perform_failed(env, factory, monkeypatch):
     event, order = env
 
-    def charge_create(**kwargs):
-        c = MockedCharge()
+    def paymentintent_create(**kwargs):
+        assert kwargs['amount'] == 1337
+        assert kwargs['currency'] == 'eur'
+        assert kwargs['payment_method'] == 'pm_189fTT2eZvKYlo2CvJKzEzeu'
+        c = MockedPaymentintent()
         c.status = 'failed'
-        c.paid = True
         c.failure_message = 'Foo'
+        c.charges.data[0].paid = True
+        c.last_payment_error = Object()
+        c.last_payment_error.message = "Foo"
         return c
 
-    monkeypatch.setattr("stripe.Charge.create", charge_create)
+    monkeypatch.setattr("stripe.PaymentIntent.create", paymentintent_create)
     prov = StripeCC(event)
     req = factory.post('/', {
-        'stripe_token': 'tok_189fTT2eZvKYlo2CvJKzEzeu',
+        'stripe_payment_method_id': 'pm_189fTT2eZvKYlo2CvJKzEzeu',
         'stripe_last4': '4242',
         'stripe_brand': 'Visa'
     })
     req.session = {}
     prov.checkout_prepare(req, {})
-    assert 'payment_stripe_token' in req.session
+    assert 'payment_stripe_payment_method_id' in req.session
     with pytest.raises(PaymentException):
         payment = order.payments.create(
             provider='stripe_cc', amount=order.total

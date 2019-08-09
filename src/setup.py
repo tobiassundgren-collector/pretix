@@ -90,12 +90,14 @@ setup(
         'Django==2.2.*',
         'djangorestframework==3.9.*',
         'python-dateutil==2.8.*',
+        'requests==2.21.*',
         'pytz',
         'django-bootstrap3==11.0.*',
         'django-formset-js-improved==0.5.0.2',
         'django-compressor==2.2.*',
         'django-hierarkey==1.0.*,>=1.0.2',
         'django-filter==2.1.*',
+        'django-scopes==1.1.*',
         'reportlab==3.5.*',
         'Pillow==5.*',
         'PyPDF2==1.26.*',
@@ -123,7 +125,7 @@ setup(
         'pycparser==2.13',
         'django-redis==4.10.*',
         'redis==3.2.*',
-        'stripe==2.0.*',
+        'stripe==2.32.*',
         'chardet<3.1.0,>=3.0.2',
         'mt-940==3.2',
         'django-i18nfield>=1.4.0',
@@ -135,13 +137,14 @@ setup(
         'pyuca',
         'defusedcsv',
         'vat_moss==0.11.0',
+        'django-localflavor>=2.2',
         'django-localflavor',
+        'jsonschema',
         'django-hijack>=2.1.10,<2.2.0',
         'openpyxl',
         'django-oauth-toolkit==1.2.*',
         'oauthlib==2.1.*',
-        'idna==2.6',  # required by current requests
-        'urllib3==1.24.2',  # required by current requests
+        'urllib3==1.24.*',  # required by current requests
     ],
     extras_require={
         'dev': [

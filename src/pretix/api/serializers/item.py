@@ -118,7 +118,8 @@ class ItemSerializer(I18nAwareModelSerializer):
                   'position', 'picture', 'available_from', 'available_until',
                   'require_voucher', 'hide_without_voucher', 'allow_cancel', 'require_bundling',
                   'min_per_order', 'max_per_order', 'checkin_attention', 'has_variations', 'variations',
-                  'addons', 'bundles', 'original_price', 'require_approval', 'generate_tickets')
+                  'addons', 'bundles', 'original_price', 'require_approval', 'generate_tickets',
+                  'show_quota_left', 'hidden_if_available', 'allow_waitinglist')
         read_only_fields = ('has_variations', 'picture')
 
     def get_serializer_context(self):
@@ -200,14 +201,25 @@ class InlineQuestionOptionSerializer(I18nAwareModelSerializer):
         fields = ('id', 'identifier', 'answer', 'position')
 
 
+class LegacyDependencyValueField(serializers.CharField):
+
+    def to_representation(self, obj):
+        return obj[0] if obj else None
+
+    def to_internal_value(self, data):
+        return [data] if data else []
+
+
 class QuestionSerializer(I18nAwareModelSerializer):
     options = InlineQuestionOptionSerializer(many=True, required=False)
     identifier = serializers.CharField(allow_null=True)
+    dependency_value = LegacyDependencyValueField(source='dependency_values', required=False, allow_null=True)
 
     class Meta:
         model = Question
         fields = ('id', 'question', 'type', 'required', 'items', 'options', 'position',
-                  'ask_during_checkin', 'identifier', 'dependency_question', 'dependency_value')
+                  'ask_during_checkin', 'identifier', 'dependency_question', 'dependency_values',
+                  'hidden', 'dependency_value')
 
     def validate_identifier(self, value):
         Question._clean_identifier(self.context['event'], value, self.instance)
@@ -261,6 +273,7 @@ class QuestionSerializer(I18nAwareModelSerializer):
     def create(self, validated_data):
         options_data = validated_data.pop('options') if 'options' in validated_data else []
         items = validated_data.pop('items')
+
         question = Question.objects.create(**validated_data)
         question.items.set(items)
         for opt_data in options_data:
@@ -272,7 +285,7 @@ class QuotaSerializer(I18nAwareModelSerializer):
 
     class Meta:
         model = Quota
-        fields = ('id', 'name', 'size', 'items', 'variations', 'subevent')
+        fields = ('id', 'name', 'size', 'items', 'variations', 'subevent', 'closed', 'close_when_sold_out')
 
     def validate(self, data):
         data = super().validate(data)

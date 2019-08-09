@@ -9,6 +9,7 @@ from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
 from django.utils.translation import pgettext
 from django_countries.fields import CountryField
+from django_scopes import ScopedManager
 
 
 def invoice_filename(instance, filename: str) -> str:
@@ -107,6 +108,8 @@ class Invoice(models.Model):
     file = models.FileField(null=True, blank=True, upload_to=invoice_filename, max_length=255)
     internal_reference = models.TextField(blank=True)
 
+    objects = ScopedManager(organizer='event__organizer')
+
     @staticmethod
     def _to_numeric_invoice_number(number):
         return '{:05d}'.format(int(number))
@@ -172,6 +175,8 @@ class Invoice(models.Model):
             self.organizer = self.order.event.organizer
         if not self.prefix:
             self.prefix = self.event.settings.invoice_numbers_prefix or (self.event.slug.upper() + '-')
+            if self.is_cancellation:
+                self.prefix = self.event.settings.invoice_numbers_prefix_cancellations or self.prefix
         if not self.invoice_no:
             if self.order.testmode:
                 self.prefix += 'TEST-'

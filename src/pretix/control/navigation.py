@@ -49,14 +49,6 @@ def get_event_navigation(request: HttpRequest):
                 'active': url.url_name == 'event.settings.plugins',
             },
             {
-                'label': _('Display'),
-                'url': reverse('control:event.settings.display', kwargs={
-                    'event': request.event.slug,
-                    'organizer': request.event.organizer.slug,
-                }),
-                'active': url.url_name == 'event.settings.display',
-            },
-            {
                 'label': _('Tickets'),
                 'url': reverse('control:event.settings.tickets', kwargs={
                     'event': request.event.slug,
@@ -78,7 +70,7 @@ def get_event_navigation(request: HttpRequest):
                     'event': request.event.slug,
                     'organizer': request.event.organizer.slug,
                 }),
-                'active': url.url_name == 'event.settings.tax',
+                'active': url.url_name.startswith('event.settings.tax'),
             },
             {
                 'label': _('Invoicing'),
@@ -281,7 +273,7 @@ def get_event_navigation(request: HttpRequest):
 
     merge_in(nav, sorted(
         sum((list(a[1]) for a in nav_event.send(request.event, request=request)), []),
-        key=lambda r: r['label']
+        key=lambda r: (1 if r.get('parent') else 0, r['label'])
     ))
 
     return nav
@@ -391,7 +383,7 @@ def get_global_navigation(request):
 
     merge_in(nav, sorted(
         sum((list(a[1]) for a in nav_global.send(request, request=request)), []),
-        key=lambda r: r['label']
+        key=lambda r: (1 if r.get('parent') else 0, r['label'])
     ))
     return nav
 
@@ -425,13 +417,6 @@ def get_organizer_navigation(request):
                     }),
                     'active': url.url_name == 'organizer.edit',
                 },
-                {
-                    'label': _('Display'),
-                    'url': reverse('control:organizer.display', kwargs={
-                        'organizer': request.organizer.slug
-                    }),
-                    'active': url.url_name == 'organizer.display',
-                },
             ]
         })
     if 'can_change_teams' in request.orgapermset:
@@ -464,7 +449,7 @@ def get_organizer_navigation(request):
     merge_in(nav, sorted(
         sum((list(a[1]) for a in nav_organizer.send(request.organizer, request=request, organizer=request.organizer)),
             []),
-        key=lambda r: r['label']
+        key=lambda r: (1 if r.get('parent') else 0, r['label'])
     ))
     return nav
 
@@ -474,6 +459,8 @@ def merge_in(nav, newnav):
         if 'parent' in item:
             parents = [n for n in nav if n['url'] == item['parent']]
             if parents:
+                if 'children' not in parents[0]:
+                    parents[0]['children'] = []
                 parents[0]['children'].append(item)
         else:
             nav.append(item)

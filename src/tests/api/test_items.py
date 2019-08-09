@@ -5,6 +5,7 @@ from unittest import mock
 
 import pytest
 from django_countries.fields import Country
+from django_scopes import scopes_disabled
 from pytz import UTC
 
 from pretix.base.models import (
@@ -169,7 +170,8 @@ def test_category_update(token_client, organizer, event, team, category):
         format='json'
     )
     assert resp.status_code == 200
-    assert ItemCategory.objects.get(pk=category.pk).name == {"en": "Test"}
+    with scopes_disabled():
+        assert ItemCategory.objects.get(pk=category.pk).name == {"en": "Test"}
 
 
 @pytest.mark.django_db
@@ -189,8 +191,9 @@ def test_category_delete(token_client, organizer, event, category3, item):
     resp = token_client.delete(
         '/api/v1/organizers/{}/events/{}/categories/{}/'.format(organizer.slug, event.slug, category3.pk))
     assert resp.status_code == 204
-    assert not event.categories.filter(pk=category3.id).exists()
-    assert Item.objects.get(pk=item.pk).category is None
+    with scopes_disabled():
+        assert not event.categories.filter(pk=category3.id).exists()
+        assert Item.objects.get(pk=item.pk).category is None
 
 
 @pytest.fixture
@@ -222,6 +225,7 @@ TEST_ITEM_RES = {
     "admission": False,
     "position": 0,
     "generate_tickets": None,
+    "allow_waitinglist": True,
     "picture": None,
     "available_from": None,
     "available_until": None,
@@ -231,12 +235,14 @@ TEST_ITEM_RES = {
     "allow_cancel": True,
     "min_per_order": None,
     "max_per_order": None,
+    "hidden_if_available": None,
     "checkin_attention": False,
     "has_variations": False,
     "require_approval": False,
     "variations": [],
     "addons": [],
     "bundles": [],
+    "show_quota_left": None,
     "original_price": None
 }
 
@@ -308,7 +314,8 @@ def test_item_detail(token_client, organizer, event, team, item):
 
 @pytest.mark.django_db
 def test_item_detail_variations(token_client, organizer, event, team, item):
-    var = item.variations.create(value="Children")
+    with scopes_disabled():
+        var = item.variations.create(value="Children")
     res = dict(TEST_ITEM_RES)
     res["id"] = item.pk
     res["variations"] = [{
@@ -349,8 +356,9 @@ def test_item_detail_addons(token_client, organizer, event, team, item, category
 
 @pytest.mark.django_db
 def test_item_detail_bundles(token_client, organizer, event, team, item, category):
-    i = event.items.create(name="Included thing", default_price=2)
-    item.bundles.create(bundled_item=i, count=1, designated_price=2)
+    with scopes_disabled():
+        i = event.items.create(name="Included thing", default_price=2)
+        item.bundles.create(bundled_item=i, count=1, designated_price=2)
     res = dict(TEST_ITEM_RES)
 
     res["id"] = item.pk
@@ -398,7 +406,8 @@ def test_item_create(token_client, organizer, event, item, category, taxrule):
         format='json'
     )
     assert resp.status_code == 201
-    assert Item.objects.get(pk=resp.data['id']).sales_channels == ["web", "pretixpos"]
+    with scopes_disabled():
+        assert Item.objects.get(pk=resp.data['id']).sales_channels == ["web", "pretixpos"]
 
 
 @pytest.mark.django_db
@@ -445,9 +454,10 @@ def test_item_create_with_variation(token_client, organizer, event, item, catego
         format='json'
     )
     assert resp.status_code == 201
-    new_item = Item.objects.get(pk=resp.data['id'])
-    assert new_item.variations.first().value.localize('de') == "Kommentar"
-    assert new_item.variations.first().value.localize('en') == "Comment"
+    with scopes_disabled():
+        new_item = Item.objects.get(pk=resp.data['id'])
+        assert new_item.variations.first().value.localize('de') == "Kommentar"
+        assert new_item.variations.first().value.localize('en') == "Comment"
 
 
 @pytest.mark.django_db
@@ -490,10 +500,11 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
         format='json'
     )
     assert resp.status_code == 201
-    item = Item.objects.get(pk=resp.data['id'])
-    assert item.addons.first().addon_category == category
-    assert item.addons.first().max_count == 10
-    assert 2 == Item.objects.all().count()
+    with scopes_disabled():
+        item = Item.objects.get(pk=resp.data['id'])
+        assert item.addons.first().addon_category == category
+        assert item.addons.first().max_count == 10
+        assert 2 == Item.objects.all().count()
 
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/items/'.format(organizer.slug, event.slug),
@@ -534,7 +545,8 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
     )
     assert resp.status_code == 400
     assert resp.content.decode() == '{"addons":["The add-on\'s category must belong to the same event as the item."]}'
-    assert 2 == Item.objects.all().count()
+    with scopes_disabled():
+        assert 2 == Item.objects.all().count()
 
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/items/'.format(organizer.slug, event.slug),
@@ -575,7 +587,8 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
     )
     assert resp.status_code == 400
     assert resp.content.decode() == '{"addons":["The maximum count needs to be greater than the minimum count."]}'
-    assert 2 == Item.objects.all().count()
+    with scopes_disabled():
+        assert 2 == Item.objects.all().count()
 
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/items/'.format(organizer.slug, event.slug),
@@ -619,12 +632,14 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
         '{"addons":["The minimum count needs to be equal to or greater than zero."]}',
         '{"addons":[{"min_count":["Ensure this value is greater than or equal to 0."]}]}',  # mysql
     ]
-    assert 2 == Item.objects.all().count()
+    with scopes_disabled():
+        assert 2 == Item.objects.all().count()
 
 
 @pytest.mark.django_db
 def test_item_create_with_bundle(token_client, organizer, event, item, category, item2, taxrule):
-    i = event.items.create(name="Included thing", default_price=2)
+    with scopes_disabled():
+        i = event.items.create(name="Included thing", default_price=2)
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/items/'.format(organizer.slug, event.slug),
         {
@@ -662,8 +677,9 @@ def test_item_create_with_bundle(token_client, organizer, event, item, category,
         format='json'
     )
     assert resp.status_code == 201
-    item = Item.objects.get(pk=resp.data['id'])
-    b = item.bundles.first()
+    with scopes_disabled():
+        item = Item.objects.get(pk=resp.data['id'])
+        b = item.bundles.first()
     assert b.bundled_item == i
     assert b.bundled_variation is None
     assert b.count == 2
@@ -708,7 +724,8 @@ def test_item_create_with_bundle(token_client, organizer, event, item, category,
     assert resp.status_code == 400
     assert resp.content.decode() == '{"bundles":["The bundled item must belong to the same event as the item."]}'
 
-    v = item2.variations.create(value="foo")
+    with scopes_disabled():
+        v = item2.variations.create(value="foo")
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/items/'.format(organizer.slug, event.slug),
         {
@@ -760,7 +777,8 @@ def test_item_update(token_client, organizer, event, item, category, item2, cate
         format='json'
     )
     assert resp.status_code == 200
-    assert Item.objects.get(pk=item.pk).max_per_order == 2
+    with scopes_disabled():
+        assert Item.objects.get(pk=item.pk).max_per_order == 2
 
     resp = token_client.patch(
         '/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug, item.pk),
@@ -896,21 +914,24 @@ def test_item_update_with_addon(token_client, organizer, event, item, category):
 def test_items_delete(token_client, organizer, event, item):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug, item.pk))
     assert resp.status_code == 204
-    assert not event.items.filter(pk=item.id).exists()
+    with scopes_disabled():
+        assert not event.items.filter(pk=item.id).exists()
 
 
 @pytest.mark.django_db
 def test_items_with_order_position_not_delete(token_client, organizer, event, item, order_position):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug, item.pk))
     assert resp.status_code == 403
-    assert event.items.filter(pk=item.id).exists()
+    with scopes_disabled():
+        assert event.items.filter(pk=item.id).exists()
 
 
 @pytest.mark.django_db
 def test_items_with_cart_position_delete(token_client, organizer, event, item, cart_position):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug, item.pk))
     assert resp.status_code == 204
-    assert not event.items.filter(pk=item.id).exists()
+    with scopes_disabled():
+        assert not event.items.filter(pk=item.id).exists()
 
 
 @pytest.fixture
@@ -996,7 +1017,8 @@ def test_variations_create(token_client, organizer, event, item, variation):
         format='json'
     )
     assert resp.status_code == 201
-    var = ItemVariation.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        var = ItemVariation.objects.get(pk=resp.data['id'])
     assert var.position == 1
     assert var.price == 23.0
 
@@ -1060,40 +1082,47 @@ def test_variations_update(token_client, organizer, event, item, item3, variatio
 def test_variations_delete(token_client, organizer, event, item, variations, order):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/variations/{}/'.format(organizer.slug, event.slug, item.pk, variations[0].pk))
     assert resp.status_code == 204
-    assert not item.variations.filter(pk=variations[0].pk).exists()
+    with scopes_disabled():
+        assert not item.variations.filter(pk=variations[0].pk).exists()
 
 
 @pytest.mark.django_db
 def test_variations_with_order_position_not_delete(token_client, organizer, event, item, order, variations, order_position):
-    assert item.variations.filter(pk=variations[0].id).exists()
+    with scopes_disabled():
+        assert item.variations.filter(pk=variations[0].id).exists()
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/variations/{}/'.format(organizer.slug, event.slug, item.pk, variations[0].pk))
     assert resp.status_code == 403
     assert resp.content.decode() == '{"detail":"This variation cannot be deleted because it has already been ordered ' \
                                     'by a user or currently is in a users\'s cart. Please set the variation as ' \
                                     '\'inactive\' instead."}'
-    assert item.variations.filter(pk=variations[0].id).exists()
+    with scopes_disabled():
+        assert item.variations.filter(pk=variations[0].id).exists()
 
 
 @pytest.mark.django_db
 def test_variations_with_cart_position_not_delete(token_client, organizer, event, item, variations, cart_position):
-    assert item.variations.filter(pk=variations[0].id).exists()
+    with scopes_disabled():
+        assert item.variations.filter(pk=variations[0].id).exists()
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/variations/{}/'.format(organizer.slug, event.slug, item.pk, variations[0].pk))
     assert resp.status_code == 403
     assert resp.content.decode() == '{"detail":"This variation cannot be deleted because it has already been ordered ' \
                                     'by a user or currently is in a users\'s cart. Please set the variation as ' \
                                     '\'inactive\' instead."}'
-    assert item.variations.filter(pk=variations[0].id).exists()
+    with scopes_disabled():
+        assert item.variations.filter(pk=variations[0].id).exists()
 
 
 @pytest.mark.django_db
 def test_only_variation_not_delete(token_client, organizer, event, item, variation):
-    assert item.variations.filter(pk=variation.id).exists()
+    with scopes_disabled():
+        assert item.variations.filter(pk=variation.id).exists()
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/variations/{}/'.format(organizer.slug, event.slug, item.pk, variation.pk))
     assert resp.status_code == 403
     assert resp.content.decode() == '{"detail":"This variation cannot be deleted because it is the only variation. ' \
                                     'Changing a product with variations to a product without variations is not ' \
                                     'allowed."}'
-    assert item.variations.filter(pk=variation.id).exists()
+    with scopes_disabled():
+        assert item.variations.filter(pk=variation.id).exists()
 
 
 @pytest.fixture
@@ -1144,7 +1173,8 @@ def test_bundles_create(token_client, organizer, event, item, item2, item3):
         format='json'
     )
     assert resp.status_code == 201
-    b = ItemBundle.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        b = ItemBundle.objects.get(pk=resp.data['id'])
     assert b.bundled_item == item3
     assert b.bundled_variation is None
     assert b.designated_price == 1.5
@@ -1176,7 +1206,8 @@ def test_bundles_create(token_client, organizer, event, item, item2, item3):
     assert resp.status_code == 400
     assert resp.content.decode() == '{"non_field_errors":["The bundled item must not be the same item as the bundling one."]}'
 
-    item3.bundles.create(bundled_item=item, count=1, designated_price=3)
+    with scopes_disabled():
+        item3.bundles.create(bundled_item=item, count=1, designated_price=3)
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/items/{}/bundles/'.format(organizer.slug, event.slug, item.pk),
         {
@@ -1201,7 +1232,8 @@ def test_bundles_update(token_client, organizer, event, item, bundle):
         format='json'
     )
     assert resp.status_code == 200
-    a = ItemBundle.objects.get(pk=bundle.pk)
+    with scopes_disabled():
+        a = ItemBundle.objects.get(pk=bundle.pk)
     assert a.count == 3
 
 
@@ -1210,7 +1242,8 @@ def test_bundles_delete(token_client, organizer, event, item, bundle):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/bundles/{}/'.format(organizer.slug, event.slug,
                                                                                              item.pk, bundle.pk))
     assert resp.status_code == 204
-    assert not item.bundles.filter(pk=bundle.id).exists()
+    with scopes_disabled():
+        assert not item.bundles.filter(pk=bundle.id).exists()
 
 
 @pytest.fixture
@@ -1270,7 +1303,8 @@ def test_addons_create(token_client, organizer, event, item, category, category2
         format='json'
     )
     assert resp.status_code == 201
-    addon = ItemAddOn.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        addon = ItemAddOn.objects.get(pk=resp.data['id'])
     assert addon.position == 1
     assert addon.addon_category == category
 
@@ -1315,7 +1349,8 @@ def test_addons_update(token_client, organizer, event, item, addon):
         format='json'
     )
     assert resp.status_code == 200
-    a = ItemAddOn.objects.get(pk=addon.pk)
+    with scopes_disabled():
+        a = ItemAddOn.objects.get(pk=addon.pk)
     assert a.min_count == 100
     assert a.max_count == 101
 
@@ -1337,7 +1372,8 @@ def test_addons_delete(token_client, organizer, event, item, addon):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/items/{}/addons/{}/'.format(organizer.slug, event.slug,
                                                                                             item.pk, addon.pk))
     assert resp.status_code == 204
-    assert not item.addons.filter(pk=addon.id).exists()
+    with scopes_disabled():
+        assert not item.addons.filter(pk=addon.id).exists()
 
 
 @pytest.fixture
@@ -1352,7 +1388,9 @@ TEST_QUOTA_RES = {
     "size": 200,
     "items": [],
     "variations": [],
-    "subevent": None
+    "subevent": None,
+    "close_when_sold_out": False,
+    "closed": False
 }
 
 
@@ -1372,7 +1410,8 @@ def test_quota_list(token_client, organizer, event, quota, item, subevent):
     resp = token_client.get(
         '/api/v1/organizers/{}/events/{}/quotas/?subevent={}'.format(organizer.slug, event.slug, subevent.pk))
     assert [res] == resp.data['results']
-    se2 = event.subevents.create(name="Foobar", date_from=datetime(2017, 12, 27, 10, 0, 0, tzinfo=UTC))
+    with scopes_disabled():
+        se2 = event.subevents.create(name="Foobar", date_from=datetime(2017, 12, 27, 10, 0, 0, tzinfo=UTC))
     resp = token_client.get(
         '/api/v1/organizers/{}/events/{}/quotas/?subevent={}'.format(organizer.slug, event.slug, se2.pk))
     assert [] == resp.data['results']
@@ -1404,7 +1443,8 @@ def test_quota_create(token_client, organizer, event, event2, item):
         format='json'
     )
     assert resp.status_code == 201
-    quota = Quota.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        quota = Quota.objects.get(pk=resp.data['id'])
     assert quota.name == "Ticket Quota"
     assert quota.size == 200
 
@@ -1550,16 +1590,59 @@ def test_quota_update(token_client, organizer, event, quota, item):
         format='json'
     )
     assert resp.status_code == 200
-    quota = Quota.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        quota = Quota.objects.get(pk=resp.data['id'])
     assert quota.name == "Ticket Quota Update"
     assert quota.size == 111
+    assert quota.all_logentries().count() == 1
+
+
+@pytest.mark.django_db
+def test_quota_update_closed(token_client, organizer, event, quota, item):
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/quotas/{}/'.format(organizer.slug, event.slug, quota.pk),
+        {
+            "closed": True,
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    with scopes_disabled():
+        quota = Quota.objects.get(pk=resp.data['id'])
+    assert quota.all_logentries().filter(action_type="pretix.event.quota.closed").count() == 1
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/quotas/{}/'.format(organizer.slug, event.slug, quota.pk),
+        {
+            "closed": False,
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    assert quota.all_logentries().filter(action_type="pretix.event.quota.opened").count() == 1
+
+
+@pytest.mark.django_db
+def test_quota_update_unchanged(token_client, organizer, event, quota, item):
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/quotas/{}/'.format(organizer.slug, event.slug, quota.pk),
+        {
+            "size": 200,
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    with scopes_disabled():
+        quota = Quota.objects.get(pk=resp.data['id'])
+    assert quota.size == 200
+    assert quota.all_logentries().count() == 0
 
 
 @pytest.mark.django_db
 def test_quota_delete(token_client, organizer, event, quota):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/quotas/{}/'.format(organizer.slug, event.slug, quota.pk))
     assert resp.status_code == 204
-    assert not event.quotas.filter(pk=quota.id).exists()
+    with scopes_disabled():
+        assert not event.quotas.filter(pk=quota.id).exists()
 
 
 @pytest.mark.django_db
@@ -1591,10 +1674,12 @@ TEST_QUESTION_RES = {
     "required": False,
     "items": [],
     "ask_during_checkin": False,
+    "hidden": False,
     "identifier": "ABC",
     "position": 0,
     "dependency_question": None,
     "dependency_value": None,
+    "dependency_values": [],
     "options": [
         {
             "id": 0,
@@ -1673,11 +1758,12 @@ def test_question_create(token_client, organizer, event, event2, item):
         format='json'
     )
     assert resp.status_code == 201
-    question = Question.objects.get(pk=resp.data['id'])
-    assert question.question == "What's your name?"
-    assert question.type == "S"
-    assert question.identifier is not None
-    assert len(question.items.all()) == 1
+    with scopes_disabled():
+        question = Question.objects.get(pk=resp.data['id'])
+        assert question.question == "What's your name?"
+        assert question.type == "S"
+        assert question.identifier is not None
+        assert len(question.items.all()) == 1
 
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/questions/'.format(organizer.slug, event2.slug),
@@ -1767,7 +1853,8 @@ def test_question_create(token_client, organizer, event, event2, item):
         format='json'
     )
     assert resp.status_code == 201
-    q2 = Question.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        q2 = Question.objects.get(pk=resp.data['id'])
     assert q2.dependency_question == question
 
 
@@ -1782,14 +1869,16 @@ def test_question_update(token_client, organizer, event, question):
         format='json'
     )
     assert resp.status_code == 200
-    question = Question.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        question = Question.objects.get(pk=resp.data['id'])
     assert question.question == "What's your shoe size?"
     assert question.type == "N"
 
 
 @pytest.mark.django_db
 def test_question_update_circular_dependency(token_client, organizer, event, question):
-    q2 = event.questions.create(question="T-Shirt size", type="B", identifier="FOO", dependency_question=question)
+    with scopes_disabled():
+        q2 = event.questions.create(question="T-Shirt size", type="B", identifier="FOO", dependency_question=question)
     resp = token_client.patch(
         '/api/v1/organizers/{}/events/{}/questions/{}/'.format(organizer.slug, event.slug, question.pk),
         {
@@ -1819,7 +1908,51 @@ def test_question_update_options(token_client, organizer, event, question, item)
 def test_question_delete(token_client, organizer, event, question):
     resp = token_client.delete('/api/v1/organizers/{}/events/{}/questions/{}/'.format(organizer.slug, event.slug, question.pk))
     assert resp.status_code == 204
-    assert not event.questions.filter(pk=question.id).exists()
+    with scopes_disabled():
+        assert not event.questions.filter(pk=question.id).exists()
+
+
+@pytest.mark.django_db
+def test_question_update_dependency_values(token_client, organizer, event, question):
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/questions/{}/'.format(organizer.slug, event.slug, question.pk),
+        {
+            "dependency_values": ["a", "b"]
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    question.refresh_from_db()
+    assert question.dependency_values == ["a", "b"]
+
+
+@pytest.mark.django_db
+def test_question_update_dependency_value_legacy(token_client, organizer, event, question):
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/questions/{}/'.format(organizer.slug, event.slug, question.pk),
+        {
+            "dependency_value": "a"
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    question.refresh_from_db()
+    assert question.dependency_values == ["a"]
+
+
+@pytest.mark.django_db
+def test_question_update_dependency_value_legacy_conflict(token_client, organizer, event, question):
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/questions/{}/'.format(organizer.slug, event.slug, question.pk),
+        {
+            "dependency_values": ["a", "b"],
+            "dependency_value": "a"
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    question.refresh_from_db()
+    assert question.dependency_values == ["a"]
 
 
 TEST_OPTIONS_RES = {
@@ -1864,7 +1997,8 @@ def test_options_create(token_client, organizer, event, question):
         format='json'
     )
     assert resp.status_code == 201
-    option = QuestionOption.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        option = QuestionOption.objects.get(pk=resp.data['id'])
     assert option.answer == "A"
 
     resp = token_client.post(
@@ -1890,7 +2024,8 @@ def test_options_update(token_client, organizer, event, question, option):
         format='json'
     )
     assert resp.status_code == 200
-    a = QuestionOption.objects.get(pk=option.pk)
+    with scopes_disabled():
+        a = QuestionOption.objects.get(pk=option.pk)
     assert a.answer == "B"
 
 
@@ -1900,7 +2035,8 @@ def test_options_delete(token_client, organizer, event, question, option):
         organizer.slug, event.slug, question.pk, option.pk
     ))
     assert resp.status_code == 204
-    assert not question.options.filter(pk=option.id).exists()
+    with scopes_disabled():
+        assert not question.options.filter(pk=option.id).exists()
 
 
 @pytest.mark.django_db
@@ -1931,11 +2067,12 @@ def test_question_create_with_option(token_client, organizer, event, item):
         format='json'
     )
     assert resp.status_code == 201
-    question = Question.objects.get(pk=resp.data['id'])
-    assert str(question.options.first().answer) == "A"
-    assert question.options.first().identifier is not None
-    assert str(question.options.last().answer) == "B"
-    assert 2 == question.options.count()
+    with scopes_disabled():
+        question = Question.objects.get(pk=resp.data['id'])
+        assert str(question.options.first().answer) == "A"
+        assert question.options.first().identifier is not None
+        assert str(question.options.last().answer) == "B"
+        assert 2 == question.options.count()
 
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/questions/'.format(organizer.slug, event.slug),

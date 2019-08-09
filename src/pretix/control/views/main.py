@@ -17,7 +17,7 @@ from i18nfield.strings import LazyI18nString
 
 from pretix.base.forms import SafeSessionWizardView
 from pretix.base.i18n import language
-from pretix.base.models import Event, Organizer, Quota, Team
+from pretix.base.models import Event, EventMetaValue, Organizer, Quota, Team
 from pretix.control.forms.event import (
     EventWizardBasicsForm, EventWizardCopyForm, EventWizardFoundationForm,
 )
@@ -32,8 +32,13 @@ class EventList(PaginationMixin, ListView):
     template_name = 'pretixcontrol/events/index.html'
 
     def get_queryset(self):
-        qs = self.request.user.get_events_with_any_permission(self.request).select_related('organizer').prefetch_related(
-            '_settings_objects', 'organizer___settings_objects'
+        qs = self.request.user.get_events_with_any_permission(self.request).prefetch_related(
+            'organizer', '_settings_objects', 'organizer___settings_objects', 'organizer__meta_properties',
+            Prefetch(
+                'meta_values',
+                EventMetaValue.objects.select_related('property'),
+                to_attr='meta_values_cached'
+            )
         ).order_by('-date_from')
 
         qs = qs.annotate(
@@ -97,7 +102,7 @@ class EventList(PaginationMixin, ListView):
 def condition_copy(wizard):
     return (
         not wizard.clone_from and
-        EventWizardCopyForm.copy_from_queryset(wizard.request.user).exists()
+        EventWizardCopyForm.copy_from_queryset(wizard.request.user, wizard.request.session).exists()
     )
 
 
@@ -176,7 +181,8 @@ class EventWizard(SafeSessionWizardView):
 
     def get_form_kwargs(self, step=None):
         kwargs = {
-            'user': self.request.user
+            'user': self.request.user,
+            'session': self.request.session,
         }
         if step != 'foundation':
             fdata = self.get_cleaned_data_for_step('foundation')
@@ -203,6 +209,7 @@ class EventWizard(SafeSessionWizardView):
             event.organizer = foundation_data['organizer']
             event.plugins = settings.PRETIX_PLUGINS_DEFAULT
             event.has_subevents = foundation_data['has_subevents']
+            event.testmode = True
             form_dict['basics'].save()
 
             has_control_rights = self.request.user.teams.filter(

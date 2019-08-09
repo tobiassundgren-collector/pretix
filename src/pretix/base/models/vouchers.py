@@ -8,6 +8,9 @@ from django.db.models import Q
 from django.utils.crypto import get_random_string
 from django.utils.timezone import now
 from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django_scopes import ScopedManager, scopes_disabled
+
+from pretix.base.models import SeatCategoryMapping
 
 from ..decimal import round_decimal
 from .base import LoggedModel
@@ -23,6 +26,7 @@ def _generate_random_code(prefix=None):
     return get_random_string(length=settings.ENTROPY['voucher_code'], allowed_chars=charset)
 
 
+@scopes_disabled()
 def generate_code(prefix=None):
     while True:
         code = _generate_random_code(prefix=prefix)
@@ -138,22 +142,26 @@ class Voucher(LoggedModel):
     item = models.ForeignKey(
         Item, related_name='vouchers',
         verbose_name=_("Product"),
-        null=True, blank=True, on_delete=models.CASCADE,
+        null=True, blank=True,
+        on_delete=models.PROTECT,  # We use a fake version of SET_NULL in Item.delete()
         help_text=_(
             "This product is added to the user's cart if the voucher is redeemed."
         )
     )
     variation = models.ForeignKey(
         ItemVariation, related_name='vouchers',
-        null=True, blank=True, on_delete=models.CASCADE,
+        null=True, blank=True,
+        on_delete=models.PROTECT,  # We use a fake version of SET_NULL in ItemVariation.delete() to avoid the semantic change
+                                   # that would happen if we just set variation to None
         verbose_name=_("Product variation"),
         help_text=_(
             "This variation of the product select above is being used."
         )
     )
     quota = models.ForeignKey(
-        Quota, related_name='quota',
-        null=True, blank=True, on_delete=models.CASCADE,
+        Quota, related_name='vouchers',
+        null=True, blank=True,
+        on_delete=models.PROTECT,  # We use a fake version of SET_NULL in Quota.delete()
         verbose_name=_("Quota"),
         help_text=_(
             "If enabled, the voucher is valid for any product affected by this quota."
@@ -172,6 +180,12 @@ class Voucher(LoggedModel):
         help_text=_("The text entered in this field will not be visible to the user and is available for your "
                     "convenience.")
     )
+    show_hidden_items = models.BooleanField(
+        verbose_name=_("Shows hidden products that match this voucher"),
+        default=True
+    )
+
+    objects = ScopedManager(organizer='event__organizer')
 
     class Meta:
         verbose_name = _("Voucher")
@@ -391,3 +405,14 @@ class Voucher(LoggedModel):
         """
 
         return Order.objects.filter(all_positions__voucher__in=[self]).distinct()
+
+    def seating_available(self):
+        kwargs = {}
+        if self.subevent:
+            kwargs['subevent'] = self.subevent
+        if self.quota_id:
+            return SeatCategoryMapping.objects.filter(product__quotas__pk=self.quota_id, **kwargs).exists()
+        elif self.item_id:
+            return self.item.seat_category_mappings.filter(**kwargs).exists()
+        else:
+            return False

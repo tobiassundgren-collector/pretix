@@ -30,13 +30,13 @@ class DekodiNREIExporter(BaseExporter):
         for l in invoice.lines.all():
             positions.append({
                 'ADes': l.description.replace("<br />", "\n"),
-                'ANetA': round(float(l.net_value), 2),
+                'ANetA': round(float((-1 if invoice.is_cancellation else 1) * l.net_value), 2),
                 'ANo': self.event.slug,
                 'AQ': -1 if invoice.is_cancellation else 1,
                 'AVatP': round(float(l.tax_rate), 2),
                 'DIDt': (l.subevent or invoice.order.event).date_from.isoformat().replace('Z', '+00:00'),
-                'PosGrossA': round(float((-1 if invoice.is_cancellation else 1) * l.gross_value), 2),
-                'PosNetA': round(float((-1 if invoice.is_cancellation else 1) * l.net_value), 2),
+                'PosGrossA': round(float(l.gross_value), 2),
+                'PosNetA': round(float(l.net_value), 2),
             })
             gross_total += l.gross_value
             net_total += l.net_value
@@ -93,7 +93,7 @@ class DekodiNREIExporter(BaseExporter):
                         'PTNo15': p.full_id or '',
                     })
             elif p.provider.startswith('stripe'):
-                src = p.info_data.get("source", "{}")
+                src = p.info_data.get("source", p.info_data)
                 payments.append({
                     'PTID': '81',
                     'PTN': 'Stripe',

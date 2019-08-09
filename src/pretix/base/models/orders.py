@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from django.db import models, transaction
 from django.db.models import (
     Case, Exists, F, Max, OuterRef, Q, Subquery, Sum, Value, When,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Greatest
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.urls import reverse
@@ -24,7 +25,8 @@ from django.utils.formats import date_format
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
 from django.utils.translation import pgettext_lazy, ugettext_lazy as _
-from django_countries.fields import CountryField
+from django_countries.fields import Country, CountryField
+from django_scopes import ScopedManager, scopes_disabled
 from i18nfield.strings import LazyI18nString
 from jsonfallback.fields import FallbackJSONField
 
@@ -32,6 +34,7 @@ from pretix.base.decimal import round_decimal
 from pretix.base.i18n import language
 from pretix.base.models import User
 from pretix.base.reldate import RelativeDateWrapper
+from pretix.base.services.locking import NoLockManager
 from pretix.base.settings import PERSON_NAME_SCHEMES
 
 from .base import LockModel, LoggedModel
@@ -179,6 +182,12 @@ class Order(LockModel, LoggedModel):
         default=False
     )
     sales_channel = models.CharField(max_length=190, default="web")
+    email_known_to_work = models.BooleanField(
+        default=False,
+        verbose_name=_('E-mail address verified')
+    )
+
+    objects = ScopedManager(organizer='event__organizer')
 
     class Meta:
         verbose_name = _("Order")
@@ -189,6 +198,8 @@ class Order(LockModel, LoggedModel):
         return self.full_code
 
     def gracefully_delete(self, user=None, auth=None):
+        from . import Voucher
+
         if not self.testmode:
             raise TypeError("Only test mode orders can be deleted.")
         self.event.log_action(
@@ -197,6 +208,12 @@ class Order(LockModel, LoggedModel):
                 'code': self.code,
             }
         )
+
+        if self.status != Order.STATUS_CANCELED:
+            for position in self.positions.all():
+                if position.voucher:
+                    Voucher.objects.filter(pk=position.voucher.pk).update(redeemed=Greatest(0, F('redeemed') - 1))
+
         OrderPosition.all.filter(order=self, addon_to__isnull=False).delete()
         OrderPosition.all.filter(order=self).delete()
         OrderFee.all.filter(order=self).delete()
@@ -204,6 +221,9 @@ class Order(LockModel, LoggedModel):
         self.payments.all().delete()
         self.event.cache.delete('complain_testmode_orders')
         self.delete()
+
+    def email_confirm_hash(self):
+        return hashlib.sha256(settings.SECRET_KEY.encode() + self.secret.encode()).hexdigest()[:9]
 
     @property
     def fees(self):
@@ -214,6 +234,7 @@ class Order(LockModel, LoggedModel):
         return self.all_fees(manager='objects')
 
     @cached_property
+    @scopes_disabled()
     def count_positions(self):
         if hasattr(self, 'pcnt'):
             return self.pcnt or 0
@@ -237,6 +258,7 @@ class Order(LockModel, LoggedModel):
             return None
 
     @property
+    @scopes_disabled()
     def payment_refund_sum(self):
         payment_sum = self.payments.filter(
             state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED)
@@ -248,6 +270,7 @@ class Order(LockModel, LoggedModel):
         return payment_sum - refund_sum
 
     @property
+    @scopes_disabled()
     def pending_sum(self):
         total = self.total
         if self.status == Order.STATUS_CANCELED:
@@ -422,6 +445,7 @@ class Order(LockModel, LoggedModel):
         return round_decimal(fee, self.event.currency)
 
     @property
+    @scopes_disabled()
     def user_cancel_allowed(self) -> bool:
         """
         Returns whether or not this order can be canceled by the user.
@@ -606,7 +630,7 @@ class Order(LockModel, LoggedModel):
             ), tz)
         return term_last
 
-    def _can_be_paid(self, count_waitinglist=True, ignore_date=False) -> Union[bool, str]:
+    def _can_be_paid(self, count_waitinglist=True, ignore_date=False, force=False) -> Union[bool, str]:
         error_messages = {
             'late_lastdate': _("The payment can not be accepted as the last date of payments configured in the "
                                "payment settings is over."),
@@ -614,29 +638,37 @@ class Order(LockModel, LoggedModel):
                       "payments should be accepted in the payment settings."),
             'require_approval': _('This order is not yet approved by the event organizer.')
         }
-        if self.require_approval:
-            return error_messages['require_approval']
-        term_last = self.payment_term_last
-        if term_last and not ignore_date:
-            if now() > term_last:
-                return error_messages['late_lastdate']
+        if not force:
+            if self.require_approval:
+                return error_messages['require_approval']
+            term_last = self.payment_term_last
+            if term_last and not ignore_date:
+                if now() > term_last:
+                    return error_messages['late_lastdate']
 
         if self.status == self.STATUS_PENDING:
             return True
-        if not self.event.settings.get('payment_term_accept_late') and not ignore_date:
+        if not self.event.settings.get('payment_term_accept_late') and not ignore_date and not force:
             return error_messages['late']
 
-        return self._is_still_available(count_waitinglist=count_waitinglist)
+        return self._is_still_available(count_waitinglist=count_waitinglist, force=force)
 
-    def _is_still_available(self, now_dt: datetime=None, count_waitinglist=True) -> Union[bool, str]:
+    def _is_still_available(self, now_dt: datetime=None, count_waitinglist=True, force=False) -> Union[bool, str]:
         error_messages = {
             'unavailable': _('The ordered product "{item}" is no longer available.'),
+            'seat_unavailable': _('The seat "{seat}" is no longer available.'),
         }
         now_dt = now_dt or now()
-        positions = self.positions.all().select_related('item', 'variation')
+        positions = self.positions.all().select_related('item', 'variation', 'seat')
         quota_cache = {}
         try:
             for i, op in enumerate(positions):
+                if op.seat:
+                    if not op.seat.is_available(ignore_orderpos=op):
+                        raise Quota.QuotaExceededException(error_messages['seat_unavailable'].format(seat=op.seat))
+                if force:
+                    continue
+
                 quotas = list(op.quotas)
                 if len(quotas) == 0:
                     raise Quota.QuotaExceededException(error_messages['unavailable'].format(
@@ -664,7 +696,7 @@ class Order(LockModel, LoggedModel):
     def send_mail(self, subject: str, template: Union[str, LazyI18nString],
                   context: Dict[str, Any]=None, log_entry_type: str='pretix.event.order.email.sent',
                   user: User=None, headers: dict=None, sender: str=None, invoices: list=None,
-                  auth=None, attach_tickets=False):
+                  auth=None, attach_tickets=False, position: 'OrderPosition'=None):
         """
         Sends an email to the user that placed this order. Basically, this method does two things:
 
@@ -681,6 +713,9 @@ class Order(LockModel, LoggedModel):
         :param headers: Dictionary with additional mail headers
         :param sender: Custom email sender.
         :param attach_tickets: Attach tickets of this order, if they are existing and ready to download
+        :param position: An order position this refers to. If given, no invoices will be attached, the tickets will
+                         only be attached for this position and child positions, the link will only point to the
+                         position and the attendee email will be used if available.
         """
         from pretix.base.services.mail import SendMailException, mail, render_mail
 
@@ -692,12 +727,16 @@ class Order(LockModel, LoggedModel):
 
         with language(self.locale):
             recipient = self.email
+            if position and position.attendee_email:
+                recipient = position.attendee_email
+
             try:
                 email_content = render_mail(template, context)
                 mail(
                     recipient, subject, template, context,
-                    self.event, self.locale, self, headers, sender,
-                    invoices=invoices, attach_tickets=attach_tickets
+                    self.event, self.locale, self, headers=headers, sender=sender,
+                    invoices=invoices, attach_tickets=attach_tickets,
+                    position=position
                 )
             except SendMailException:
                 raise
@@ -709,6 +748,7 @@ class Order(LockModel, LoggedModel):
                     data={
                         'subject': subject,
                         'message': email_content,
+                        'position': position.positionid if position else None,
                         'recipient': recipient,
                         'invoices': [i.pk for i in invoices] if invoices else [],
                         'attach_tickets': attach_tickets,
@@ -728,9 +768,10 @@ class Order(LockModel, LoggedModel):
             email_template = self.event.settings.mail_text_resend_link
             email_context = {
                 'event': self.event.name,
-                'url': build_absolute_uri(self.event, 'presale:event.order', kwargs={
+                'url': build_absolute_uri(self.event, 'presale:event.order.open', kwargs={
                     'order': self.code,
-                    'secret': self.secret
+                    'secret': self.secret,
+                    'hash': self.email_confirm_hash()
                 }),
                 'invoice_name': invoice_name,
                 'invoice_company': invoice_company,
@@ -796,6 +837,8 @@ class QuestionAnswer(models.Model):
         max_length=255
     )
 
+    objects = ScopedManager(organizer='question__event__organizer')
+
     @property
     def backend_file_url(self):
         if self.file:
@@ -826,6 +869,10 @@ class QuestionAnswer(models.Model):
 
             return url
         return ""
+
+    @property
+    def is_image(self):
+        return any(self.file.name.endswith(e) for e in ('.jpg', '.png', '.gif', '.tiff', '.bmp', '.jpeg'))
 
     @property
     def file_name(self):
@@ -859,6 +906,8 @@ class QuestionAnswer(models.Model):
                 return date_format(d, "TIME_FORMAT")
             except ValueError:
                 return self.answer
+        elif self.question.type == Question.TYPE_COUNTRYCODE and self.answer:
+            return Country(self.answer).name or self.answer
         else:
             return self.answer
 
@@ -901,6 +950,8 @@ class AbstractPosition(models.Model):
     :type voucher: Voucher
     :param meta_info: Additional meta information on the position, JSON-encoded.
     :type meta_info: str
+    :param seat: Seat, if reserved seating is used.
+    :type seat: Seat
     """
     subevent = models.ForeignKey(
         SubEvent,
@@ -947,6 +998,9 @@ class AbstractPosition(models.Model):
         verbose_name=_("Meta information"),
         null=True, blank=True
     )
+    seat = models.ForeignKey(
+        'Seat', null=True, blank=True, on_delete=models.PROTECT
+    )
 
     class Meta:
         abstract = True
@@ -957,6 +1011,10 @@ class AbstractPosition(models.Model):
             return json.loads(self.meta_info)
         else:
             return {}
+
+    @meta_info_data.setter
+    def meta_info_data(self, d):
+        self.meta_info = json.dumps(d)
 
     def cache_answers(self, all=True):
         """
@@ -975,7 +1033,8 @@ class AbstractPosition(models.Model):
             if hasattr(self.item, 'questions_to_ask'):
                 questions = list(copy.copy(q) for q in self.item.questions_to_ask)
             else:
-                questions = list(copy.copy(q) for q in self.item.questions.filter(ask_during_checkin=False))
+                questions = list(copy.copy(q) for q in self.item.questions.filter(ask_during_checkin=False,
+                                                                                  hidden=False))
         else:
             questions = list(copy.copy(q) for q in self.item.questions.all())
 
@@ -983,18 +1042,17 @@ class AbstractPosition(models.Model):
             q.pk: q for q in questions
         }
 
-        def question_is_visible(parentid, qval):
+        def question_is_visible(parentid, qvals):
             parentq = question_cache[parentid]
-            if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_value):
+            if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_values):
                 return False
             if parentid not in self.answ:
                 return False
-            if qval == 'True':
-                return self.answ[parentid].answer == 'True'
-            elif qval == 'False':
-                return self.answ[parentid].answer == 'False'
-            else:
-                return qval in [o.identifier for o in self.answ[parentid].options.all()]
+            return (
+                ('True' in qvals and self.answ[parentid].answer == 'True')
+                or ('False' in qvals and self.answ[parentid].answer == 'False')
+                or (any(qval in [o.identifier for o in self.answ[parentid].options.all()] for qval in qvals))
+            )
 
         self.questions = []
         for q in questions:
@@ -1003,7 +1061,7 @@ class AbstractPosition(models.Model):
                 q.answer.question = q  # cache object
             else:
                 q.answer = ""
-            if not q.dependency_question_id or question_is_visible(q.dependency_question_id, q.dependency_value):
+            if not q.dependency_question_id or question_is_visible(q.dependency_question_id, q.dependency_values):
                 self.questions.append(q)
 
     @property
@@ -1112,6 +1170,8 @@ class OrderPayment(models.Model):
     )
     migrated = models.BooleanField(default=False)
 
+    objects = ScopedManager(organizer='order__event__organizer')
+
     class Meta:
         ordering = ('local_id',)
 
@@ -1128,7 +1188,7 @@ class OrderPayment(models.Model):
 
     @info_data.setter
     def info_data(self, d):
-        self.info = json.dumps(d)
+        self.info = json.dumps(d, sort_keys=True)
 
     @cached_property
     def payment_provider(self):
@@ -1139,8 +1199,8 @@ class OrderPayment(models.Model):
 
     def _mark_paid(self, force, count_waitinglist, user, auth, ignore_date=False, overpaid=False):
         from pretix.base.signals import order_paid
-        can_be_paid = self.order._can_be_paid(count_waitinglist=count_waitinglist, ignore_date=ignore_date)
-        if not force and can_be_paid is not True:
+        can_be_paid = self.order._can_be_paid(count_waitinglist=count_waitinglist, ignore_date=ignore_date, force=force)
+        if can_be_paid is not True:
             self.order.log_action('pretix.event.order.quotaexceeded', {
                 'message': can_be_paid
             }, user=user, auth=auth)
@@ -1159,7 +1219,8 @@ class OrderPayment(models.Model):
             self.order.log_action('pretix.event.order.overpaid', {}, user=user, auth=auth)
         order_paid.send(self.order.event, order=self.order)
 
-    def confirm(self, count_waitinglist=True, send_mail=True, force=False, user=None, auth=None, mail_text='', ignore_date=False, lock=True):
+    def confirm(self, count_waitinglist=True, send_mail=True, force=False, user=None, auth=None, mail_text='',
+                ignore_date=False, lock=True, payment_date=None):
         """
         Marks the payment as complete. If possible, this also marks the order as paid if no further
         payment is required
@@ -1180,8 +1241,6 @@ class OrderPayment(models.Model):
         :raises Quota.QuotaExceededException: if the quota is exceeded and ``force`` is ``False``
         """
         from pretix.base.services.invoices import generate_invoice, invoice_qualified
-        from pretix.base.services.mail import SendMailException
-        from pretix.multidomain.urlreverse import build_absolute_uri
 
         with transaction.atomic():
             locked_instance = OrderPayment.objects.select_for_update().get(pk=self.pk)
@@ -1190,7 +1249,7 @@ class OrderPayment(models.Model):
                 return
 
             locked_instance.state = self.PAYMENT_STATE_CONFIRMED
-            locked_instance.payment_date = now()
+            locked_instance.payment_date = payment_date or now()
             locked_instance.info = self.info  # required for backwards compatibility
             locked_instance.save(update_fields=['state', 'payment_date', 'info'])
 
@@ -1222,13 +1281,13 @@ class OrderPayment(models.Model):
         if (self.order.status == Order.STATUS_PENDING and self.order.expires > now() + timedelta(hours=12)) or not lock:
             # Performance optimization. In this case, there's really no reason to lock everything and an atomic
             # database transaction is more than enough.
-            with transaction.atomic():
-                self._mark_paid(force, count_waitinglist, user, auth, overpaid=payment_sum - refund_sum > self.order.total,
-                                ignore_date=ignore_date)
+            lockfn = NoLockManager
         else:
-            with self.order.event.lock():
-                self._mark_paid(force, count_waitinglist, user, auth, overpaid=payment_sum - refund_sum > self.order.total,
-                                ignore_date=ignore_date)
+            lockfn = self.order.event.lock
+
+        with lockfn():
+            self._mark_paid(force, count_waitinglist, user, auth, overpaid=payment_sum - refund_sum > self.order.total,
+                            ignore_date=ignore_date)
 
         invoice = None
         if invoice_qualified(self.order):
@@ -1245,35 +1304,77 @@ class OrderPayment(models.Model):
                 )
 
         if send_mail:
-            with language(self.order.locale):
-                try:
-                    invoice_name = self.order.invoice_address.name
-                    invoice_company = self.order.invoice_address.company
-                except InvoiceAddress.DoesNotExist:
-                    invoice_name = ""
-                    invoice_company = ""
-                email_template = self.order.event.settings.mail_text_order_paid
-                email_context = {
-                    'event': self.order.event.name,
-                    'url': build_absolute_uri(self.order.event, 'presale:event.order', kwargs={
-                        'order': self.order.code,
-                        'secret': self.order.secret
-                    }),
-                    'downloads': self.order.event.settings.get('ticket_download', as_type=bool),
-                    'invoice_name': invoice_name,
-                    'invoice_company': invoice_company,
-                    'payment_info': mail_text
-                }
-                email_subject = _('Payment received for your order: %(code)s') % {'code': self.order.code}
-                try:
-                    self.order.send_mail(
-                        email_subject, email_template, email_context,
-                        'pretix.event.order.email.order_paid', user,
-                        invoices=[invoice] if invoice and self.order.event.settings.invoice_email_attachment else [],
-                        attach_tickets=True
-                    )
-                except SendMailException:
-                    logger.exception('Order paid email could not be sent')
+            self._send_paid_mail(invoice, user, mail_text)
+            if self.order.event.settings.mail_send_order_paid_attendee:
+                for p in self.order.positions.all():
+                    if p.addon_to_id is None and p.attendee_email and p.attendee_email != self.order.email:
+                        self._send_paid_mail_attendee(p, user)
+
+    def _send_paid_mail_attendee(self, position, user):
+        from pretix.base.services.mail import SendMailException
+        from pretix.multidomain.urlreverse import build_absolute_uri
+
+        with language(self.order.locale):
+            name_scheme = PERSON_NAME_SCHEMES[self.order.event.settings.name_scheme]
+            email_template = self.order.event.settings.mail_text_order_paid_attendee
+            email_context = {
+                'event': self.order.event.name,
+                'downloads': self.order.event.settings.get('ticket_download', as_type=bool),
+                'url': build_absolute_uri(self.order.event, 'presale:event.order.position', kwargs={
+                    'order': self.order.code,
+                    'secret': position.web_secret,
+                    'position': position.positionid
+                }),
+                'attendee_name': position.attendee_name,
+            }
+            for f, l, w in name_scheme['fields']:
+                email_context['attendee_name_%s' % f] = position.attendee_name_parts.get(f, '')
+
+            email_subject = _('Event registration confirmed: %(code)s') % {'code': self.order.code}
+            try:
+                self.order.send_mail(
+                    email_subject, email_template, email_context,
+                    'pretix.event.order.email.order_paid', user,
+                    invoices=[], position=position,
+                    attach_tickets=True
+                )
+            except SendMailException:
+                logger.exception('Order paid email could not be sent')
+
+    def _send_paid_mail(self, invoice, user, mail_text):
+        from pretix.base.services.mail import SendMailException
+        from pretix.multidomain.urlreverse import build_absolute_uri
+
+        with language(self.order.locale):
+            try:
+                invoice_name = self.order.invoice_address.name
+                invoice_company = self.order.invoice_address.company
+            except InvoiceAddress.DoesNotExist:
+                invoice_name = ""
+                invoice_company = ""
+            email_template = self.order.event.settings.mail_text_order_paid
+            email_context = {
+                'event': self.order.event.name,
+                'url': build_absolute_uri(self.order.event, 'presale:event.order.open', kwargs={
+                    'order': self.order.code,
+                    'secret': self.order.secret,
+                    'hash': self.order.email_confirm_hash()
+                }),
+                'downloads': self.order.event.settings.get('ticket_download', as_type=bool),
+                'invoice_name': invoice_name,
+                'invoice_company': invoice_company,
+                'payment_info': mail_text
+            }
+            email_subject = _('Payment received for your order: %(code)s') % {'code': self.order.code}
+            try:
+                self.order.send_mail(
+                    email_subject, email_template, email_context,
+                    'pretix.event.order.email.order_paid', user,
+                    invoices=[invoice] if invoice and self.order.event.settings.invoice_email_attachment else [],
+                    attach_tickets=True
+                )
+            except SendMailException:
+                logger.exception('Order paid email could not be sent')
 
     @property
     def refunded_amount(self):
@@ -1427,6 +1528,8 @@ class OrderRefund(models.Model):
         null=True, blank=True
     )
 
+    objects = ScopedManager(organizer='order__event__organizer')
+
     class Meta:
         ordering = ('local_id',)
 
@@ -1443,7 +1546,7 @@ class OrderRefund(models.Model):
 
     @info_data.setter
     def info_data(self, d):
-        self.info = json.dumps(d)
+        self.info = json.dumps(d, sort_keys=True)
 
     @cached_property
     def payment_provider(self):
@@ -1488,7 +1591,7 @@ class OrderRefund(models.Model):
         super().save(*args, **kwargs)
 
 
-class ActivePositionManager(models.Manager):
+class ActivePositionManager(ScopedManager(organizer='order__event__organizer').__class__):
     def get_queryset(self):
         return super().get_queryset().filter(canceled=False)
 
@@ -1565,7 +1668,7 @@ class OrderFee(models.Model):
     )
     canceled = models.BooleanField(default=False)
 
-    all = models.Manager()
+    all = ScopedManager(organizer='order__event__organizer')
     objects = ActivePositionManager()
 
     @property
@@ -1662,6 +1765,7 @@ class OrderPosition(AbstractPosition):
         verbose_name=_('Tax value')
     )
     secret = models.CharField(max_length=64, default=generate_position_secret, db_index=True)
+    web_secret = models.CharField(max_length=32, default=generate_secret, db_index=True)
     pseudonymization_id = models.CharField(
         max_length=16,
         unique=True,
@@ -1669,7 +1773,7 @@ class OrderPosition(AbstractPosition):
     )
     canceled = models.BooleanField(default=False)
 
-    all = models.Manager()
+    all = ScopedManager(organizer='order__event__organizer')
     objects = ActivePositionManager()
 
     class Meta:
@@ -1769,6 +1873,7 @@ class OrderPosition(AbstractPosition):
 
         return super().save(*args, **kwargs)
 
+    @scopes_disabled()
     def assign_pseudonymization_id(self):
         # This omits some character pairs completely because they are hard to read even on screens (1/I and O/0)
         # and includes only one of two characters for some pairs because they are sometimes hard to distinguish in
@@ -1784,6 +1889,60 @@ class OrderPosition(AbstractPosition):
     @property
     def event(self):
         return self.order.event
+
+    def send_mail(self, subject: str, template: Union[str, LazyI18nString],
+                  context: Dict[str, Any]=None, log_entry_type: str='pretix.event.order.email.sent',
+                  user: User=None, headers: dict=None, sender: str=None, invoices: list=None,
+                  auth=None, attach_tickets=False):
+        """
+        Sends an email to the user that placed this order. Basically, this method does two things:
+
+        * Call ``pretix.base.services.mail.mail`` with useful values for the ``event``, ``locale``, ``recipient`` and
+          ``order`` parameters.
+
+        * Create a ``LogEntry`` with the email contents.
+
+        :param subject: Subject of the email
+        :param template: LazyI18nString or template filename, see ``pretix.base.services.mail.mail`` for more details
+        :param context: Dictionary to use for rendering the template
+        :param log_entry_type: Key to be used for the log entry
+        :param user: Administrative user who triggered this mail to be sent
+        :param headers: Dictionary with additional mail headers
+        :param sender: Custom email sender.
+        :param attach_tickets: Attach tickets of this order, if they are existing and ready to download
+        """
+        from pretix.base.services.mail import SendMailException, mail, render_mail
+
+        if not self.email:
+            return
+
+        for k, v in self.event.meta_data.items():
+            context['meta_' + k] = v
+
+        with language(self.locale):
+            recipient = self.email
+            try:
+                email_content = render_mail(template, context)
+                mail(
+                    recipient, subject, template, context,
+                    self.event, self.locale, self, headers, sender,
+                    invoices=invoices, attach_tickets=attach_tickets
+                )
+            except SendMailException:
+                raise
+            else:
+                self.log_action(
+                    log_entry_type,
+                    user=user,
+                    auth=auth,
+                    data={
+                        'subject': subject,
+                        'message': email_content,
+                        'recipient': recipient,
+                        'invoices': [i.pk for i in invoices] if invoices else [],
+                        'attach_tickets': attach_tickets,
+                    }
+                )
 
 
 class CartPosition(AbstractPosition):
@@ -1821,6 +1980,8 @@ class CartPosition(AbstractPosition):
         default=True
     )
     is_bundled = models.BooleanField(default=False)
+
+    objects = ScopedManager(organizer='event__organizer')
 
     class Meta:
         verbose_name = _("Cart position")
@@ -1870,6 +2031,8 @@ class InvoiceAddress(models.Model):
         verbose_name=_('Beneficiary'),
         blank=True
     )
+
+    objects = ScopedManager(organizer='order__event__organizer')
 
     def save(self, **kwargs):
         if self.order:

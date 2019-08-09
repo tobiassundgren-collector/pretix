@@ -1,6 +1,8 @@
 import copy
+import json
 import logging
 from decimal import Decimal
+from urllib.error import HTTPError
 
 import dateutil.parser
 import pytz
@@ -9,9 +11,13 @@ import vat_moss.id
 from django import forms
 from django.contrib import messages
 from django.core.exceptions import ValidationError
+from django.db.models import QuerySet
+from django.forms import Select
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import get_language, ugettext_lazy as _
+from django_countries import countries
+from django_countries.fields import Country, CountryField
 
 from pretix.base.forms.widgets import (
     BusinessBooleanRadio, DatePickerWidget, SplitDateTimePickerWidget,
@@ -19,9 +25,10 @@ from pretix.base.forms.widgets import (
 )
 from pretix.base.models import InvoiceAddress, Question, QuestionOption
 from pretix.base.models.tax import EU_COUNTRIES
-from pretix.base.settings import PERSON_NAME_SCHEMES
+from pretix.base.settings import PERSON_NAME_SCHEMES, PERSON_NAME_TITLE_GROUPS
 from pretix.base.templatetags.rich_text import rich_text
 from pretix.control.forms import SplitDateTimeField
+from pretix.helpers.escapejson import escapejson_attr
 from pretix.helpers.i18n import get_format_without_seconds
 from pretix.presale.signals import question_form_fields
 
@@ -31,14 +38,18 @@ logger = logging.getLogger(__name__)
 class NamePartsWidget(forms.MultiWidget):
     widget = forms.TextInput
 
-    def __init__(self, scheme: dict, field: forms.Field, attrs=None):
+    def __init__(self, scheme: dict, field: forms.Field, attrs=None, titles: list=None):
         widgets = []
         self.scheme = scheme
         self.field = field
+        self.titles = titles
         for fname, label, size in self.scheme['fields']:
             a = copy.copy(attrs) or {}
             a['data-fname'] = fname
-            widgets.append(self.widget(attrs=a))
+            if fname == 'title' and self.titles:
+                widgets.append(Select(attrs=a, choices=[('', '')] + [(d, d) for d in self.titles[1]]))
+            else:
+                widgets.append(self.widget(attrs=a))
         super().__init__(widgets, attrs)
 
     def decompress(self, value):
@@ -97,19 +108,34 @@ class NamePartsFormField(forms.MultiValueField):
             'max_length': kwargs.pop('max_length', None),
         }
         self.scheme_name = kwargs.pop('scheme')
+        self.titles = kwargs.pop('titles')
         self.scheme = PERSON_NAME_SCHEMES.get(self.scheme_name)
+        if self.titles:
+            self.scheme_titles = PERSON_NAME_TITLE_GROUPS.get(self.titles)
+        else:
+            self.scheme_titles = None
         self.one_required = kwargs.get('required', True)
         require_all_fields = kwargs.pop('require_all_fields', False)
         kwargs['required'] = False
         kwargs['widget'] = (kwargs.get('widget') or self.widget)(
-            scheme=self.scheme, field=self, **kwargs.pop('widget_kwargs', {})
+            scheme=self.scheme, titles=self.scheme_titles, field=self, **kwargs.pop('widget_kwargs', {})
         )
         defaults.update(**kwargs)
         for fname, label, size in self.scheme['fields']:
             defaults['label'] = label
-            field = forms.CharField(**defaults)
-            field.part_name = fname
-            fields.append(field)
+            if fname == 'title' and self.scheme_titles:
+                d = dict(defaults)
+                d.pop('max_length', None)
+                field = forms.ChoiceField(
+                    **d,
+                    choices=[('', '')] + [(d, d) for d in self.scheme_titles[1]]
+                )
+                field.part_name = fname
+                fields.append(field)
+            else:
+                field = forms.CharField(**defaults)
+                field.part_name = fname
+                fields.append(field)
         super().__init__(
             fields=fields, require_all_fields=False, *args, **kwargs
         )
@@ -154,6 +180,7 @@ class BaseQuestionsForm(forms.Form):
                 max_length=255,
                 required=event.settings.attendee_names_required,
                 scheme=event.settings.name_scheme,
+                titles=event.settings.name_scheme_titles,
                 label=_('Attendee name'),
                 initial=(cartpos.attendee_name_parts if cartpos else orderpos.attendee_name_parts),
             )
@@ -213,6 +240,14 @@ class BaseQuestionsForm(forms.Form):
                     widget=forms.Textarea,
                     initial=initial.answer if initial else None,
                 )
+            elif q.type == Question.TYPE_COUNTRYCODE:
+                field = CountryField().formfield(
+                    label=label, required=required,
+                    help_text=help_text,
+                    widget=forms.Select,
+                    empty_label='',
+                    initial=initial.answer if initial else None,
+                )
             elif q.type == Question.TYPE_CHOICE:
                 field = forms.ModelChoiceField(
                     queryset=q.options,
@@ -267,7 +302,7 @@ class BaseQuestionsForm(forms.Form):
 
             if q.dependency_question_id:
                 field.widget.attrs['data-question-dependency'] = q.dependency_question_id
-                field.widget.attrs['data-question-dependency-value'] = q.dependency_value
+                field.widget.attrs['data-question-dependency-values'] = escapejson_attr(json.dumps(q.dependency_values))
                 if q.type != 'M':
                     field.widget.attrs['required'] = q.required and not self.all_optional
                     field._required = q.required and not self.all_optional
@@ -288,26 +323,24 @@ class BaseQuestionsForm(forms.Form):
 
         question_cache = {f.question.pk: f.question for f in self.fields.values() if getattr(f, 'question', None)}
 
-        def question_is_visible(parentid, qval):
+        def question_is_visible(parentid, qvals):
             parentq = question_cache[parentid]
-            if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_value):
+            if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_values):
                 return False
             if 'question_%d' % parentid not in d:
                 return False
             dval = d.get('question_%d' % parentid)
-            if qval == 'True':
-                return dval
-            elif qval == 'False':
-                return not dval
-            elif isinstance(dval, QuestionOption):
-                return dval.identifier == qval
-            else:
-                return qval in [o.identifier for o in dval]
+            return (
+                ('True' in qvals and dval)
+                or ('False' in qvals and not dval)
+                or (isinstance(dval, QuestionOption) and dval.identifier in qvals)
+                or (isinstance(dval, (list, QuerySet)) and any(qval in [o.identifier for o in dval] for qval in qvals))
+            )
 
         def question_is_required(q):
             return (
                 q.required and
-                (not q.dependency_question_id or question_is_visible(q.dependency_question_id, q.dependency_value))
+                (not q.dependency_question_id or question_is_visible(q.dependency_question_id, q.dependency_values))
             )
 
         if not self.all_optional:
@@ -342,6 +375,27 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         self.request = kwargs.pop('request', None)
         self.validate_vat_id = kwargs.pop('validate_vat_id')
         self.all_optional = kwargs.pop('all_optional', False)
+
+        kwargs.setdefault('initial', {})
+        if not kwargs.get('instance') or not kwargs['instance'].country:
+            # Try to guess the initial country from either the country of the merchant
+            # or the locale. This will hopefully save at least some users some scrolling :)
+            locale = get_language()
+            country = event.settings.invoice_address_from_country
+            if not country:
+                valid_countries = countries.countries
+                if '-' in locale:
+                    parts = locale.split('-')
+                    if parts[1].upper() in valid_countries:
+                        country = Country(parts[1].upper())
+                    elif parts[0].upper() in valid_countries:
+                        country = Country(parts[0].upper())
+                else:
+                    if locale in valid_countries:
+                        country = Country(locale.upper())
+
+            kwargs['initial']['country'] = country
+
         super().__init__(*args, **kwargs)
         if not event.settings.invoice_address_vatid:
             del self.fields['vat_id']
@@ -367,6 +421,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
             max_length=255,
             required=event.settings.invoice_name_required and not self.all_optional,
             scheme=event.settings.name_scheme,
+            titles=event.settings.name_scheme_titles,
             label=_('Name'),
             initial=(self.instance.name_parts if self.instance else self.instance.name_parts),
         )
@@ -393,6 +448,12 @@ class BaseInvoiceAddressForm(forms.ModelForm):
 
         self.instance.name_parts = data.get('name_parts')
 
+        if all(
+                not v for k, v in data.items() if k not in ('is_business', 'country', 'name_parts')
+        ) and len(data.get('name_parts', {})) == 1:
+            # Do not save the country if it is the only field set -- we don't know the user even checked it!
+            self.cleaned_data['country'] = ''
+
         if self.validate_vat_id and self.instance.vat_id_validated and 'vat_id' not in self.changed_data:
             pass
         elif self.validate_vat_id and data.get('is_business') and data.get('country') in EU_COUNTRIES and data.get('vat_id'):
@@ -414,7 +475,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
                                                      'your country is currently not available. We will therefore '
                                                      'need to charge VAT on your invoice. You can get the tax amount '
                                                      'back via the VAT reimbursement process.'))
-            except vat_moss.errors.WebServiceError:
+            except (vat_moss.errors.WebServiceError, HTTPError):
                 logger.exception('VAT ID checking failed for country {}'.format(data.get('country')))
                 self.instance.vat_id_validated = False
                 if self.request and self.vat_warning:

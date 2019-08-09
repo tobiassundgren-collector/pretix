@@ -132,7 +132,7 @@ class OrderFilterForm(FilterForm):
             matching_positions = OrderPosition.objects.filter(
                 Q(order=OuterRef('pk')) & Q(
                     Q(attendee_name_cached__icontains=u) | Q(attendee_email__icontains=u)
-                    | Q(secret__istartswith=u)
+                    | Q(secret__istartswith=u) | Q(voucher__code__icontains=u)
                 )
             ).values('id')
 
@@ -177,11 +177,9 @@ class EventOrderFilterForm(OrderFilterForm):
     orders = {'code': 'code', 'email': 'email', 'total': 'total',
               'datetime': 'datetime', 'status': 'status'}
 
-    item = forms.ModelChoiceField(
+    item = forms.ChoiceField(
         label=_('Products'),
-        queryset=Item.objects.none(),
         required=False,
-        empty_label=_('All products')
     )
     subevent = forms.ModelChoiceField(
         label=pgettext_lazy('subevent', 'Date'),
@@ -241,12 +239,28 @@ class EventOrderFilterForm(OrderFilterForm):
         elif 'subevent':
             del self.fields['subevent']
 
+        choices = [('', _('All products'))]
+        for i in self.event.items.prefetch_related('variations').all():
+            variations = list(i.variations.all())
+            if variations:
+                choices.append((str(i.pk), _('{product} – Any variation').format(product=i.name)))
+                for v in variations:
+                    choices.append(('%d-%d' % (i.pk, v.pk), '%s – %s' % (i.name, v.value)))
+            else:
+                choices.append((str(i.pk), i.name))
+        self.fields['item'].choices = choices
+
     def filter_qs(self, qs):
         fdata = self.cleaned_data
         qs = super().filter_qs(qs)
 
-        if fdata.get('item'):
-            qs = qs.filter(all_positions__item=fdata.get('item'), all_positions__canceled=False).distinct()
+        item = fdata.get('item')
+        if item:
+            if '-' in item:
+                var = item.split('-')[1]
+                qs = qs.filter(all_positions__variation_id=var, all_positions__canceled=False).distinct()
+            else:
+                qs = qs.filter(all_positions__item_id=fdata.get('item'), all_positions__canceled=False).distinct()
 
         if fdata.get('subevent'):
             qs = qs.filter(all_positions__subevent=fdata.get('subevent'), all_positions__canceled=False).distinct()
@@ -926,3 +940,51 @@ class RefundFilterForm(FilterForm):
                                       OrderRefund.REFUND_STATE_EXTERNAL])
 
         return qs
+
+
+class OverviewFilterForm(FilterForm):
+    subevent = forms.ModelChoiceField(
+        label=pgettext_lazy('subevent', 'Date'),
+        queryset=SubEvent.objects.none(),
+        required=False,
+        empty_label=pgettext_lazy('subevent', 'All dates')
+    )
+    date_axis = forms.ChoiceField(
+        label=_('Date filter'),
+        choices=(
+            ('', _('Filter by…')),
+            ('order_date', _('Order date')),
+            ('last_payment_date', _('Date of last successful payment')),
+        ),
+        required=False,
+    )
+    date_from = forms.DateField(
+        label=_('Date from'),
+        required=False,
+        widget=DatePickerWidget,
+    )
+    date_until = forms.DateField(
+        label=_('Date until'),
+        required=False,
+        widget=DatePickerWidget,
+    )
+
+    def __init__(self, *args, **kwargs):
+        self.event = kwargs.pop('event')
+        super().__init__(*args, **kwargs)
+
+        if self.event.has_subevents:
+            self.fields['subevent'].queryset = self.event.subevents.all()
+            self.fields['subevent'].widget = Select2(
+                attrs={
+                    'data-model-select2': 'event',
+                    'data-select2-url': reverse('control:event.subevents.select2', kwargs={
+                        'event': self.event.slug,
+                        'organizer': self.event.organizer.slug,
+                    }),
+                    'data-placeholder': pgettext_lazy('subevent', 'All dates')
+                }
+            )
+            self.fields['subevent'].widget.choices = self.fields['subevent'].choices
+        elif 'subevent':
+            del self.fields['subevent']

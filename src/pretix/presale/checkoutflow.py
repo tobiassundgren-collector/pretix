@@ -1,3 +1,4 @@
+import inspect
 from decimal import Decimal
 
 from django.conf import settings
@@ -12,6 +13,7 @@ from django.utils.translation import (
     get_language, pgettext_lazy, ugettext_lazy as _,
 )
 from django.views.generic.base import TemplateResponseMixin
+from django_scopes import scopes_disabled
 
 from pretix.base.models import Order
 from pretix.base.models.orders import InvoiceAddress, OrderPayment
@@ -114,7 +116,10 @@ class BaseCheckoutFlowStep:
                 self.request._checkout_flow_invoice_address = InvoiceAddress()
             else:
                 try:
-                    self.request._checkout_flow_invoice_address = InvoiceAddress.objects.get(pk=iapk, order__isnull=True)
+                    with scopes_disabled():
+                        self.request._checkout_flow_invoice_address = InvoiceAddress.objects.get(
+                            pk=iapk, order__isnull=True
+                        )
                 except InvoiceAddress.DoesNotExist:
                     self.request._checkout_flow_invoice_address = InvoiceAddress()
         return self.request._checkout_flow_invoice_address
@@ -234,7 +239,8 @@ class AddOnsStep(CartMixin, AsyncAction, TemplateFlowStep):
                     'form': AddOnsForm(
                         event=self.request.event,
                         prefix='{}_{}'.format(cartpos.pk, iao.addon_category.pk),
-                        category=iao.addon_category,
+                        base_position=cartpos,
+                        iao=iao,
                         price_included=iao.price_included,
                         initial=current_addon_products,
                         data=(self.request.POST if self.request.method == 'POST' else None),
@@ -434,23 +440,22 @@ class QuestionsStep(QuestionsViewMixin, CartMixin, TemplateFlowStep):
                 q.pk: q for q in cp.item.questions_to_ask
             }
 
-            def question_is_visible(parentid, qval):
+            def question_is_visible(parentid, qvals):
                 parentq = question_cache[parentid]
-                if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_value):
+                if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_values):
                     return False
                 if parentid not in answ:
                     return False
-                if qval == 'True':
-                    return answ[parentid].answer == 'True'
-                elif qval == 'False':
-                    return answ[parentid].answer == 'False'
-                else:
-                    return qval in [o.identifier for o in answ[parentid].options.all()]
+                return (
+                    ('True' in qvals and answ[parentid].answer == 'True')
+                    or ('False' in qvals and answ[parentid].answer == 'False')
+                    or (any(qval in [o.identifier for o in answ[parentid].options.all()] for qval in qvals))
+                )
 
             def question_is_required(q):
                 return (
                     q.required and
-                    (not q.dependency_question_id or question_is_visible(q.dependency_question_id, q.dependency_value))
+                    (not q.dependency_question_id or question_is_visible(q.dependency_question_id, q.dependency_values))
                 )
 
             for q in cp.item.questions_to_ask:
@@ -509,9 +514,9 @@ class PaymentStep(QuestionsViewMixin, CartMixin, TemplateFlowStep):
             if not provider.is_enabled or not self._is_allowed(provider, self.request):
                 continue
             fee = provider.calculate_fee(self._total_order_value)
-            try:
+            if 'total' in inspect.signature(provider.payment_form_render).parameters:
                 form = provider.payment_form_render(self.request, self._total_order_value + fee)
-            except TypeError:
+            else:
                 form = provider.payment_form_render(self.request)
             providers.append({
                 'provider': provider,
@@ -721,7 +726,7 @@ class ConfirmStep(CartMixin, AsyncAction, TemplateFlowStep):
         return self.get_step_url(self.request)
 
     def get_order_url(self, order):
-        payment = order.payments.filter(state__in=[OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING]).first()
+        payment = order.payments.filter(state=OrderPayment.PAYMENT_STATE_CREATED).first()
         if not payment:
             return eventreverse(self.request.event, 'presale:event.order', kwargs={
                 'order': order.code,

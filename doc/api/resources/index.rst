@@ -23,3 +23,5 @@ Resources and endpoints
    waitinglist
    carts
    webhooks
+   seatingplans
+   billing_invoices

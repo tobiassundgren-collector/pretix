@@ -21,10 +21,12 @@ Your should install the following on your system:
 * Python 3.5 or newer
 * ``pip`` for Python 3 (Debian package: ``python3-pip``)
 * ``python-dev`` for Python 3 (Debian package: ``python3-dev``)
+* On Debian/Ubuntu: ``python-venv`` for Python 3 (Debian package: ``python3-venv``)
 * ``libffi`` (Debian package: ``libffi-dev``)
 * ``libssl`` (Debian package: ``libssl-dev``)
 * ``libxml2`` (Debian package ``libxml2-dev``)
 * ``libxslt`` (Debian package ``libxslt1-dev``)
+* ``libenchant1c2a`` (Debian package ``libenchant1c2a``)
 * ``msgfmt`` (Debian package ``gettext``)
 * ``git``
 
@@ -63,9 +65,7 @@ Then, create the local database::
     python manage.py migrate
 
 A first user with username ``admin@localhost`` and password ``admin`` will be automatically
-created. If you want to generate more test data, run::
-
-    python make_testdata.py
+created. 
 
 If you want to see pretix in a different language than English, you have to compile our language
 files::

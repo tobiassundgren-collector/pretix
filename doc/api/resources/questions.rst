@@ -30,6 +30,7 @@ type                                  string                     The expected ty
                                                                  * ``D`` – date
                                                                  * ``H`` – time
                                                                  * ``W`` – date and time
+                                                                 * ``CC`` – country code (ISO 3666-1 alpha-2)
 required                              boolean                    If ``true``, the question needs to be filled out.
 position                              integer                    An integer, used for sorting
 items                                 list of integers           List of item IDs this question is assigned to.
@@ -38,6 +39,8 @@ identifier                            string                     An arbitrary st
 ask_during_checkin                    boolean                    If ``true``, this question will not be asked while
                                                                  buying the ticket, but will show up when redeeming
                                                                  the ticket instead.
+hidden                                boolean                    If ``true``, the question will only be shown in the
+                                                                 backend.
 options                               list of objects            In case of question type ``C`` or ``M``, this lists the
                                                                  available objects. Only writable during creation,
                                                                  use separate endpoint to modify this later.
@@ -51,11 +54,12 @@ dependency_question                   integer                    Internal ID of 
                                                                  this attribute is set to the value given in
                                                                  ``dependency_value``. This cannot be combined with
                                                                  ``ask_during_checkin``.
-dependency_value                      string                     The value ``dependency_question`` needs to be set to.
-                                                                 If ``dependency_question`` is set to a boolean
-                                                                 question, this should be ``"true"`` or ``"false"``.
-                                                                 Otherwise, it should be the ``identifier`` of a
-                                                                 question option.
+dependency_values                     list of strings            If ``dependency_question`` is set to a boolean
+                                                                 question, this should be ``["True"]`` or ``["False"]``.
+                                                                 Otherwise, it should be a list of ``identifier`` values
+                                                                 of question options.
+dependency_value                      string                     An old version of ``dependency_values`` that only allows
+                                                                 for one value. **Deprecated.**
 ===================================== ========================== =======================================================
 
 .. versionchanged:: 1.12
@@ -67,6 +71,14 @@ dependency_value                      string                     The value ``dep
 
   Write methods have been added. The attribute ``identifier`` has been added to both the resource itself and the
   options resource. The ``position`` attribute has been added to the options resource.
+
+.. versionchanged:: 2.7
+
+  The attribute ``hidden`` and the question type ``CC`` have been added.
+
+.. versionchanged:: 3.0
+
+  The attribute ``dependency_values`` has been added.
 
 Endpoints
 ---------
@@ -110,8 +122,10 @@ Endpoints
             "position": 1,
             "identifier": "WY3TP9SL",
             "ask_during_checkin": false,
+            "hidden": false,
             "dependency_question": null,
             "dependency_value": null,
+            "dependency_values": [],
             "options": [
               {
                 "id": 1,
@@ -177,8 +191,10 @@ Endpoints
         "position": 1,
         "identifier": "WY3TP9SL",
         "ask_during_checkin": false,
+        "hidden": false,
         "dependency_question": null,
         "dependency_value": null,
+        "dependency_values": [],
         "options": [
           {
             "id": 1,
@@ -219,7 +235,7 @@ Endpoints
       POST /api/v1/organizers/bigevents/events/sampleconf/questions/ HTTP/1.1
       Host: pretix.eu
       Accept: application/json, text/javascript
-      Content: application/json
+      Content-Type: application/json
 
       {
         "question": {"en": "T-Shirt size"},
@@ -228,8 +244,9 @@ Endpoints
         "items": [1, 2],
         "position": 1,
         "ask_during_checkin": false,
+        "hidden": false,
         "dependency_question": null,
-        "dependency_value": null,
+        "dependency_values": [],
         "options": [
           {
             "answer": {"en": "S"}
@@ -261,8 +278,10 @@ Endpoints
         "position": 1,
         "identifier": "WY3TP9SL",
         "ask_during_checkin": false,
+        "hidden": false,
         "dependency_question": null,
         "dependency_value": null,
+        "dependency_values": [],
         "options": [
           {
             "id": 1,
@@ -332,8 +351,10 @@ Endpoints
         "position": 2,
         "identifier": "WY3TP9SL",
         "ask_during_checkin": false,
+        "hidden": false,
         "dependency_question": null,
         "dependency_value": null,
+        "dependency_values": [],
         "options": [
           {
             "id": 1,

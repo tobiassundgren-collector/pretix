@@ -5,9 +5,10 @@ from unittest import mock
 
 import pytest
 from django.utils.timezone import now
+from django_scopes import scopes_disabled
 from pytz import UTC
 
-from pretix.base.models import Question
+from pretix.base.models import Question, SeatingPlan
 from pretix.base.models.orders import CartPosition
 
 
@@ -63,6 +64,7 @@ TEST_CARTPOSITION_RES = {
     'datetime': '2018-06-11T10:00:00Z',
     'expires': '2018-06-11T10:00:00Z',
     'includes_tax': True,
+    'seat': None,
     'answers': []
 }
 
@@ -175,7 +177,8 @@ def test_cartpos_create(token_client, organizer, event, item, quota, question):
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    cp = CartPosition.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        cp = CartPosition.objects.get(pk=resp.data['id'])
     assert cp.price == Decimal('23.00')
     assert cp.item == item
     assert cp.attendee_name_parts == {'full_name': 'Peter'}
@@ -193,7 +196,8 @@ def test_cartpos_create_name_optional(token_client, organizer, event, item, quot
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    cp = CartPosition.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        cp = CartPosition.objects.get(pk=resp.data['id'])
     assert cp.price == Decimal('23.00')
     assert cp.item == item
     assert cp.attendee_name_parts == {}
@@ -217,7 +221,8 @@ def test_cartpos_create_legacy_name(token_client, organizer, event, item, quota,
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    cp = CartPosition.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        cp = CartPosition.objects.get(pk=resp.data['id'])
     assert cp.price == Decimal('23.00')
     assert cp.item == item
     assert cp.attendee_name_parts == {'_legacy': 'Peter'}
@@ -247,7 +252,8 @@ def test_cartpos_cart_id_optional(token_client, organizer, event, item, quota, q
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    cp = CartPosition.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        cp = CartPosition.objects.get(pk=resp.data['id'])
     assert cp.price == Decimal('23.00')
     assert cp.item == item
     assert len(cp.cart_id) > 48
@@ -300,7 +306,8 @@ def test_cartpos_create_item_validation(token_client, organizer, event, item, it
     assert resp.status_code == 400
     assert resp.data == {'item': ['The specified item does not belong to this event.']}
 
-    var2 = item2.variations.create(value="A")
+    with scopes_disabled():
+        var2 = item2.variations.create(value="A")
 
     res['item'] = item.pk
     res['variation'] = var2.pk
@@ -312,7 +319,8 @@ def test_cartpos_create_item_validation(token_client, organizer, event, item, it
     assert resp.status_code == 400
     assert resp.data == {'non_field_errors': ['You cannot specify a variation for this item.']}
 
-    var1 = item.variations.create(value="A")
+    with scopes_disabled():
+        var1 = item.variations.create(value="A")
     res['item'] = item.pk
     res['variation'] = var1.pk
     resp = token_client.post(
@@ -361,7 +369,8 @@ def test_cartpos_expires_optional(token_client, organizer, event, item, quota, q
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    cp = CartPosition.objects.get(pk=resp.data['id'])
+    with scopes_disabled():
+        cp = CartPosition.objects.get(pk=resp.data['id'])
     assert cp.price == Decimal('23.00')
     assert cp.item == item
     assert cp.expires - now() > datetime.timedelta(minutes=25)
@@ -410,7 +419,8 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
     assert resp.data == {
         'answers': [{'non_field_errors': ['You need to specify options if the question is of a choice type.']}]}
 
-    question.options.create(answer="L")
+    with scopes_disabled():
+        question.options.create(answer="L")
     res['answers'][0]['options'] = [
         question.options.first().pk,
         question.options.last().pk,
@@ -445,8 +455,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.question == question
     assert answ.answer == "XL, L"
 
@@ -460,8 +471,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.answer == "3.45"
 
     question.type = Question.TYPE_NUMBER
@@ -486,8 +498,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.answer == "True"
 
     question.type = Question.TYPE_BOOLEAN
@@ -499,8 +512,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.answer == "False"
 
     question.type = Question.TYPE_BOOLEAN
@@ -523,8 +537,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.answer == "2018-05-14"
 
     question.type = Question.TYPE_DATE
@@ -548,8 +563,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.answer == "2018-05-14 13:00:00+00:00"
 
     question.type = Question.TYPE_DATETIME
@@ -574,8 +590,9 @@ def test_cartpos_create_answer_validation(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 201
-    pos = CartPosition.objects.get(pk=resp.data['id'])
-    answ = pos.answers.first()
+    with scopes_disabled():
+        pos = CartPosition.objects.get(pk=resp.data['id'])
+        answ = pos.answers.first()
     assert answ.answer == "13:00:00"
 
     question.type = Question.TYPE_TIME
@@ -605,3 +622,108 @@ def test_cartpos_create_quota_validation(token_client, organizer, event, item, q
     )
     assert resp.status_code == 400
     assert resp.data == ['There is not enough quota available on quota "Budget Quota" to perform the operation.']
+
+
+@pytest.fixture
+def seat(event, organizer, item):
+    SeatingPlan.objects.create(
+        name="Plan", organizer=organizer, layout="{}"
+    )
+    event.seat_category_mappings.create(
+        layout_category='Stalls', product=item
+    )
+    return event.seats.create(name="A1", product=item, seat_guid="A1")
+
+
+@pytest.mark.django_db
+def test_cartpos_create_with_seat(token_client, organizer, event, item, quota, seat, question):
+    res = copy.deepcopy(CARTPOS_CREATE_PAYLOAD)
+    res['item'] = item.pk
+    res['seat'] = seat.seat_guid
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/cartpositions/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 201
+    with scopes_disabled():
+        p = CartPosition.objects.get(pk=resp.data['id'])
+    assert p.seat == seat
+
+
+@pytest.mark.django_db
+def test_cartpos_create_with_blocked_seat(token_client, organizer, event, item, quota, seat, question):
+    seat.blocked = True
+    seat.save()
+    res = copy.deepcopy(CARTPOS_CREATE_PAYLOAD)
+    res['item'] = item.pk
+    res['seat'] = seat.seat_guid
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/cartpositions/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 400
+    assert resp.data == ['The selected seat "A1" is not available.']
+
+
+@pytest.mark.django_db
+def test_cartpos_create_with_used_seat(token_client, organizer, event, item, quota, seat, question):
+    CartPosition.objects.create(
+        event=event, cart_id='aaa', item=item,
+        price=21.5, expires=now() + datetime.timedelta(minutes=10), seat=seat
+    )
+    res = copy.deepcopy(CARTPOS_CREATE_PAYLOAD)
+    res['item'] = item.pk
+    res['seat'] = seat.seat_guid
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/cartpositions/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 400
+    assert resp.data == ['The selected seat "A1" is not available.']
+
+
+@pytest.mark.django_db
+def test_cartpos_create_with_unknown_seat(token_client, organizer, event, item, quota, seat, question):
+    res = copy.deepcopy(CARTPOS_CREATE_PAYLOAD)
+    res['item'] = item.pk
+    res['seat'] = seat.seat_guid + '_'
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/cartpositions/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 400
+    assert resp.data == ['The specified seat does not exist.']
+
+
+@pytest.mark.django_db
+def test_cartpos_create_require_seat(token_client, organizer, event, item, quota, seat, question):
+    res = copy.deepcopy(CARTPOS_CREATE_PAYLOAD)
+    res['item'] = item.pk
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/cartpositions/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 400
+    assert resp.data == ['The specified product requires to choose a seat.']
+
+
+@pytest.mark.django_db
+def test_cartpos_create_unseated(token_client, organizer, event, item, quota, seat, question):
+    with scopes_disabled():
+        item2 = event.items.create(name="Budget Ticket", default_price=23)
+        quota.items.add(item2)
+    res = copy.deepcopy(CARTPOS_CREATE_PAYLOAD)
+    res['item'] = item2.pk
+    res['seat'] = seat.seat_guid
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/cartpositions/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 400
+    assert resp.data == ['The specified product does not allow to choose a seat.']

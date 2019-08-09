@@ -1,19 +1,31 @@
+import inspect
 import logging
+import os
+import re
 import smtplib
+import warnings
+from email.encoders import encode_noop
+from email.mime.image import MIMEImage
 from email.utils import formataddr
 from typing import Any, Dict, List, Union
+from urllib.parse import urljoin, urlparse
 
 import cssutils
+import requests
+from bs4 import BeautifulSoup
 from celery import chain
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives, get_connection
 from django.template.loader import get_template
 from django.utils.translation import ugettext as _
+from django_scopes import scope, scopes_disabled
 from i18nfield.strings import LazyI18nString
 
 from pretix.base.email import ClassicMailRenderer
 from pretix.base.i18n import language
-from pretix.base.models import Event, Invoice, InvoiceAddress, Order
+from pretix.base.models import (
+    Event, Invoice, InvoiceAddress, Order, OrderPosition,
+)
 from pretix.base.services.invoices import invoice_pdf_task
 from pretix.base.services.tasks import TransactionAwareTask
 from pretix.base.services.tickets import get_tickets_for_order
@@ -38,8 +50,8 @@ class SendMailException(Exception):
 
 def mail(email: str, subject: str, template: Union[str, LazyI18nString],
          context: Dict[str, Any]=None, event: Event=None, locale: str=None,
-         order: Order=None, headers: dict=None, sender: str=None, invoices: list=None,
-         attach_tickets=False):
+         order: Order=None, position: OrderPosition=None, headers: dict=None, sender: str=None,
+         invoices: list=None, attach_tickets=False):
     """
     Sends out an email to a user. The mail will be sent synchronously or asynchronously depending on the installation.
 
@@ -59,6 +71,9 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
 
     :param order: The order this email is related to (optional). If set, this will be used to include a link to the
         order below the email.
+
+    :param order: The order position this email is related to (optional). If set, this will be used to include a link
+        to the order position instead of the order below the email.
 
     :param headers: A dict of custom mail headers to add to the mail
 
@@ -100,7 +115,8 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
         subject = str(subject).format_map(context)
         sender = sender or (event.settings.get('mail_from') if event else settings.MAIL_FROM)
         if event:
-            sender = formataddr((str(event.name), sender))
+            sender_name = event.settings.mail_from_name or str(event.name)
+            sender = formataddr((sender_name, sender))
         else:
             sender = formataddr((settings.PRETIX_INSTANCE_NAME, sender))
 
@@ -111,7 +127,8 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
         if event:
             renderer = event.get_html_mail_renderer()
             if event.settings.mail_bcc:
-                bcc.append(event.settings.mail_bcc)
+                for bcc_mail in event.settings.mail_bcc.split(','):
+                    bcc.append(bcc_mail.strip())
 
             if event.settings.mail_from == settings.DEFAULT_FROM_EMAIL and event.settings.contact_mail and not headers.get('Reply-To'):
                 headers['Reply-To'] = event.settings.contact_mail
@@ -130,9 +147,26 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
                 body_plain += signature
                 body_plain += "\r\n\r\n-- \r\n"
 
-            if order:
-                if order.testmode:
-                    subject = "[TESTMODE] " + subject
+            if order and order.testmode:
+                subject = "[TESTMODE] " + subject
+
+            if order and position:
+                body_plain += _(
+                    "You are receiving this email because someone placed an order for {event} for you."
+                ).format(event=event.name)
+                body_plain += "\r\n"
+                body_plain += _(
+                    "You can view your order details at the following URL:\n{orderurl}."
+                ).replace("\n", "\r\n").format(
+                    event=event.name, orderurl=build_absolute_uri(
+                        order.event, 'presale:event.order.position', kwargs={
+                            'order': order.code,
+                            'secret': position.web_secret,
+                            'position': position.positionid,
+                        }
+                    )
+                )
+            elif order:
                 body_plain += _(
                     "You are receiving this email because you placed an order for {event}."
                 ).format(event=event.name)
@@ -141,16 +175,24 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
                     "You can view your order details at the following URL:\n{orderurl}."
                 ).replace("\n", "\r\n").format(
                     event=event.name, orderurl=build_absolute_uri(
-                        order.event, 'presale:event.order', kwargs={
+                        order.event, 'presale:event.order.open', kwargs={
                             'order': order.code,
-                            'secret': order.secret
+                            'secret': order.secret,
+                            'hash': order.email_confirm_hash()
                         }
                     )
                 )
             body_plain += "\r\n"
 
         try:
-            body_html = renderer.render(content_plain, signature, str(subject), order)
+            if 'position' in inspect.signature(renderer.render).parameters:
+                body_html = renderer.render(content_plain, signature, str(subject), order, position)
+            else:
+                # Backwards compatibility
+                warnings.warn('E-mail renderer called without position argument because position argument is not '
+                              'supported.',
+                              DeprecationWarning)
+                body_html = renderer.render(content_plain, signature, str(subject), order)
         except:
             logger.exception('Could not render HTML body')
             body_html = None
@@ -164,8 +206,9 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
             sender=sender,
             event=event.id if event else None,
             headers=headers,
-            invoices=[i.pk for i in invoices] if invoices else [],
+            invoices=[i.pk for i in invoices] if invoices and not position else [],
             order=order.pk if order else None,
+            position=position.pk if position else None,
             attach_tickets=attach_tickets
         )
 
@@ -180,98 +223,109 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
 
 @app.task(base=TransactionAwareTask, bind=True)
 def mail_send_task(self, *args, to: List[str], subject: str, body: str, html: str, sender: str,
-                   event: int=None, headers: dict=None, bcc: List[str]=None, invoices: List[int]=None,
-                   order: int=None, attach_tickets=False) -> bool:
+                   event: int=None, position: int=None, headers: dict=None, bcc: List[str]=None,
+                   invoices: List[int]=None, order: int=None, attach_tickets=False) -> bool:
     email = EmailMultiAlternatives(subject, body, sender, to=to, bcc=bcc, headers=headers)
     if html is not None:
-        email.attach_alternative(html, "text/html")
-    if invoices:
-        invoices = Invoice.objects.filter(pk__in=invoices)
-        for inv in invoices:
-            if inv.file:
-                try:
-                    email.attach(
-                        '{}.pdf'.format(inv.number),
-                        inv.file.file.read(),
-                        'application/pdf'
-                    )
-                except:
-                    logger.exception('Could not attach invoice to email')
-                    pass
+        html_with_cid, cid_images = replace_images_with_cid_paths(html)
+        email = attach_cid_images(email, cid_images, verify_ssl=True)
+        email.attach_alternative(html_with_cid, "text/html")
 
     if event:
-        event = Event.objects.get(id=event)
+        with scopes_disabled():
+            event = Event.objects.get(id=event)
         backend = event.get_mail_backend()
+        cm = lambda: scope(organizer=event.organizer)  # noqa
     else:
         backend = get_connection(fail_silently=False)
+        cm = lambda: scopes_disabled()  # noqa
 
-    if event:
-        if order:
-            try:
-                order = event.orders.get(pk=order)
-            except Order.DoesNotExist:
-                order = None
-            else:
-                if attach_tickets:
-                    args = []
-                    attach_size = 0
-                    for name, ct in get_tickets_for_order(order):
-                        content = ct.file.read()
-                        args.append((name, content, ct.type))
-                        attach_size += len(content)
-
-                    if attach_size < 4 * 1024 * 1024:
-                        # Do not attach more than 4MB, it will bounce way to often.
-                        for a in args:
-                            try:
-                                email.attach(*a)
-                            except:
-                                pass
-                    else:
-                        order.log_action(
-                            'pretix.event.order.email.attachments.skipped',
-                            data={
-                                'subject': 'Attachments skipped',
-                                'message': 'Attachment have not been send because {} bytes are likely too large to arrive.'.format(attach_size),
-                                'recipient': '',
-                                'invoices': [],
-                            }
+    with cm():
+        if invoices:
+            invoices = Invoice.objects.filter(pk__in=invoices)
+            for inv in invoices:
+                if inv.file:
+                    try:
+                        email.attach(
+                            '{}.pdf'.format(inv.number),
+                            inv.file.file.read(),
+                            'application/pdf'
                         )
+                    except:
+                        logger.exception('Could not attach invoice to email')
+                        pass
+        if event:
+            if order:
+                try:
+                    order = event.orders.get(pk=order)
+                except Order.DoesNotExist:
+                    order = None
+                else:
+                    if position:
+                        try:
+                            position = order.positions.get(pk=position)
+                        except OrderPosition.DoesNotExist:
+                            attach_tickets = False
+                    if attach_tickets:
+                        args = []
+                        attach_size = 0
+                        for name, ct in get_tickets_for_order(order, base_position=position):
+                            content = ct.file.read()
+                            args.append((name, content, ct.type))
+                            attach_size += len(content)
 
-        email = email_filter.send_chained(event, 'message', message=email, order=order)
+                        if attach_size < 4 * 1024 * 1024:
+                            # Do not attach more than 4MB, it will bounce way to often.
+                            for a in args:
+                                try:
+                                    email.attach(*a)
+                                except:
+                                    pass
+                        else:
+                            order.log_action(
+                                'pretix.event.order.email.attachments.skipped',
+                                data={
+                                    'subject': 'Attachments skipped',
+                                    'message': 'Attachment have not been send because {} bytes are likely too large to arrive.'.format(attach_size),
+                                    'recipient': '',
+                                    'invoices': [],
+                                }
+                            )
 
-    try:
-        backend.send_messages([email])
-    except smtplib.SMTPResponseException as e:
-        if e.smtp_code in (101, 111, 421, 422, 431, 442, 447, 452):
-            self.retry(max_retries=5, countdown=2 ** (self.request.retries * 2))
-        logger.exception('Error sending email')
+            email = email_filter.send_chained(event, 'message', message=email, order=order)
 
-        if order:
-            order.log_action(
-                'pretix.event.order.email.error',
-                data={
-                    'subject': 'SMTP code {}'.format(e.smtp_code),
-                    'message': e.smtp_error.decode() if isinstance(e.smtp_error, bytes) else str(e.smtp_error),
-                    'recipient': '',
-                    'invoices': [],
-                }
-            )
+        try:
+            backend.send_messages([email])
+        except smtplib.SMTPResponseException as e:
+            if e.smtp_code in (101, 111, 421, 422, 431, 442, 447, 452):
+                self.retry(max_retries=5, countdown=2 ** (self.request.retries * 2))
+            logger.exception('Error sending email')
 
-        raise SendMailException('Failed to send an email to {}.'.format(to))
-    except Exception as e:
-        if order:
-            order.log_action(
-                'pretix.event.order.email.error',
-                data={
-                    'subject': 'Internal error',
-                    'message': str(e),
-                    'recipient': '',
-                    'invoices': [],
-                }
-            )
-        logger.exception('Error sending email')
-        raise SendMailException('Failed to send an email to {}.'.format(to))
+            if order:
+                order.log_action(
+                    'pretix.event.order.email.error',
+                    data={
+                        'subject': 'SMTP code {}'.format(e.smtp_code),
+                        'message': e.smtp_error.decode() if isinstance(e.smtp_error, bytes) else str(e.smtp_error),
+                        'recipient': '',
+                        'invoices': [],
+                    }
+                )
+
+            raise SendMailException('Failed to send an email to {}.'.format(to))
+        except Exception as e:
+            if order:
+                order.log_action(
+                    'pretix.event.order.email.error',
+                    data={
+                        'subject': 'Internal error',
+                        'message': str(e),
+                        'recipient': '',
+                        'invoices': [],
+                    }
+                )
+            logger.exception('Error sending email')
+            raise SendMailException('Failed to send an email to {}.'.format(to))
 
 
 def mail_send(*args, **kwargs):
@@ -287,3 +341,92 @@ def render_mail(template, context):
         tpl = get_template(template)
         body = tpl.render(context)
     return body
+
+
+def replace_images_with_cid_paths(body_html):
+    if body_html:
+        email = BeautifulSoup(body_html, "lxml")
+        cid_images = []
+        for image in email.findAll('img'):
+            original_image_src = image['src']
+
+            try:
+                cid_id = "image_%s" % cid_images.index(original_image_src)
+            except ValueError:
+                cid_images.append(original_image_src)
+                cid_id = "image_%s" % (len(cid_images) - 1)
+
+            image['src'] = "cid:%s" % cid_id
+
+        return email.prettify(), cid_images
+    else:
+        return body_html, []
+
+
+def attach_cid_images(msg, cid_images, verify_ssl=True):
+    if cid_images and len(cid_images) > 0:
+
+        msg.mixed_subtype = 'related'
+        for key, image in enumerate(cid_images):
+            cid = 'image_%s' % key
+            try:
+                mime_image = convert_image_to_cid(
+                    image, cid, verify_ssl)
+                if mime_image:
+                    msg.attach(mime_image)
+            except:
+                logger.exception("ERROR attaching CID image %s[%s]" % (cid, image))
+
+    return msg
+
+
+def convert_image_to_cid(image_src, cid_id, verify_ssl=True):
+    try:
+        if image_src.startswith('data:image/'):
+            image_type, image_content = image_src.split(',', 1)
+            image_type = re.findall(r'data:image/(\w+);base64', image_type)[0]
+            mime_image = MIMEImage(image_content, _subtype=image_type, _encoder=encode_noop)
+            mime_image.add_header('Content-Transfer-Encoding', 'base64')
+        elif image_src.startswith('data:'):
+            logger.exception("ERROR creating MIME element %s[%s]" % (cid_id, image_src))
+            return None
+        else:
+            image_src = normalize_image_url(image_src)
+
+            path = urlparse(image_src).path
+            guess_subtype = os.path.splitext(path)[1][1:]
+
+            response = requests.get(image_src, verify=verify_ssl)
+            mime_image = MIMEImage(
+                response.content, _subtype=guess_subtype)
+
+        mime_image.add_header('Content-ID', '<%s>' % cid_id)
+
+        return mime_image
+    except:
+        logger.exception("ERROR creating mime_image %s[%s]" % (cid_id, image_src))
+        return None
+
+
+def normalize_image_url(url):
+    if '://' not in url:
+        """
+        If we see a relative URL in an email, we can't know if it is meant to be a media file
+        or a static file, so we need to guess. If it is a static file included with the
+        ``{% static %}`` template tag (as it should be), then ``STATIC_URL`` is already prepended.
+        If ``STATIC_URL`` is absolute, then ``url`` should already be absolute and this
+        function should not be triggered. Thus, if we see a relative URL and ``STATIC_URL``
+        is absolute *or* ``url`` does not start with ``STATIC_URL``, we can be sure this
+        is a media file (or a programmer error …).
+
+        Constructing the URL of either a static file or a media file from settings is still
+        not clean, since custom storage backends might very well use more complex approaches
+        to build those URLs. However, this is good enough as a best-effort approach. Complex
+        storage backends (such as cloud storages) will return absolute URLs anyways so this
+        function is not needed in that case.
+        """
+        if '://' not in settings.STATIC_URL and url.startswith(settings.STATIC_URL):
+            url = urljoin(settings.SITE_URL, url)
+        else:
+            url = urljoin(settings.MEDIA_URL, url)
+    return url

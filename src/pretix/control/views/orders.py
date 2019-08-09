@@ -3,7 +3,7 @@ import logging
 import mimetypes
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal, DecimalException
 
 import pytz
@@ -24,7 +24,7 @@ from django.utils import formats
 from django.utils.formats import date_format
 from django.utils.functional import cached_property
 from django.utils.http import is_safe_url
-from django.utils.timezone import now
+from django.utils.timezone import make_aware, now
 from django.utils.translation import ugettext_lazy as _
 from django.views.generic import (
     DetailView, FormView, ListView, TemplateView, View,
@@ -38,7 +38,6 @@ from pretix.base.models import (
     Item, ItemVariation, LogEntry, Order, QuestionAnswer, Quota,
     generate_position_secret, generate_secret,
 )
-from pretix.base.models.event import SubEvent
 from pretix.base.models.orders import (
     OrderFee, OrderPayment, OrderPosition, OrderRefund,
 )
@@ -55,6 +54,7 @@ from pretix.base.services.mail import SendMailException, render_mail
 from pretix.base.services.orders import (
     OrderChangeManager, OrderError, approve_order, cancel_order, deny_order,
     extend_order, mark_order_expired, mark_order_refunded,
+    notify_user_changed_order,
 )
 from pretix.base.services.stats import order_overview
 from pretix.base.services.tickets import generate
@@ -65,7 +65,9 @@ from pretix.base.templatetags.money import money_filter
 from pretix.base.templatetags.rich_text import markdown_compile_email
 from pretix.base.views.mixins import OrderQuestionsViewMixin
 from pretix.base.views.tasks import AsyncAction
-from pretix.control.forms.filter import EventOrderFilterForm, RefundFilterForm
+from pretix.control.forms.filter import (
+    EventOrderFilterForm, OverviewFilterForm, RefundFilterForm,
+)
 from pretix.control.forms.orders import (
     CancelForm, CommentForm, ConfirmPaymentForm, ExporterForm, ExtendForm,
     MarkPaidForm, OrderContactForm, OrderLocaleForm, OrderMailForm,
@@ -862,8 +864,15 @@ class OrderTransition(OrderView):
                     fee=None
                 )
 
+            payment_date = None
+            if self.mark_paid_form.cleaned_data['payment_date'] != now().date():
+                payment_date = make_aware(datetime.combine(
+                    self.mark_paid_form.cleaned_data['payment_date'],
+                    time(hour=0, minute=0, second=0)
+                ), self.order.event.timezone)
+
             try:
-                p.confirm(user=self.request.user, count_waitinglist=False,
+                p.confirm(user=self.request.user, count_waitinglist=False, payment_date=payment_date,
                           force=self.mark_paid_form.cleaned_data.get('force', False))
             except Quota.QuotaExceededException as e:
                 p.state = OrderPayment.PAYMENT_STATE_FAILED
@@ -1109,7 +1118,8 @@ class InvoiceDownload(EventPermissionRequiredMixin, View):
             invoice_pdf_task.apply(args=(self.invoice.pk,))
             return self.get(request, *args, **kwargs)
 
-        resp['Content-Disposition'] = 'attachment; filename="{}.pdf"'.format(self.invoice.number)
+        resp['Content-Disposition'] = 'inline; filename="{}.pdf"'.format(self.invoice.number)
+        resp._csp_ignore = True  # Some browser's PDF readers do not work with CSP
         return resp
 
 
@@ -1229,7 +1239,8 @@ class OrderChange(OrderView):
                     ocm.add_position(item, variation,
                                      self.add_form.cleaned_data['price'],
                                      self.add_form.cleaned_data.get('addon_to'),
-                                     self.add_form.cleaned_data.get('subevent'))
+                                     self.add_form.cleaned_data.get('subevent'),
+                                     self.add_form.cleaned_data.get('seat'))
                 except OrderError as e:
                     self.add_form.custom_error = str(e)
                     return False
@@ -1258,6 +1269,9 @@ class OrderChange(OrderView):
                         variation = None
                     if item != p.item or variation != p.variation:
                         ocm.change_item(p, item, variation)
+
+                if p.seat and p.form.cleaned_data['seat'] and p.form.cleaned_data['seat'] != p.seat:
+                    ocm.change_seat(p, p.form.cleaned_data['seat'])
 
                 if self.request.event.has_subevents and p.form.cleaned_data['subevent'] and p.form.cleaned_data['subevent'] != p.subevent:
                     ocm.change_subevent(p, p.form.cleaned_data['subevent'])
@@ -1308,12 +1322,27 @@ class OrderModifyInformation(OrderQuestionsViewMixin, OrderView):
     only_user_visible = False
     all_optional = True
 
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['other_form'] = self.other_form
+        return ctx
+
+    @cached_property
+    def other_form(self):
+        return OtherOperationsForm(prefix='other', order=self.order, initial={'notify': False},
+                                   data=self.request.POST if self.request.method == "POST" else None)
+
     def post(self, request, *args, **kwargs):
-        failed = not self.save() or not self.invoice_form.is_valid()
+        failed = not self.save() or not self.invoice_form.is_valid() or not self.other_form.is_valid()
+        notify = self.other_form.cleaned_data['notify'] if self.other_form.is_valid() else True
         if failed:
             messages.error(self.request,
                            _("We had difficulties processing your input. Please review the errors below."))
             return self.get(request, *args, **kwargs)
+
+        if notify:
+            notify_user_changed_order(self.order)
+
         if hasattr(self.invoice_form, 'save'):
             self.invoice_form.save()
         self.order.log_action('pretix.event.order.modified', {
@@ -1365,6 +1394,7 @@ class OrderContactChange(OrderView):
                     },
                     user=self.request.user,
                 )
+
             if self.form.cleaned_data['regenerate_secrets']:
                 changed = True
                 self.order.secret = generate_secret()
@@ -1474,9 +1504,10 @@ class OrderSendMail(EventPermissionRequiredMixin, OrderViewMixin, FormView):
                 'code': order.code,
                 'date': date_format(order.datetime.astimezone(tz), 'SHORT_DATETIME_FORMAT'),
                 'expire_date': date_format(order.expires, 'SHORT_DATE_FORMAT'),
-                'url': build_absolute_uri(order.event, 'presale:event.order', kwargs={
+                'url': build_absolute_uri(order.event, 'presale:event.order.open', kwargs={
                     'order': order.code,
-                    'secret': order.secret
+                    'secret': order.secret,
+                    'hash': order.email_confirm_hash()
                 }),
                 'invoice_name': invoice_name,
                 'invoice_company': invoice_company,
@@ -1564,21 +1595,32 @@ class OverView(EventPermissionRequiredMixin, TemplateView):
     template_name = 'pretixcontrol/orders/overview.html'
     permission = 'can_view_orders'
 
+    @cached_property
+    def filter_form(self):
+        return OverviewFilterForm(data=self.request.GET, event=self.request.event)
+
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data()
 
-        subevent = None
-        if self.request.GET.get("subevent", "") != "" and self.request.event.has_subevents:
-            i = self.request.GET.get("subevent", "")
-            try:
-                subevent = self.request.event.subevents.get(pk=i)
-            except SubEvent.DoesNotExist:
-                pass
-
-        ctx['items_by_category'], ctx['total'] = order_overview(self.request.event, subevent=subevent)
-        ctx['subevent_warning'] = self.request.event.has_subevents and subevent and (
+        if self.filter_form.is_valid():
+            ctx['items_by_category'], ctx['total'] = order_overview(
+                self.request.event,
+                subevent=self.filter_form.cleaned_data.get('subevent'),
+                date_filter=self.filter_form.cleaned_data['date_axis'],
+                date_from=self.filter_form.cleaned_data['date_from'],
+                date_until=self.filter_form.cleaned_data['date_until'],
+            )
+        else:
+            ctx['items_by_category'], ctx['total'] = order_overview(
+                self.request.event,
+            )
+        ctx['subevent_warning'] = (
+            self.request.event.has_subevents and
+            self.filter_form.is_valid() and
+            self.filter_form.cleaned_data.get('subevent') and
             OrderFee.objects.filter(order__event=self.request.event).exclude(value=0).exists()
         )
+        ctx['filter_form'] = self.filter_form
         return ctx
 
 
@@ -1646,6 +1688,7 @@ class ExportMixin:
 
 class ExportDoView(EventPermissionRequiredMixin, ExportMixin, AsyncAction, View):
     permission = 'can_view_orders'
+    known_errortypes = ['ExportError']
     task = export
 
     def get_success_message(self, value):

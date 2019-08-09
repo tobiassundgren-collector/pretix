@@ -6,6 +6,7 @@ from django.shortcuts import get_object_or_404
 from django.utils.functional import cached_property
 from django.utils.timezone import now
 from django_filters.rest_framework import DjangoFilterBackend, FilterSet
+from django_scopes import scopes_disabled
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.fields import DateTimeField
@@ -24,11 +25,11 @@ from pretix.base.services.checkin import (
 )
 from pretix.helpers.database import FixedOrderBy
 
-
-class CheckinListFilter(FilterSet):
-    class Meta:
-        model = CheckinList
-        fields = ['subevent']
+with scopes_disabled():
+    class CheckinListFilter(FilterSet):
+        class Meta:
+            model = CheckinList
+            fields = ['subevent']
 
 
 class CheckinListViewSet(viewsets.ModelViewSet):
@@ -92,6 +93,7 @@ class CheckinListViewSet(viewsets.ModelViewSet):
         )
         if not clist.all_products:
             pqs = pqs.filter(item__in=clist.limit_products.values_list('id', flat=True))
+            cqs = cqs.filter(position__item__in=clist.limit_products.values_list('id', flat=True))
 
         ev = clist.subevent or clist.event
         response = {
@@ -146,15 +148,16 @@ class CheckinListViewSet(viewsets.ModelViewSet):
         return Response(response)
 
 
-class CheckinOrderPositionFilter(OrderPositionFilter):
+with scopes_disabled():
+    class CheckinOrderPositionFilter(OrderPositionFilter):
 
-    def has_checkin_qs(self, queryset, name, value):
-        return queryset.filter(last_checked_in__isnull=not value)
+        def has_checkin_qs(self, queryset, name, value):
+            return queryset.filter(last_checked_in__isnull=not value)
 
 
 class CheckinListPositionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CheckinListOrderPositionSerializer
-    queryset = OrderPosition.objects.none()
+    queryset = OrderPosition.all.none()
     filter_backends = (DjangoFilterBackend, RichOrderingFilter)
     ordering = ('attendee_name_cached', 'positionid')
     ordering_fields = (
@@ -229,7 +232,7 @@ class CheckinListPositionViewSet(viewsets.ReadOnlyModelViewSet):
                     )
                 ))
             ).select_related(
-                'item', 'variation', 'item__category', 'addon_to', 'order', 'order__invoice_address'
+                'item', 'variation', 'item__category', 'addon_to', 'order', 'order__invoice_address', 'seat'
             )
         else:
             qs = qs.prefetch_related(
@@ -239,7 +242,7 @@ class CheckinListPositionViewSet(viewsets.ReadOnlyModelViewSet):
                 ),
                 'answers', 'answers__options', 'answers__question',
                 Prefetch('addons', OrderPosition.objects.select_related('item', 'variation'))
-            ).select_related('item', 'variation', 'order', 'addon_to', 'order__invoice_address', 'order')
+            ).select_related('item', 'variation', 'order', 'addon_to', 'order__invoice_address', 'order', 'seat')
 
         if not self.checkinlist.all_products:
             qs = qs.filter(item__in=self.checkinlist.limit_products.values_list('id', flat=True))
@@ -278,6 +281,7 @@ class CheckinListPositionViewSet(viewsets.ReadOnlyModelViewSet):
                 nonce=nonce,
                 datetime=dt,
                 questions_supported=self.request.data.get('questions_supported', True),
+                canceled_supported=self.request.data.get('canceled_supported', False),
                 user=self.request.user,
                 auth=self.request.auth,
             )

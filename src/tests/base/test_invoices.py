@@ -7,6 +7,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.db import DatabaseError, transaction
 from django.utils.timezone import now
 from django_countries.fields import Country
+from django_scopes import scope, scopes_disabled
 
 from pretix.base.models import (
     Event, Invoice, InvoiceAddress, Item, ItemVariation, Order, OrderPosition,
@@ -15,7 +16,7 @@ from pretix.base.models import (
 from pretix.base.models.orders import OrderFee
 from pretix.base.services.invoices import (
     build_preview_invoice_pdf, generate_cancellation, generate_invoice,
-    invoice_pdf_task, regenerate_invoice,
+    invoice_pdf_task, invoice_qualified, regenerate_invoice,
 )
 from pretix.base.services.orders import OrderChangeManager
 from pretix.base.settings import GlobalSettingsObject
@@ -24,72 +25,74 @@ from pretix.base.settings import GlobalSettingsObject
 @pytest.fixture
 def env():
     o = Organizer.objects.create(name='Dummy', slug='dummy')
-    event = Event.objects.create(
-        organizer=o, name='Dummy', slug='dummy',
-        date_from=now(), plugins='pretix.plugins.banktransfer'
-    )
-    o = Order.objects.create(
-        code='FOO', event=event, email='dummy@dummy.test',
-        status=Order.STATUS_PENDING,
-        datetime=now(), expires=now() + timedelta(days=10),
-        total=0, locale='en'
-    )
-    tr = event.tax_rules.create(rate=Decimal('19.00'))
-    o.fees.create(fee_type=OrderFee.FEE_TYPE_PAYMENT, value=Decimal('0.25'), tax_rate=Decimal('19.00'),
-                  tax_value=Decimal('0.05'), tax_rule=tr)
-    ticket = Item.objects.create(event=event, name='Early-bird ticket',
-                                 category=None, default_price=23, tax_rule=tr,
-                                 admission=True)
-    t_shirt = Item.objects.create(event=event, name='T-Shirt',
-                                  category=None, default_price=42, tax_rule=tr,
-                                  admission=True)
-    variation = ItemVariation.objects.create(value='M', item=t_shirt)
-    OrderPosition.objects.create(
-        order=o,
-        item=ticket,
-        variation=None,
-        price=Decimal("23.00"),
-        positionid=1,
-    )
-    OrderPosition.objects.create(
-        order=o,
-        item=t_shirt,
-        variation=variation,
-        price=Decimal("42.00"),
-        positionid=2,
-    )
-    OrderPosition.objects.create(
-        order=o,
-        item=t_shirt,
-        variation=variation,
-        price=Decimal("42.00"),
-        positionid=3,
-        canceled=True
-    )
-    gs = GlobalSettingsObject()
-    gs.settings.ecb_rates_date = date.today()
-    gs.settings.ecb_rates_dict = json.dumps({
-        "USD": "1.1648",
-        "RON": "4.5638",
-        "CZK": "26.024",
-        "BGN": "1.9558",
-        "HRK": "7.4098",
-        "EUR": "1.0000",
-        "NOK": "9.3525",
-        "HUF": "305.15",
-        "DKK": "7.4361",
-        "PLN": "4.2408",
-        "GBP": "0.89350",
-        "SEK": "9.5883"
-    }, cls=DjangoJSONEncoder)
-    return event, o
+    with scope(organizer=o):
+        event = Event.objects.create(
+            organizer=o, name='Dummy', slug='dummy',
+            date_from=now(), plugins='pretix.plugins.banktransfer'
+        )
+        o = Order.objects.create(
+            code='FOO', event=event, email='dummy@dummy.test',
+            status=Order.STATUS_PENDING,
+            datetime=now(), expires=now() + timedelta(days=10),
+            total=0, locale='en'
+        )
+        tr = event.tax_rules.create(rate=Decimal('19.00'))
+        o.fees.create(fee_type=OrderFee.FEE_TYPE_PAYMENT, value=Decimal('0.25'), tax_rate=Decimal('19.00'),
+                      tax_value=Decimal('0.05'), tax_rule=tr)
+        ticket = Item.objects.create(event=event, name='Early-bird ticket',
+                                     category=None, default_price=23, tax_rule=tr,
+                                     admission=True)
+        t_shirt = Item.objects.create(event=event, name='T-Shirt',
+                                      category=None, default_price=42, tax_rule=tr,
+                                      admission=True)
+        variation = ItemVariation.objects.create(value='M', item=t_shirt)
+        OrderPosition.objects.create(
+            order=o,
+            item=ticket,
+            variation=None,
+            price=Decimal("23.00"),
+            positionid=1,
+        )
+        OrderPosition.objects.create(
+            order=o,
+            item=t_shirt,
+            variation=variation,
+            price=Decimal("42.00"),
+            positionid=2,
+        )
+        OrderPosition.objects.create(
+            order=o,
+            item=t_shirt,
+            variation=variation,
+            price=Decimal("42.00"),
+            positionid=3,
+            canceled=True
+        )
+        gs = GlobalSettingsObject()
+        gs.settings.ecb_rates_date = date.today()
+        gs.settings.ecb_rates_dict = json.dumps({
+            "USD": "1.1648",
+            "RON": "4.5638",
+            "CZK": "26.024",
+            "BGN": "1.9558",
+            "HRK": "7.4098",
+            "EUR": "1.0000",
+            "NOK": "9.3525",
+            "HUF": "305.15",
+            "DKK": "7.4361",
+            "PLN": "4.2408",
+            "GBP": "0.89350",
+            "SEK": "9.5883"
+        }, cls=DjangoJSONEncoder)
+        yield event, o
 
 
 @pytest.mark.django_db
 def test_locale_setting(env):
     event, order = env
     event.settings.set('invoice_language', 'de')
-    inv = generate_invoice(order)
+    with scopes_disabled():
+        inv = generate_invoice(order)
     assert inv.locale == 'de'
 
 
@@ -387,6 +390,13 @@ def test_invoice_number_prefixes(env):
     assert generate_invoice(order).number == 'shared_{}-6'.format(order.code)
     assert generate_invoice(order2).number == 'shared_{}-6'.format(order2.code)
 
+    event2.settings.set('invoice_numbers_prefix', 'inv_')
+    event2.settings.set('invoice_numbers_prefix_cancellations', 'crd_')
+    event2.settings.set('invoice_numbers_consecutive', True)
+    i = generate_invoice(order2)
+    assert i.number == 'inv_00001'
+    assert generate_cancellation(i).number == 'crd_00001'
+
     # Test database uniqueness check
     with pytest.raises(DatabaseError):
         with transaction.atomic():
@@ -398,3 +408,20 @@ def test_invoice_number_prefixes(env):
                 locale='en',
                 invoice_no='00001',
             )
+
+
+@pytest.mark.django_db
+def test_sales_channels_qualify(env):
+    event, order = env
+    event.settings.set('invoice_generate', 'admin')
+
+    # Orders with Total of 0 do never qualify
+    assert invoice_qualified(order) is False
+
+    order.total = Decimal('42.00')
+
+    # Order with default Sales Channel (web)
+    assert invoice_qualified(order) is True
+
+    event.settings.set('invoice_generate_sales_channels', [])
+    assert invoice_qualified(order) is False

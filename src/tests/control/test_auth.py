@@ -239,7 +239,7 @@ class Login2FAFormTest(TestCase):
 
     def test_totp_invalid(self):
         response = self.client.get('/control/login/2fa')
-        assert 'token' in response.rendered_content
+        assert 'token' in response.content.decode()
         d = TOTPDevice.objects.create(user=self.user, name='test')
         totp = TOTP(d.bin_key, d.step, d.t0, d.digits, d.drift)
         totp.time = time.time()
@@ -251,7 +251,7 @@ class Login2FAFormTest(TestCase):
 
     def test_totp_valid(self):
         response = self.client.get('/control/login/2fa')
-        assert 'token' in response.rendered_content
+        assert 'token' in response.content.decode()
         d = TOTPDevice.objects.create(user=self.user, name='test')
         totp = TOTP(d.bin_key, d.step, d.t0, d.digits, d.drift)
         totp.time = time.time()
@@ -274,7 +274,7 @@ class Login2FAFormTest(TestCase):
         d = U2FDevice.objects.create(user=self.user, name='test', json_data="{}")
 
         response = self.client.get('/control/login/2fa')
-        assert 'token' in response.rendered_content
+        assert 'token' in response.content.decode()
         response = self.client.post('/control/login/2fa'.format(d.pk), {
             'token': '{"response": "true"}'
         })
@@ -291,7 +291,7 @@ class Login2FAFormTest(TestCase):
         d = U2FDevice.objects.create(user=self.user, name='test', json_data="{}")
 
         response = self.client.get('/control/login/2fa')
-        assert 'token' in response.rendered_content
+        assert 'token' in response.content.decode()
         response = self.client.post('/control/login/2fa'.format(d.pk), {
             'token': '{"response": "true"}'
         })
@@ -769,3 +769,33 @@ def test_staff_session_require_staff(user, client):
     session.save()
     response = client.post('/control/sudo/')
     assert response.status_code == 403
+
+
+@override_settings(PRETIX_OBLIGATORY_2FA=True)
+class Obligatory2FATest(TestCase):
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user('demo@demo.dummy', 'demo')
+        self.client.login(email='demo@demo.dummy', password='demo')
+
+    def test_enabled_2fa_not_setup(self):
+        response = self.client.get('/control/events/')
+        assert response.status_code == 302
+        assert response.url == '/control/settings/2fa/'
+
+    def test_enabled_2fa_setup_not_enabled(self):
+        U2FDevice.objects.create(user=self.user, name='test', json_data="{}", confirmed=True)
+        self.user.require_2fa = False
+        self.user.save()
+
+        response = self.client.get('/control/events/')
+        assert response.status_code == 302
+        assert response.url == '/control/settings/2fa/'
+
+    def test_enabled_2fa_setup_enabled(self):
+        U2FDevice.objects.create(user=self.user, name='test', json_data="{}", confirmed=True)
+        self.user.require_2fa = True
+        self.user.save()
+
+        response = self.client.get('/control/events/')
+        assert response.status_code == 200

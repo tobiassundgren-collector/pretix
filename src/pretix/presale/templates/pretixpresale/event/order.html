@@ -56,7 +56,7 @@
         <div class="clearfix"></div>
     </h2>
     {% if order.status == "n" and not order.require_approval %}
-        <div class="panel panel-danger">
+        <div class="panel panel-primary">
             <div class="panel-heading">
                 <h3 class="panel-title">
                     {% trans "Payment" %}
@@ -111,38 +111,7 @@
             </div>
         {% endif %}
     {% endif %}
-    {% if can_download and download_buttons and order.count_positions %}
-        <div class="alert alert-info info-download">
-            {% blocktrans trimmed %}
-                You can download your tickets using the buttons below. Please have your ticket ready when entering the event.
-            {% endblocktrans %}
-        </div>
-        {% if cart.positions|length > 1 and can_download_multi %}
-            <p class="info-download">
-                {% trans "Download all tickets at once:" %}
-                {% for b in download_buttons %}
-                    {% if b.multi %}
-                        <form action="{% eventurl event "presale:event.order.download.combined" secret=order.secret order=order.code output=b.identifier %}"
-                                method="post" data-asynctask data-asynctask-download class="download-btn-form">
-                            {% csrf_token %}
-                            <button type="submit"
-                                    class="btn btn-sm {% if b.identifier == "pdf" %}btn-primary{% else %}btn-default{% endif %}">
-                                <span class="fa {{ b.icon }}"></span> {{ b.text }}
-                            </button>
-                        </form>
-                    {% endif %}
-                {% endfor %}
-            </p>
-        {% endif %}
-    {% elif not download_buttons and ticket_download_date %}
-        {% if order.status == 'p' %}
-            <div class="alert alert-info info-download">
-                {% blocktrans trimmed with date=ticket_download_date|date:"SHORT_DATE_FORMAT" %}
-                    You will be able to download your tickets here starting on {{ date }}.
-                {% endblocktrans %}
-            </div>
-        {% endif %}
-    {% endif %}
+    {% include "pretixpresale/event/fragment_downloads.html" %}
     <div class="panel panel-primary cart">
         <div class="panel-heading">
             {% if order.can_modify_answers %}
@@ -253,7 +222,7 @@
         {% endif %}
         <div class="clearfix"></div>
     </div>
-    {% if order.cancel_allowed %}
+    {% if order.cancel_allowed and order.user_cancel_allowed %}
         <div class="panel panel-primary panel-cancellation">
             <div class="panel-heading">
                 <h3 class="panel-title">
@@ -261,48 +230,40 @@
                 </h3>
             </div>
             <div class="panel-body">
-                {% if order.user_cancel_allowed %}
-                    {% if order.status == "p" and order.total != 0 %}
-                        {% if order.user_cancel_fee %}
-                            <p>
-                                {% blocktrans trimmed with fee=order.user_cancel_fee|money:request.event.currency %}
-                                    You can cancel this order. In this case, a cancellation fee of <strong>{{ fee }}</strong>
-                                    will be kept and you will receive a refund of the remainder to your original payment method.
-                                {% endblocktrans %}
-                                {% trans "This will invalidate all of your tickets." %}
-                            </p>
-                        {% else %}
-                            <p>
-                                {% blocktrans trimmed %}
-                                    You can cancel this order and receive a full refund to your original payment method.
-                                {% endblocktrans %}
-                                {% trans "This will invalidate all of your tickets." %}
-                            </p>
-                        {% endif %}
-                        <a href="{% eventurl event 'presale:event.order.cancel' secret=order.secret order=order.code %}"
-                           class="btn btn-danger">
-                            <span class="fa fa-remove"></span>
-                            {% trans "Cancel order" %}
-                        </a>
-                    {% else %}
+                {% if order.status == "p" and order.total != 0 %}
+                    {% if order.user_cancel_fee %}
                         <p>
-                            {% blocktrans trimmed %}
-                                You can cancel this order using the following button.
+                            {% blocktrans trimmed with fee=order.user_cancel_fee|money:request.event.currency %}
+                                You can cancel this order. In this case, a cancellation fee of <strong>{{ fee }}</strong>
+                                will be kept and you will receive a refund of the remainder to your original payment method.
                             {% endblocktrans %}
                             {% trans "This will invalidate all of your tickets." %}
                         </p>
-                        <a href="{% eventurl event 'presale:event.order.cancel' secret=order.secret order=order.code %}"
-                            class="btn btn-danger">
-                            <span class="fa fa-remove"></span>
-                            {% trans "Cancel order" %}
-                        </a>
+                    {% else %}
+                        <p>
+                            {% blocktrans trimmed %}
+                                You can cancel this order and receive a full refund to your original payment method.
+                            {% endblocktrans %}
+                            {% trans "This will invalidate all of your tickets." %}
+                        </p>
                     {% endif %}
+                    <a href="{% eventurl event 'presale:event.order.cancel' secret=order.secret order=order.code %}"
+                       class="btn btn-danger">
+                        <span class="fa fa-remove"></span>
+                        {% trans "Cancel order" %}
+                    </a>
                 {% else %}
                     <p>
                         {% blocktrans trimmed %}
-                            You can not cancel this order yourself. Please contact the event organizer for more information.
+                            You can cancel this order using the following button.
                         {% endblocktrans %}
+                        {% trans "This will invalidate all of your tickets." %}
                     </p>
+                    <a href="{% eventurl event 'presale:event.order.cancel' secret=order.secret order=order.code %}"
+                        class="btn btn-danger">
+                        <span class="fa fa-remove"></span>
+                        {% trans "Cancel order" %}
+                    </a>
                 {% endif %}
             </div>
         </div>

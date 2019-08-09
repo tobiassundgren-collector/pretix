@@ -12,8 +12,10 @@ from django.utils.translation import ugettext_lazy as _
 from pretix.base.forms.questions import (
     BaseInvoiceAddressForm, BaseQuestionsForm,
 )
-from pretix.base.models import ItemVariation
+from pretix.base.models import ItemVariation, Quota
 from pretix.base.models.tax import TAXED_ZERO
+from pretix.base.services.cart import CartError, error_messages
+from pretix.base.signals import validate_cart_addons
 from pretix.base.templatetags.money import money_filter
 from pretix.base.templatetags.rich_text import rich_text
 from pretix.base.validators import EmailBlacklistValidator
@@ -169,12 +171,12 @@ class AddOnsForm(forms.Form):
                 taxes=number_format(price.rate), taxname=price.name
             )
 
-        if avail[0] < 20:
+        if avail[0] < Quota.AVAILABILITY_RESERVED:
             n += ' – {}'.format(_('SOLD OUT'))
-        elif avail[0] < 100:
+        elif avail[0] < Quota.AVAILABILITY_OK:
             n += ' – {}'.format(_('Currently unavailable'))
         else:
-            if avail[1] is not None and event.settings.show_quota_left:
+            if avail[1] is not None and item.do_show_quota_left:
                 n += ' – {}'.format(_('%(num)s currently available') % {'num': avail[1]})
 
         if not isinstance(item_or_variation, ItemVariation) and item.picture:
@@ -195,21 +197,23 @@ class AddOnsForm(forms.Form):
         """
         Takes additional keyword arguments:
 
-        :param category: The category to choose from
+        :param iao: The ItemAddOn object
         :param event: The event this belongs to
         :param subevent: The event the parent cart position belongs to
         :param initial: The current set of add-ons
         :param quota_cache: A shared dictionary for quota caching
         :param item_cache: A shared dictionary for item/category caching
         """
-        category = kwargs.pop('category')
-        event = kwargs.pop('event')
+        self.iao = kwargs.pop('iao')
+        category = self.iao.addon_category
+        self.event = kwargs.pop('event')
         subevent = kwargs.pop('subevent')
         current_addons = kwargs.pop('initial')
         quota_cache = kwargs.pop('quota_cache')
         item_cache = kwargs.pop('item_cache')
         self.price_included = kwargs.pop('price_included')
         self.sales_channel = kwargs.pop('sales_channel')
+        self.base_position = kwargs.pop('base_position')
 
         super().__init__(*args, **kwargs)
 
@@ -229,13 +233,14 @@ class AddOnsForm(forms.Form):
             ).select_related('tax_rule').prefetch_related(
                 Prefetch('quotas',
                          to_attr='_subevent_quotas',
-                         queryset=event.quotas.filter(subevent=subevent)),
+                         queryset=self.event.quotas.filter(subevent=subevent)),
                 Prefetch('variations', to_attr='available_variations',
                          queryset=ItemVariation.objects.filter(active=True, quotas__isnull=False).prefetch_related(
                              Prefetch('quotas',
                                       to_attr='_subevent_quotas',
-                                      queryset=event.quotas.filter(subevent=subevent))
+                                      queryset=self.event.quotas.filter(subevent=subevent))
                          ).distinct()),
+                'event'
             ).annotate(
                 quotac=Count('quotas'),
                 has_variations=Count('variations')
@@ -246,15 +251,26 @@ class AddOnsForm(forms.Form):
         else:
             items = item_cache[ckey]
 
+        self.vars_cache = {}
+
         for i in items:
+            if i.hidden_if_available:
+                q = i.hidden_if_available.availability(_cache=quota_cache)
+                if q[0] == Quota.AVAILABILITY_OK:
+                    continue
+
             if i.has_variations:
                 choices = [('', _('no selection'), '')]
                 for v in i.available_variations:
                     cached_availability = v.check_quotas(subevent=subevent, _cache=quota_cache)
+                    if self.event.settings.hide_sold_out and cached_availability[0] < Quota.AVAILABILITY_RESERVED:
+                        continue
+
                     if v._subevent_quotas:
+                        self.vars_cache[v.pk] = v
                         choices.append(
                             (v.pk,
-                             self._label(event, v, cached_availability,
+                             self._label(self.event, v, cached_availability,
                                          override_price=var_price_override.get(v.pk)),
                              v.description)
                         )
@@ -280,17 +296,57 @@ class AddOnsForm(forms.Form):
                     help_text=rich_text(str(i.description)),
                     initial=current_addons.get(i.pk),
                 )
+                field.item = i
                 if len(choices) > 1:
                     self.fields['item_%s' % i.pk] = field
             else:
                 if not i._subevent_quotas:
                     continue
                 cached_availability = i.check_quotas(subevent=subevent, _cache=quota_cache)
+                if self.event.settings.hide_sold_out and cached_availability[0] < Quota.AVAILABILITY_RESERVED:
+                    continue
                 field = forms.BooleanField(
-                    label=self._label(event, i, cached_availability,
+                    label=self._label(self.event, i, cached_availability,
                                       override_price=item_price_override.get(i.pk)),
                     required=False,
                     initial=i.pk in current_addons,
                     help_text=rich_text(str(i.description)),
                 )
+                field.item = i
                 self.fields['item_%s' % i.pk] = field
+
+    def clean(self):
+        data = super().clean()
+        selected = set()
+        for k, v in data.items():
+            if v is True:
+                selected.add((self.fields[k].item, None))
+            elif v:
+                selected.add((self.fields[k].item, self.vars_cache.get(int(v))))
+        if len(selected) > self.iao.max_count:
+            # TODO: Proper pluralization
+            raise ValidationError(
+                _(error_messages['addon_max_count']),
+                'addon_max_count',
+                {
+                    'base': str(self.iao.base_item.name),
+                    'max': self.iao.max_count,
+                    'cat': str(self.iao.addon_category.name),
+                }
+            )
+        elif len(selected) < self.iao.min_count:
+            # TODO: Proper pluralization
+            raise ValidationError(
+                _(error_messages['addon_min_count']),
+                'addon_min_count',
+                {
+                    'base': str(self.iao.base_item.name),
+                    'min': self.iao.min_count,
+                    'cat': str(self.iao.addon_category.name),
+                }
+            )
+        try:
+            validate_cart_addons.send(sender=self.event, addons=selected, base_position=self.base_position,
+                                      iao=self.iao)
+        except CartError as e:
+            raise ValidationError(str(e))

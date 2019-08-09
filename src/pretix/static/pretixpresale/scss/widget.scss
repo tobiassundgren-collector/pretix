@@ -273,6 +273,10 @@
   .pretix-widget-voucher-headline {
     margin: 10px 0 0 0;
   }
+  .pretix-widget-voucher-text {
+    margin: 10px 0;
+    padding: 0 15px;
+  }
 
   .pretix-widget-voucher-input-wrap {
     padding: 0 15px;
@@ -473,6 +477,15 @@
     .pretix-widget-event-calendar-day {
       font-weight: bold;
     }
+  }
+
+  .pretix-widget-seating-link-wrapper {
+    padding: 0 15px;
+    margin: 15px 0 10px;
+  }
+  .pretix-widget-seating-link {
+    display: block;
+    width: 100%;
   }
 }
 

@@ -42,6 +42,12 @@ def _display_order_changed(event: Event, logentry: LogEntry):
             old_price=money_filter(Decimal(data['old_price']), event.currency),
             new_price=money_filter(Decimal(data['new_price']), event.currency),
         )
+    elif logentry.action_type == 'pretix.event.order.changed.seat':
+        return text + ' ' + _('Position #{posid}: Seat "{old_seat}" changed '
+                              'to "{new_seat}".').format(
+            posid=data.get('positionid', '?'),
+            old_seat=data.get('old_seat'), new_seat=data.get('new_seat'),
+        )
     elif logentry.action_type == 'pretix.event.order.changed.subevent':
         old_se = str(event.subevents.get(pk=data['old_subevent']))
         new_se = str(event.subevents.get(pk=data['new_subevent']))
@@ -251,9 +257,14 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.event.item.addons.added': _('An add-on has been added to this product.'),
         'pretix.event.item.addons.removed': _('An add-on has been removed from this product.'),
         'pretix.event.item.addons.changed': _('An add-on has been changed on this product.'),
+        'pretix.event.item.bundles.added': _('A bundled item has been added to this product.'),
+        'pretix.event.item.bundles.removed': _('A bundled item has been removed from this product.'),
+        'pretix.event.item.bundles.changed': _('A bundled item has been changed on this product.'),
         'pretix.event.quota.added': _('The quota has been added.'),
         'pretix.event.quota.deleted': _('The quota has been deleted.'),
         'pretix.event.quota.changed': _('The quota has been changed.'),
+        'pretix.event.quota.closed': _('The quota has closed.'),
+        'pretix.event.quota.opened': _('The quota has been re-opened.'),
         'pretix.event.category.added': _('The category has been added.'),
         'pretix.event.category.deleted': _('The category has been deleted.'),
         'pretix.event.category.changed': _('The category has been changed.'),

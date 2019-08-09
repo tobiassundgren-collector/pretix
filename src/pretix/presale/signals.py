@@ -82,7 +82,8 @@ As with all plugin signals, the ``sender`` keyword argument will contain the eve
 
 checkout_flow_steps = EventPluginSignal()
 """
-This signal is sent out to retrieve pages for the checkout flow
+This signal is sent out to retrieve pages for the checkout flow. Receivers are expected to return
+a subclass of ``pretix.presale.checkoutflow.BaseCheckoutFlowStep``.
 
 As with all plugin signals, the ``sender`` keyword argument will contain the event.
 """
@@ -168,6 +169,15 @@ This signal is sent out to display additional information on the order detail pa
 As with all plugin signals, the ``sender`` keyword argument will contain the event.
 """
 
+position_info = EventPluginSignal(
+    providing_args=["order", "position"]
+)
+"""
+This signal is sent out to display additional information on the position detail page
+
+As with all plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
 process_request = EventPluginSignal(
     providing_args=["request"]
 )
@@ -207,6 +217,18 @@ front_page_top = EventPluginSignal(
 """
 This signal is sent out to display additional information on the frontpage above the list
 of products and but below a custom frontpage text.
+
+As with all plugin signals, the ``sender`` keyword argument will contain the event. The
+receivers are expected to return HTML.
+"""
+
+render_seating_plan = EventPluginSignal(
+    providing_args=["request", "subevent", "voucher"]
+)
+"""
+This signal is sent out to render a seating plan, if one is configured for the specific event.
+You will be passed the ``request`` as a keyword argument. If applicable, a ``subevent`` or
+``voucher`` argument might be given.
 
 As with all plugin signals, the ``sender`` keyword argument will contain the event. The
 receivers are expected to return HTML.

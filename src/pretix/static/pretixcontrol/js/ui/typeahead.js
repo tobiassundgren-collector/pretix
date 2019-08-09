@@ -19,7 +19,7 @@ $(function () {
                 return;
             }
             $.getJSON(
-                $container.attr("data-source") + "?query=" + encodeURIComponent($query.val()),
+                $container.attr("data-source") + "?query=" + encodeURIComponent($query.val()) + (typeof $container.attr("data-organizer") !== "undefined" ? "&organizer=" + $container.attr("data-organizer") : ""),
                 function (data) {
                     $container.find("li:not(.query-holder)").remove();
                     $.each(data.results, function (i, res) {
@@ -31,6 +31,27 @@ $(function () {
                                             $("<span>").addClass("event-name-full").append(
                                                 $("<span>").addClass("fa fa-users fa-fw")
                                             ).append(" ").append($("<div>").text(res.name).html())
+                                        )
+                                    ).on("mousedown", function (event) {
+                                        if ($(this).length) {
+                                            location.href = $(this).attr("href");
+                                        }
+                                        $(this).parent().addClass("active");
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                    })
+                                )
+                            );
+                        } else if (res.type === "order" || res.type === "voucher") {
+                            $container.append(
+                                $("<li>").append(
+                                    $("<a>").attr("href", res.url).append(
+                                        $("<div>").append(
+                                            $("<span>").addClass("event-name-full").append($("<div>").text(res.title).html())
+                                        ).append(
+                                            $("<span>").addClass("event-organizer").append(
+                                                $("<span>").addClass("fa fa-calendar fa-fw")
+                                            ).append(" ").append($("<div>").text(res.event).html())
                                         )
                                     ).on("mousedown", function (event) {
                                         if ($(this).length) {

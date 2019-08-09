@@ -13,6 +13,7 @@ from django.utils.translation import ugettext_lazy as _
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from django_scopes import scopes_disabled
 from paypalrestsdk.openid_connect import Tokeninfo
 
 from pretix.base.models import Event, Order, OrderPayment, OrderRefund, Quota
@@ -40,6 +41,7 @@ def redirect_view(request, *args, **kwargs):
     return r
 
 
+@scopes_disabled()
 def oauth_return(request, *args, **kwargs):
     if 'payment_paypal_oauth_event' not in request.session:
         messages.error(request, _('An error occurred during connecting with PayPal, please try again.'))
@@ -133,6 +135,7 @@ def abort(request, *args, **kwargs):
 
 @csrf_exempt
 @require_POST
+@scopes_disabled()
 def webhook(request, *args, **kwargs):
     event_body = request.body.decode('utf-8').strip()
     event_json = json.loads(event_body)

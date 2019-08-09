@@ -5,26 +5,28 @@ from typing import List, Optional
 
 from celery.exceptions import MaxRetriesExceededError
 from django.core.exceptions import ValidationError
-from django.db import transaction
-from django.db.models import Q
+from django.db import DatabaseError, transaction
+from django.db.models import Count, Exists, OuterRef, Q
 from django.dispatch import receiver
 from django.utils.timezone import make_aware, now
 from django.utils.translation import pgettext_lazy, ugettext as _
+from django_scopes import scopes_disabled
 
 from pretix.base.i18n import language
 from pretix.base.models import (
-    CartPosition, Event, InvoiceAddress, Item, ItemBundle, ItemVariation,
-    Voucher,
+    CartPosition, Event, InvoiceAddress, Item, ItemBundle, ItemVariation, Seat,
+    SeatCategoryMapping, Voucher,
 )
 from pretix.base.models.event import SubEvent
 from pretix.base.models.orders import OrderFee
 from pretix.base.models.tax import TAXED_ZERO, TaxedPrice, TaxRule
 from pretix.base.reldate import RelativeDateWrapper
 from pretix.base.services.checkin import _save_answers
-from pretix.base.services.locking import LockTimeoutException
+from pretix.base.services.locking import LockTimeoutException, NoLockManager
 from pretix.base.services.pricing import get_price
-from pretix.base.services.tasks import ProfiledTask
+from pretix.base.services.tasks import ProfiledEventTask
 from pretix.base.settings import PERSON_NAME_SCHEMES
+from pretix.base.signals import validate_cart_addons
 from pretix.base.templatetags.rich_text import rich_text
 from pretix.celery_app import app
 from pretix.presale.signals import (
@@ -90,15 +92,20 @@ error_messages = {
                          'product %(base)s.'),
     'addon_only': _('One of the products you selected can only be bought as an add-on to another project.'),
     'bundled_only': _('One of the products you selected can only be bought part of a bundle.'),
+    'seat_required': _('You need to select a specific seat.'),
+    'seat_invalid': _('Please select a valid seat.'),
+    'seat_forbidden': _('You can not select a seat for this position.'),
+    'seat_unavailable': _('The seat you selected has already been taken. Please select a different seat.'),
+    'seat_multiple': _('You can not select the same seat multiple times.'),
 }
 
 
 class CartManager:
     AddOperation = namedtuple('AddOperation', ('count', 'item', 'variation', 'price', 'voucher', 'quotas',
-                                               'addon_to', 'subevent', 'includes_tax', 'bundled'))
+                                               'addon_to', 'subevent', 'includes_tax', 'bundled', 'seat'))
     RemoveOperation = namedtuple('RemoveOperation', ('position',))
     ExtendOperation = namedtuple('ExtendOperation', ('position', 'count', 'item', 'variation', 'price', 'voucher',
-                                                     'quotas', 'subevent'))
+                                                     'quotas', 'subevent', 'seat'))
     order = {
         RemoveOperation: 10,
         ExtendOperation: 20,
@@ -116,6 +123,7 @@ class CartManager:
         self._items_cache = {}
         self._subevents_cache = {}
         self._variations_cache = {}
+        self._seated_cache = {}
         self._expiry = None
         self.invoice_address = invoice_address
         self._widget_data = widget_data or {}
@@ -126,6 +134,11 @@ class CartManager:
         return CartPosition.objects.filter(
             Q(cart_id=self.cart_id) & Q(event=self.event)
         ).select_related('item', 'subevent')
+
+    def _is_seated(self, item, subevent):
+        if (item, subevent) not in self._seated_cache:
+            self._seated_cache[item, subevent] = item.seat_category_mappings.filter(subevent=subevent).exists()
+        return self._seated_cache[item, subevent]
 
     def _calculate_expiry(self):
         self._expiry = self.now_dt + timedelta(minutes=self.event.settings.get('reservation_time', as_type=int))
@@ -187,6 +200,8 @@ class CartManager:
             i.pk: i
             for i in self.event.items.select_related('category').prefetch_related(
                 'addons', 'bundles', 'addons__addon_category', 'quotas'
+            ).annotate(
+                has_variations=Count('variations'),
             ).filter(
                 id__in=[i for i in item_ids if i and i not in self._items_cache]
             )
@@ -214,7 +229,7 @@ class CartManager:
             if op.item.require_voucher and op.voucher is None:
                 raise CartError(error_messages['voucher_required'])
 
-            if op.item.hide_without_voucher and (op.voucher is None or op.voucher.item is None or op.voucher.item.pk != op.item.pk):
+            if op.item.hide_without_voucher and (op.voucher is None or not op.voucher.show_hidden_items):
                 raise CartError(error_messages['voucher_required'])
 
             if not op.item.is_available() or (op.variation and not op.variation.active):
@@ -222,6 +237,12 @@ class CartManager:
 
             if self._sales_channel not in op.item.sales_channels:
                 raise CartError(error_messages['unavailable'])
+
+            if op.item.has_variations and not op.variation:
+                raise CartError(error_messages['not_for_sale'])
+
+            if op.variation and op.variation.item_id != op.item.pk:
+                raise CartError(error_messages['not_for_sale'])
 
             if op.voucher and not op.voucher.applies_to(op.item, op.variation):
                 raise CartError(error_messages['voucher_invalid_item'])
@@ -237,6 +258,16 @@ class CartManager:
 
             if op.subevent and op.subevent.presale_has_ended:
                 raise CartError(error_messages['ended'])
+
+            seated = self._is_seated(op.item, op.subevent)
+            if seated and (not op.seat or op.seat.blocked):
+                raise CartError(error_messages['seat_invalid'])
+            elif op.seat and not seated:
+                raise CartError(error_messages['seat_forbidden'])
+            elif op.seat and op.seat.product != op.item:
+                raise CartError(error_messages['seat_invalid'])
+            elif op.seat and op.count > 1:
+                raise CartError('Invalid request: A seat can only be bought once.')
 
             if op.subevent:
                 tlv = self.event.settings.get('payment_term_last', as_type=RelativeDateWrapper)
@@ -300,6 +331,13 @@ class CartManager:
     def extend_expired_positions(self):
         expired = self.positions.filter(expires__lte=self.now_dt).select_related(
             'item', 'variation', 'voucher', 'addon_to', 'addon_to__item'
+        ).annotate(
+            requires_seat=Exists(
+                SeatCategoryMapping.objects.filter(
+                    Q(product=OuterRef('item'))
+                    & (Q(subevent=OuterRef('subevent')) if self.event.has_subevents else Q(subevent__isnull=True))
+                )
+            )
         ).prefetch_related(
             'item__quotas',
             'variation__quotas',
@@ -311,6 +349,8 @@ class CartManager:
             removed_positions = {op.position.pk for op in self._operations if isinstance(op, self.RemoveOperation)}
             if cp.pk in removed_positions or (cp.addon_to_id and cp.addon_to_id in removed_positions):
                 continue
+
+            cp.item.requires_seat = cp.requires_seat
 
             if cp.is_bundled:
                 try:
@@ -358,7 +398,7 @@ class CartManager:
 
             op = self.ExtendOperation(
                 position=cp, item=cp.item, variation=cp.variation, voucher=cp.voucher, count=1,
-                price=price, quotas=quotas, subevent=cp.subevent
+                price=price, quotas=quotas, subevent=cp.subevent, seat=cp.seat
             )
             self._check_item_constraints(op)
 
@@ -377,18 +417,30 @@ class CartManager:
         operations = []
 
         for i in items:
-            # Check whether the specified items are part of what we just fetched from the database
-            # If they are not, the user supplied item IDs which either do not exist or belong to
-            # a different event
-            if i['item'] not in self._items_cache or (i['variation'] and i['variation'] not in self._variations_cache):
-                raise CartError(error_messages['not_for_sale'])
-
             if self.event.has_subevents:
                 if not i.get('subevent'):
                     raise CartError(error_messages['subevent_required'])
                 subevent = self._subevents_cache[int(i.get('subevent'))]
             else:
                 subevent = None
+
+            # When a seat is given, we ignore the item that was given, since we can infer it from the
+            # seat. The variation is still relevant, though!
+            seat = None
+            if i.get('seat'):
+                try:
+                    seat = (subevent or self.event).seats.get(seat_guid=i.get('seat'))
+                except Seat.DoesNotExist:
+                    raise CartError(error_messages['seat_invalid'])
+                i['item'] = seat.product_id
+                if i['item'] not in self._items_cache:
+                    self._update_items_cache([i['item']], [i['variation']])
+
+            # Check whether the specified items are part of what we just fetched from the database
+            # If they are not, the user supplied item IDs which either do not exist or belong to
+            # a different event
+            if i['item'] not in self._items_cache or (i['variation'] and i['variation'] not in self._variations_cache):
+                raise CartError(error_messages['not_for_sale'])
 
             item = self._items_cache[i['item']]
             variation = self._variations_cache[i['variation']] if i['variation'] is not None else None
@@ -445,7 +497,7 @@ class CartManager:
                 bop = self.AddOperation(
                     count=bundle.count, item=bitem, variation=bvar, price=bprice,
                     voucher=None, quotas=bundle_quotas, addon_to='FAKE', subevent=subevent,
-                    includes_tax=bool(bprice.rate), bundled=[]
+                    includes_tax=bool(bprice.rate), bundled=[], seat=None
                 )
                 self._check_item_constraints(bop)
                 bundled.append(bop)
@@ -454,7 +506,7 @@ class CartManager:
 
             op = self.AddOperation(
                 count=i['count'], item=item, variation=variation, price=price, voucher=voucher, quotas=quotas,
-                addon_to=False, subevent=subevent, includes_tax=bool(price.rate), bundled=bundled
+                addon_to=False, subevent=subevent, includes_tax=bool(price.rate), bundled=bundled, seat=seat
             )
             self._check_item_constraints(op)
             operations.append(op)
@@ -560,7 +612,7 @@ class CartManager:
 
                 op = self.AddOperation(
                     count=1, item=item, variation=variation, price=price, voucher=None, quotas=quotas,
-                    addon_to=cp, subevent=cp.subevent, includes_tax=bool(price.rate), bundled=[]
+                    addon_to=cp, subevent=cp.subevent, includes_tax=bool(price.rate), bundled=[], seat=cp.seat
                 )
                 self._check_item_constraints(op)
                 operations.append(op)
@@ -592,6 +644,15 @@ class CartManager:
                             'cat': str(iao.addon_category.name),
                         }
                     )
+                validate_cart_addons.send(
+                    sender=self.event,
+                    addons={
+                        (self._items_cache[s[0]], self._variations_cache[s[1]] if s[1] else None)
+                        for s in selected
+                    },
+                    base_position=cp,
+                    iao=iao
+                )
 
         # Detect removed add-ons and create RemoveOperations
         for cp, al in current_addons.items():
@@ -634,7 +695,7 @@ class CartManager:
                 Q(voucher=voucher) & Q(event=self.event) &
                 Q(expires__gte=self.now_dt)
             ).exclude(pk__in=[
-                op.position.voucher_id for op in self._operations if isinstance(op, self.ExtendOperation)
+                op.position.id for op in self._operations if isinstance(op, self.ExtendOperation)
             ])
             cart_count = redeemed_in_carts.count()
             v_avail = voucher.max_usages - voucher.redeemed - cart_count
@@ -686,6 +747,7 @@ class CartManager:
         err = err or self._check_min_per_product()
 
         self._operations.sort(key=lambda a: self.order[type(a)])
+        seats_seen = set()
 
         for op in self._operations:
             if isinstance(op, self.RemoveOperation):
@@ -698,6 +760,11 @@ class CartManager:
             elif isinstance(op, self.AddOperation) or isinstance(op, self.ExtendOperation):
                 # Create a CartPosition for as much items as we can
                 requested_count = quota_available_count = voucher_available_count = op.count
+
+                if op.seat:
+                    if op.seat in seats_seen:
+                        err = err or error_messages['seat_multiple']
+                    seats_seen.add(op.seat)
 
                 if op.quotas:
                     quota_available_count = min(requested_count, min(quotas_ok[q] for q in op.quotas))
@@ -722,14 +789,19 @@ class CartManager:
 
                 if isinstance(op, self.AddOperation):
                     for b in op.bundled:
-                        b_quota_available_count = min(available_count * b.count, min(quotas_ok[q] for q in b.quotas))
+                        b_quotas = list(b.quotas)
+                        if not b_quotas:
+                            err = err or error_messages['unavailable']
+                            available_count = 0
+                            continue
+                        b_quota_available_count = min(available_count * b.count, min(quotas_ok[q] for q in b_quotas))
                         if b_quota_available_count < b.count:
                             err = err or error_messages['unavailable']
                             available_count = 0
                         elif b_quota_available_count < available_count * b.count:
                             err = err or error_messages['in_part']
                             available_count = b_quota_available_count // b.count
-                        for q in b.quotas:
+                        for q in b_quotas:
                             quotas_ok[q] -= available_count * b.count
                             # TODO: is this correct?
 
@@ -744,12 +816,16 @@ class CartManager:
                     available_count = 0
 
                 if isinstance(op, self.AddOperation):
+                    if op.seat and not op.seat.is_available():
+                        available_count = 0
+                        err = err or error_messages['seat_unavailable']
+
                     for k in range(available_count):
                         cp = CartPosition(
                             event=self.event, item=op.item, variation=op.variation,
                             price=op.price.gross, expires=self._expiry, cart_id=self.cart_id,
                             voucher=op.voucher, addon_to=op.addon_to if op.addon_to else None,
-                            subevent=op.subevent, includes_tax=op.includes_tax
+                            subevent=op.subevent, includes_tax=op.includes_tax, seat=op.seat
                         )
                         if self.event.settings.attendee_names_asked:
                             scheme = PERSON_NAME_SCHEMES.get(self.event.settings.name_scheme)
@@ -788,10 +864,18 @@ class CartManager:
 
                         new_cart_positions.append(cp)
                 elif isinstance(op, self.ExtendOperation):
-                    if available_count == 1:
+                    if op.seat and not op.seat.is_available(ignore_cart=op.position):
+                        err = err or error_messages['seat_unavailable']
+                        op.position.addons.all().delete()
+                        op.position.delete()
+                    elif available_count == 1:
                         op.position.expires = self._expiry
                         op.position.price = op.price.gross
-                        op.position.save()
+                        try:
+                            op.position.save(force_update=True)
+                        except DatabaseError:
+                            # Best effort... The position might have been deleted in the meantime!
+                            pass
                     elif available_count == 0:
                         op.position.addons.all().delete()
                         op.position.delete()
@@ -806,17 +890,36 @@ class CartManager:
         CartPosition.objects.bulk_create([p for p in new_cart_positions if not getattr(p, '_answers', None) and not p.pk])
         return err
 
+    def _require_locking(self):
+        if self._voucher_use_diff:
+            # If any vouchers are used, we lock to make sure we don't redeem them to often
+            return True
+
+        if self._quota_diff and any(q.size is not None for q in self._quota_diff):
+            # If any quotas are affected that are not unlimited, we lock
+            return True
+
+        if any(getattr(o, 'seat', False) for o in self._operations):
+            return True
+
+        return False
+
     def commit(self):
         self._check_presale_dates()
         self._check_max_cart_size()
         self._calculate_expiry()
 
-        with self.event.lock() as now_dt:
+        err = self._delete_out_of_timeframe()
+        err = self.extend_expired_positions() or err
+
+        lockfn = NoLockManager
+        if self._require_locking():
+            lockfn = self.event.lock
+
+        with lockfn() as now_dt:
             with transaction.atomic():
                 self.now_dt = now_dt
                 self._extend_expiry_of_valid_existing_positions()
-                err = self._delete_out_of_timeframe()
-                err = self.extend_expired_positions() or err
                 err = self._perform_operations() or err
             if err:
                 raise CartError(err)
@@ -850,6 +953,12 @@ def update_tax_rates(event: Event, cart_id: str, invoice_address: InvoiceAddress
 def get_fees(event, request, total, invoice_address, provider):
     fees = []
 
+    for recv, resp in fee_calculation_for_cart.send(sender=event, request=request, invoice_address=invoice_address,
+                                                    total=total):
+        if resp:
+            fees += resp
+
+    total = total + sum(f.value for f in fees)
     if provider and total != 0:
         provider = event.get_payment_providers().get(provider)
         if provider:
@@ -875,30 +984,25 @@ def get_fees(event, request, total, invoice_address, provider):
                         tax_rule=payment_fee_tax_rule
                     ))
 
-    for recv, resp in fee_calculation_for_cart.send(sender=event, request=request, invoice_address=invoice_address,
-                                                    total=total):
-        fees += resp
-
     return fees
 
 
-@app.task(base=ProfiledTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
+@app.task(base=ProfiledEventTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
 def add_items_to_cart(self, event: int, items: List[dict], cart_id: str=None, locale='en',
                       invoice_address: int=None, widget_data=None, sales_channel='web') -> None:
     """
     Adds a list of items to a user's cart.
     :param event: The event ID in question
-    :param items: A list of dicts with the keys item, variation, count, custom_price, voucher
+    :param items: A list of dicts with the keys item, variation, count, custom_price, voucher, seat ID
     :param cart_id: Session ID of a guest
     :raises CartError: On any error that occured
     """
     with language(locale):
-        event = Event.objects.get(id=event)
-
         ia = False
         if invoice_address:
             try:
-                ia = InvoiceAddress.objects.get(pk=invoice_address)
+                with scopes_disabled():
+                    ia = InvoiceAddress.objects.get(pk=invoice_address)
             except InvoiceAddress.DoesNotExist:
                 pass
 
@@ -914,8 +1018,8 @@ def add_items_to_cart(self, event: int, items: List[dict], cart_id: str=None, lo
             raise CartError(error_messages['busy'])
 
 
-@app.task(base=ProfiledTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
-def remove_cart_position(self, event: int, position: int, cart_id: str=None, locale='en') -> None:
+@app.task(base=ProfiledEventTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
+def remove_cart_position(self, event: Event, position: int, cart_id: str=None, locale='en') -> None:
     """
     Removes a list of items from a user's cart.
     :param event: The event ID in question
@@ -923,7 +1027,6 @@ def remove_cart_position(self, event: int, position: int, cart_id: str=None, loc
     :param session: Session ID of a guest
     """
     with language(locale):
-        event = Event.objects.get(id=event)
         try:
             try:
                 cm = CartManager(event=event, cart_id=cart_id)
@@ -935,15 +1038,14 @@ def remove_cart_position(self, event: int, position: int, cart_id: str=None, loc
             raise CartError(error_messages['busy'])
 
 
-@app.task(base=ProfiledTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
-def clear_cart(self, event: int, cart_id: str=None, locale='en') -> None:
+@app.task(base=ProfiledEventTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
+def clear_cart(self, event: Event, cart_id: str=None, locale='en') -> None:
     """
     Removes a list of items from a user's cart.
     :param event: The event ID in question
     :param session: Session ID of a guest
     """
     with language(locale):
-        event = Event.objects.get(id=event)
         try:
             try:
                 cm = CartManager(event=event, cart_id=cart_id)
@@ -955,8 +1057,8 @@ def clear_cart(self, event: int, cart_id: str=None, locale='en') -> None:
             raise CartError(error_messages['busy'])
 
 
-@app.task(base=ProfiledTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
-def set_cart_addons(self, event: int, addons: List[dict], cart_id: str=None, locale='en',
+@app.task(base=ProfiledEventTask, bind=True, max_retries=5, default_retry_delay=1, throws=(CartError,))
+def set_cart_addons(self, event: Event, addons: List[dict], cart_id: str=None, locale='en',
                     invoice_address: int=None, sales_channel='web') -> None:
     """
     Removes a list of items from a user's cart.
@@ -965,12 +1067,11 @@ def set_cart_addons(self, event: int, addons: List[dict], cart_id: str=None, loc
     :param session: Session ID of a guest
     """
     with language(locale):
-        event = Event.objects.get(id=event)
-
         ia = False
         if invoice_address:
             try:
-                ia = InvoiceAddress.objects.get(pk=invoice_address)
+                with scopes_disabled():
+                    ia = InvoiceAddress.objects.get(pk=invoice_address)
             except InvoiceAddress.DoesNotExist:
                 pass
         try:

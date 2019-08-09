@@ -17,6 +17,7 @@ from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
 from django.utils.translation import ugettext_lazy as _
+from django_scopes import ScopedManager, scopes_disabled
 from i18nfield.fields import I18nCharField, I18nTextField
 
 from pretix.base.models.base import LoggedModel
@@ -99,14 +100,14 @@ class EventMixin:
             "DATETIME_FORMAT" if self.settings.show_times else "DATE_FORMAT"
         )
 
-    def get_date_range_display(self, tz=None) -> str:
+    def get_date_range_display(self, tz=None, force_show_end=False) -> str:
         """
         Returns a formatted string containing the start date and the end date
         of the event with respect to the current locale and to the ``show_times`` and
         ``show_date_to`` settings.
         """
         tz = tz or self.timezone
-        if not self.settings.show_date_to or not self.date_to:
+        if (not self.settings.show_date_to and not force_show_end) or not self.date_to:
             return _date(self.date_from.astimezone(tz), "DATE_FORMAT")
         return daterange(self.date_from.astimezone(tz), self.date_to.astimezone(tz))
 
@@ -164,7 +165,7 @@ class EventMixin:
     def annotated(cls, qs, channel='web'):
         from pretix.base.models import Item, ItemVariation, Quota
 
-        sq_active_item = Item.objects.filter_available(channel=channel).filter(
+        sq_active_item = Item.objects.using(settings.DATABASE_REPLICA).filter_available(channel=channel).filter(
             Q(variations__isnull=True)
             & Q(quotas__pk=OuterRef('pk'))
         ).order_by().values_list('quotas__pk').annotate(
@@ -186,7 +187,7 @@ class EventMixin:
             Prefetch(
                 'quotas',
                 to_attr='active_quotas',
-                queryset=Quota.objects.annotate(
+                queryset=Quota.objects.using(settings.DATABASE_REPLICA).annotate(
                     active_items=Subquery(sq_active_item, output_field=models.TextField()),
                     active_variations=Subquery(sq_active_variation, output_field=models.TextField()),
                 ).exclude(
@@ -335,6 +336,10 @@ class Event(EventMixin, LoggedModel):
         verbose_name=_('Event series'),
         default=False
     )
+    seating_plan = models.ForeignKey('SeatingPlan', on_delete=models.PROTECT, null=True, blank=True,
+                                     related_name='events')
+
+    objects = ScopedManager(organizer='organizer')
 
     class Meta:
         verbose_name = _("Event")
@@ -344,6 +349,26 @@ class Event(EventMixin, LoggedModel):
 
     def __str__(self):
         return str(self.name)
+
+    @property
+    def free_seats(self):
+        from .orders import CartPosition, Order, OrderPosition
+        return self.seats.annotate(
+            has_order=Exists(
+                OrderPosition.objects.filter(
+                    order__event=self,
+                    seat_id=OuterRef('pk'),
+                    order__status__in=[Order.STATUS_PENDING, Order.STATUS_PAID]
+                )
+            ),
+            has_cart=Exists(
+                CartPosition.objects.filter(
+                    event=self,
+                    seat_id=OuterRef('pk'),
+                    expires__gte=now()
+                )
+            )
+        ).filter(has_order=False, has_cart=False, blocked=False)
 
     @property
     def presale_has_ended(self):
@@ -445,6 +470,7 @@ class Event(EventMixin, LoggedModel):
 
         self.plugins = other.plugins
         self.is_public = other.is_public
+        self.testmode = other.testmode
         self.save()
 
         tax_map = {}
@@ -490,14 +516,21 @@ class Event(EventMixin, LoggedModel):
         for q in Quota.objects.filter(event=other, subevent__isnull=True).prefetch_related('items', 'variations'):
             items = list(q.items.all())
             vars = list(q.variations.all())
+            oldid = q.pk
             q.pk = None
             q.event = self
+            q.cached_availability_state = None
+            q.cached_availability_number = None
+            q.cached_availability_paid_orders = None
+            q.cached_availability_time = None
+            q.closed = False
             q.save()
             for i in items:
                 if i.pk in item_map:
                     q.items.add(item_map[i.pk])
             for v in vars:
                 q.variations.add(variation_map[v.pk])
+            self.items.filter(hidden_if_available_id=oldid).update(hidden_if_available=q)
 
         question_map = {}
         for q in Question.objects.filter(event=other).prefetch_related('items', 'options'):
@@ -526,6 +559,24 @@ class Event(EventMixin, LoggedModel):
             cl.save()
             for i in items:
                 cl.limit_products.add(item_map[i.pk])
+
+        if other.seating_plan:
+            if other.seating_plan.organizer_id == self.organizer_id:
+                self.seating_plan = other.seating_plan
+            else:
+                self.organizer.seating_plans.create(name=other.seating_plan.name, layout=other.seating_plan.layout)
+            self.save()
+
+        for m in other.seat_category_mappings.filter(subevent__isnull=True):
+            m.pk = None
+            m.event = self
+            m.product = item_map[m.product_id]
+            m.save()
+
+        for s in other.seats.filter(subevent__isnull=True):
+            s.pk = None
+            s.event = self
+            s.save()
 
         for s in other.settings._objects.all():
             s.object = self
@@ -666,8 +717,12 @@ class Event(EventMixin, LoggedModel):
     @property
     def meta_data(self):
         data = {p.name: p.default for p in self.organizer.meta_properties.all()}
-        data.update({v.property.name: v.value for v in self.meta_values.select_related('property').all()})
-        return data
+        if hasattr(self, 'meta_values_cached'):
+            data.update({v.property.name: v.value for v in self.meta_values_cached})
+        else:
+            data.update({v.property.name: v.value for v in self.meta_values.select_related('property').all()})
+
+        return OrderedDict((k, v) for k, v in sorted(data.items(), key=lambda k: k[0]))
 
     @property
     def has_payment_provider(self):
@@ -870,9 +925,13 @@ class SubEvent(EventMixin, LoggedModel):
         null=True, blank=True,
         verbose_name=_("Frontpage text")
     )
+    seating_plan = models.ForeignKey('SeatingPlan', on_delete=models.PROTECT, null=True, blank=True,
+                                     related_name='subevents')
 
     items = models.ManyToManyField('Item', through='SubEventItem')
     variations = models.ManyToManyField('ItemVariation', through='SubEventItemVariation')
+
+    objects = ScopedManager(organizer='event__organizer')
 
     class Meta:
         verbose_name = _("Date in event series")
@@ -881,6 +940,28 @@ class SubEvent(EventMixin, LoggedModel):
 
     def __str__(self):
         return '{} - {}'.format(self.name, self.get_date_range_display())
+
+    @property
+    def free_seats(self):
+        from .orders import CartPosition, Order, OrderPosition
+        return self.seats.annotate(
+            has_order=Exists(
+                OrderPosition.objects.filter(
+                    order__event_id=self.event_id,
+                    subevent=self,
+                    seat_id=OuterRef('pk'),
+                    order__status__in=[Order.STATUS_PENDING, Order.STATUS_PAID]
+                )
+            ),
+            has_cart=Exists(
+                CartPosition.objects.filter(
+                    event_id=self.event_id,
+                    subevent=self,
+                    seat_id=OuterRef('pk'),
+                    expires__gte=now()
+                )
+            )
+        ).filter(has_order=False, has_cart=False, blocked=False)
 
     @cached_property
     def settings(self):
@@ -940,6 +1021,7 @@ class SubEvent(EventMixin, LoggedModel):
                 raise ValidationError(_('One or more variations do not belong to this event.'))
 
 
+@scopes_disabled()
 def generate_invite_token():
     return get_random_string(length=32, allowed_chars=string.ascii_lowercase + string.digits)
 

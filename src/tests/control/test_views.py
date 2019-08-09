@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from django.utils.timezone import now
+from django_scopes import scope
 
 from pretix.base.models import (
     Event, Item, ItemCategory, Order, OrderPosition, Organizer, Question,
@@ -117,11 +118,9 @@ def logged_in_client(client, event):
     ('/control/event/{orga}/{event}/settings/cancel', 200),
     ('/control/event/{orga}/{event}/settings/invoice', 200),
     ('/control/event/{orga}/{event}/settings/invoice/preview', 200),
-    ('/control/event/{orga}/{event}/settings/display', 200),
     ('/control/event/{orga}/{event}/items/', 200),
     ('/control/event/{orga}/{event}/items/add', 200),
     ('/control/event/{orga}/{event}/items/{item}/', 200),
-    ('/control/event/{orga}/{event}/items/{item}/variations', 200),
     ('/control/event/{orga}/{event}/items/{item}/delete', 200),
     ('/control/event/{orga}/{event}/categories/', 200),
     ('/control/event/{orga}/{event}/categories/{category}/delete', 200),
@@ -167,18 +166,19 @@ def logged_in_client(client, event):
 ])
 @pytest.mark.django_db
 def test_one_view(logged_in_client, url, expected, event, item, item_category, order, question, quota, voucher):
-    payment = order.payments.first()
-    refund = order.refunds.first()
-    url = url.format(
-        event=event.slug, orga=event.organizer.slug,
-        category=item_category.pk,
-        item=item.pk,
-        order_code=order.code,
-        question=question.pk,
-        quota=quota.pk,
-        voucher=voucher.pk,
-        payment=payment.pk,
-        refund=refund.pk
-    )
+    with scope(organizer=event.organizer):
+        payment = order.payments.first()
+        refund = order.refunds.first()
+        url = url.format(
+            event=event.slug, orga=event.organizer.slug,
+            category=item_category.pk,
+            item=item.pk,
+            order_code=order.code,
+            question=question.pk,
+            quota=quota.pk,
+            voucher=voucher.pk,
+            payment=payment.pk,
+            refund=refund.pk
+        )
     response = logged_in_client.get(url)
     assert response.status_code == expected

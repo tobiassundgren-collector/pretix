@@ -1,9 +1,10 @@
 import hashlib
 
 from django.conf import settings
-from django.core.files.base import ContentFile
+from django.core.files.base import ContentFile, File
 from django.core.files.storage import default_storage
 from django.core.management.base import BaseCommand
+from django_scopes import scopes_disabled
 
 from pretix.base.models import Event_SettingsStore, Organizer_SettingsStore
 from pretix.base.settings import GlobalSettingsObject
@@ -15,6 +16,7 @@ from ...style import regenerate_css, regenerate_organizer_css
 class Command(BaseCommand):
     help = "Re-generate all custom stylesheets and scripts"
 
+    @scopes_disabled()
     def handle(self, *args, **options):
         for es in Organizer_SettingsStore.objects.filter(key="presale_css_file"):
             regenerate_organizer_css.apply_async(args=(es.object_id,))
@@ -35,4 +37,7 @@ class Command(BaseCommand):
                 gs.settings.set('widget_file_{}'.format(lc), 'file://' + newname)
                 gs.settings.set('widget_checksum_{}'.format(lc), checksum)
                 if fname:
-                    default_storage.delete(fname)
+                    if isinstance(fname, File):
+                        default_storage.delete(fname.name)
+                    else:
+                        default_storage.delete(fname)

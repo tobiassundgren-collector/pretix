@@ -20,7 +20,7 @@ class InvoiceExporter(BaseExporter):
     identifier = 'invoices'
     verbose_name = _('All invoices')
 
-    def render(self, form_data: dict):
+    def render(self, form_data: dict, output_file=None):
         qs = self.event.invoices.filter(shredded=False)
 
         if form_data.get('payment_provider'):
@@ -46,7 +46,8 @@ class InvoiceExporter(BaseExporter):
             qs = qs.filter(date__lte=date_value)
 
         with tempfile.TemporaryDirectory() as d:
-            with ZipFile(os.path.join(d, 'tmp.zip'), 'w') as zipf:
+            any = False
+            with ZipFile(output_file or os.path.join(d, 'tmp.zip'), 'w') as zipf:
                 for i in qs:
                     try:
                         if not i.file:
@@ -54,16 +55,24 @@ class InvoiceExporter(BaseExporter):
                             i.refresh_from_db()
                         i.file.open('rb')
                         zipf.writestr('{}.pdf'.format(i.number), i.file.read())
+                        any = True
                         i.file.close()
                     except FileNotFoundError:
                         invoice_pdf_task.apply(args=(i.pk,))
                         i.refresh_from_db()
                         i.file.open('rb')
                         zipf.writestr('{}.pdf'.format(i.number), i.file.read())
+                        any = True
                         i.file.close()
 
-            with open(os.path.join(d, 'tmp.zip'), 'rb') as zipf:
-                return '{}_invoices.zip'.format(self.event.slug), 'application/zip', zipf.read()
+            if not any:
+                return None
+
+            if output_file:
+                return '{}_invoices.zip'.format(self.event.slug), 'application/zip', None
+            else:
+                with open(os.path.join(d, 'tmp.zip'), 'rb') as zipf:
+                    return '{}_invoices.zip'.format(self.event.slug), 'application/zip', zipf.read()
 
     @property
     def export_form_fields(self):

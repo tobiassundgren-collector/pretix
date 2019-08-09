@@ -44,6 +44,9 @@ available_from                        datetime                   The first date 
                                                                  (or ``null``).
 available_until                       datetime                   The last date time at which this item can be bought
                                                                  (or ``null``).
+hidden_if_available                   integer                    The internal ID of a quota object, or ``null``. If
+                                                                 set, this item won't be shown publicly as long as this
+                                                                 quota is available.
 require_voucher                       boolean                    If ``true``, this item can only be bought using a
                                                                  voucher that is specifically assigned to this item.
 hide_without_voucher                  boolean                    If ``true``, this item is only shown during the voucher
@@ -72,6 +75,10 @@ generate_tickets                      boolean                    If ``false``, t
                                                                  non-admission or add-on product, regardless of event
                                                                  settings. If this is ``null``, regular ticketing
                                                                  rules apply.
+allow_waitinglist                     boolean                    If ``false``, no waiting list will be shown for this
+                                                                 product when it is sold out.
+show_quota_left                       boolean                    Publicly show how many tickets are still available.
+                                                                 If this is ``null``, the event default is used.
 has_variations                        boolean                    Shows whether or not this item has variations.
 variations                            list of objects            A list with one object for each variation of this item.
                                                                  Can be empty. Only writable during creation,
@@ -142,6 +149,10 @@ bundles                               list of objects            Definition of b
 
    The ``bundles`` and ``require_bundling`` attributes have been added.
 
+.. versionchanged:: 3.0
+
+   The ``show_quota_left``, ``allow_waitinglist``, and ``hidden_if_available`` attributes have been added.
+
 Notes
 -----
 
@@ -199,6 +210,7 @@ Endpoints
             "picture": null,
             "available_from": null,
             "available_until": null,
+            "hidden_if_available": null,
             "require_voucher": false,
             "hide_without_voucher": false,
             "allow_cancel": true,
@@ -207,6 +219,8 @@ Endpoints
             "checkin_attention": false,
             "has_variations": false,
             "generate_tickets": null,
+            "allow_waitinglist": true,
+            "show_quota_left": null,
             "require_approval": false,
             "require_bundling": false,
             "variations": [
@@ -290,10 +304,13 @@ Endpoints
         "picture": null,
         "available_from": null,
         "available_until": null,
+        "hidden_if_available": null,
         "require_voucher": false,
         "hide_without_voucher": false,
         "allow_cancel": true,
         "generate_tickets": null,
+        "allow_waitinglist": true,
+        "show_quota_left": null,
         "min_per_order": null,
         "max_per_order": null,
         "checkin_attention": false,
@@ -342,7 +359,7 @@ Endpoints
       POST /api/v1/organizers/bigevents/events/sampleconf/items/ HTTP/1.1
       Host: pretix.eu
       Accept: application/json, text/javascript
-      Content: application/json
+      Content-Type: application/json
 
       {
         "id": 1,
@@ -362,10 +379,13 @@ Endpoints
         "picture": null,
         "available_from": null,
         "available_until": null,
+        "hidden_if_available": null,
         "require_voucher": false,
         "hide_without_voucher": false,
         "allow_cancel": true,
         "generate_tickets": null,
+        "allow_waitinglist": true,
+        "show_quota_left": null,
         "min_per_order": null,
         "max_per_order": null,
         "checkin_attention": false,
@@ -421,12 +441,15 @@ Endpoints
         "picture": null,
         "available_from": null,
         "available_until": null,
+        "hidden_if_available": null,
         "require_voucher": false,
         "hide_without_voucher": false,
         "allow_cancel": true,
         "min_per_order": null,
         "max_per_order": null,
         "generate_tickets": null,
+        "allow_waitinglist": true,
+        "show_quota_left": null,
         "checkin_attention": false,
         "has_variations": true,
         "require_approval": false,
@@ -512,9 +535,12 @@ Endpoints
         "picture": null,
         "available_from": null,
         "available_until": null,
+        "hidden_if_available": null,
         "require_voucher": false,
         "hide_without_voucher": false,
         "generate_tickets": null,
+        "allow_waitinglist": true,
+        "show_quota_left": null,
         "allow_cancel": true,
         "min_per_order": null,
         "max_per_order": null,

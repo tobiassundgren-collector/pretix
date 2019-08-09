@@ -6,13 +6,16 @@ from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.utils.safestring import mark_safe
 from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django_scopes.forms import SafeModelMultipleChoiceField
 from i18nfield.forms import I18nFormField, I18nTextarea
 
 from pretix.api.models import WebHook
 from pretix.api.webhooks import get_all_webhook_events
 from pretix.base.forms import I18nModelForm, SettingsForm
 from pretix.base.models import Device, Organizer, Team
-from pretix.control.forms import ExtFileField, MultipleLanguagesWidget
+from pretix.control.forms import (
+    ExtFileField, FontSelect, MultipleLanguagesWidget,
+)
 from pretix.multidomain.models import KnownDomain
 from pretix.presale.style import get_fonts
 
@@ -147,6 +150,9 @@ class TeamForm(forms.ModelForm):
                 'data-inverse-dependency': '#id_all_events'
             }),
         }
+        field_classes = {
+            'limit_events': SafeModelMultipleChoiceField
+        }
 
     def clean(self):
         data = super().clean()
@@ -167,6 +173,13 @@ class DeviceForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['limit_events'].queryset = organizer.events.all()
 
+    def clean(self):
+        d = super().clean()
+        if not d['all_events'] and not d['limit_events']:
+            raise ValidationError(_('Your device will not have access to anything, please select some events.'))
+
+        return d
+
     class Meta:
         model = Device
         fields = ['name', 'all_events', 'limit_events']
@@ -174,6 +187,9 @@ class DeviceForm(forms.ModelForm):
             'limit_events': forms.CheckboxSelectMultiple(attrs={
                 'data-inverse-dependency': '#id_all_events'
             }),
+        }
+        field_classes = {
+            'limit_events': SafeModelMultipleChoiceField
         }
 
 
@@ -185,9 +201,6 @@ class OrganizerSettingsForm(SettingsForm):
         widget=I18nTextarea,
         help_text=_('Not displayed anywhere by default, but if you want to, you can use this e.g. in ticket templates.')
     )
-
-
-class OrganizerDisplaySettingsForm(SettingsForm):
     primary_color = forms.CharField(
         label=_("Primary color"),
         required=False,
@@ -260,6 +273,7 @@ class OrganizerDisplaySettingsForm(SettingsForm):
         choices=[
             ('Open Sans', 'Open Sans')
         ],
+        widget=FontSelect,
         help_text=_('Only respected by modern browsers.')
     )
     favicon = ExtFileField(
@@ -303,4 +317,7 @@ class WebHookForm(forms.ModelForm):
             'limit_events': forms.CheckboxSelectMultiple(attrs={
                 'data-inverse-dependency': '#id_all_events'
             }),
+        }
+        field_classes = {
+            'limit_events': SafeModelMultipleChoiceField
         }

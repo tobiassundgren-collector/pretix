@@ -109,6 +109,7 @@ if config.has_section('replica'):
             'COLLATION': 'utf8mb4_unicode_ci',
         } if 'mysql' in db_backend else {}
     }
+    DATABASE_ROUTERS = ['pretix.helpers.database.ReplicaRouter']
 
 STATIC_URL = config.get('urls', 'static', fallback='/static/')
 
@@ -119,6 +120,7 @@ PRETIX_REGISTRATION = config.getboolean('pretix', 'registration', fallback=True)
 PRETIX_PASSWORD_RESET = config.getboolean('pretix', 'password_reset', fallback=True)
 PRETIX_LONG_SESSIONS = config.getboolean('pretix', 'long_sessions', fallback=True)
 PRETIX_ADMIN_AUDIT_COMMENTS = config.getboolean('pretix', 'audit_comments', fallback=False)
+PRETIX_OBLIGATORY_2FA = config.getboolean('pretix', 'obligatory_2fa', fallback=False)
 PRETIX_SESSION_TIMEOUT_RELATIVE = 3600 * 3
 PRETIX_SESSION_TIMEOUT_ABSOLUTE = 3600 * 12
 
@@ -127,6 +129,8 @@ if SITE_URL.endswith('/'):
     SITE_URL = SITE_URL[:-1]
 
 CSRF_TRUSTED_ORIGINS = [urlparse(SITE_URL).hostname]
+
+TRUST_X_FORWARDED_FOR = config.get('pretix', 'trust_x_forwarded_for', fallback=False)
 
 PRETIX_PLUGINS_DEFAULT = config.get('pretix', 'plugins_default',
                                     fallback='pretix.plugins.sendmail,pretix.plugins.statistics,pretix.plugins.checkinlists')
@@ -342,6 +346,7 @@ MIDDLEWARE = [
     'pretix.base.middleware.LocaleMiddleware',
     'pretix.base.middleware.SecurityMiddleware',
     'pretix.presale.middleware.EventMiddleware',
+    'pretix.api.middleware.ApiScopeMiddleware',
 ]
 
 try:
@@ -377,9 +382,11 @@ USE_I18N = True
 USE_L10N = True
 USE_TZ = True
 
-LOCALE_PATHS = (
+LOCALE_PATHS = [
     os.path.join(os.path.dirname(__file__), 'locale'),
-)
+]
+if config.has_option('languages', 'path'):
+    LOCALE_PATHS.insert(0, config.get('languages', 'path'))
 
 FORMAT_MODULE_PATH = [
     'pretix.helpers.formats',
@@ -399,13 +406,14 @@ ALL_LANGUAGES = [
     ('pl', _('Polish')),
     ('it', _('Italian')),
     ('zh-hans', _('Chinese (simplified)')),
+    ('el', _('Greek'))
 ]
 LANGUAGES_OFFICIAL = {
     'en', 'de', 'de-informal'
 }
 LANGUAGES_INCUBATING = {
-    'pt-br', 'da', 'pl', 'it'
-}
+    'pt-br', 'da', 'pl', 'it',
+} - set(config.get('languages', 'allow_incubating', fallback='').split(','))
 
 if DEBUG:
     LANGUAGES = ALL_LANGUAGES
@@ -425,6 +433,12 @@ EXTRA_LANG_INFO = {
         'code': 'nl-informal',
         'name': 'Dutch (informal)',
         'name_local': 'Nederlands'
+    },
+    'fr': {
+        'bidi': False,
+        'code': 'fr',
+        'name': 'French',
+        'name_local': 'Français'
     },
 }
 
@@ -593,12 +607,14 @@ LOGGING = {
     },
 }
 
+SENTRY_ENABLED = False
 if config.has_option('sentry', 'dsn'):
     import sentry_sdk
     from sentry_sdk.integrations.celery import CeleryIntegration
     from sentry_sdk.integrations.logging import LoggingIntegration, ignore_logger
     from .sentry import PretixSentryIntegration, setup_custom_filters
 
+    SENTRY_ENABLED = True
     sentry_sdk.init(
         dsn=config.get('sentry', 'dsn'),
         integrations=[

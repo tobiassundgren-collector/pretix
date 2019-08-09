@@ -240,12 +240,40 @@ subclass of pretix.base.exporter.BaseExporter
 As with all event-plugin signals, the ``sender`` keyword argument will contain the event.
 """
 
+validate_order = EventPluginSignal(
+    providing_args=["payment_provider", "positions", "email", "locale", "invoice_address",
+                    "meta_info"]
+)
+"""
+This signal is sent out when the user tries to confirm the order, before we actually create
+the order. It allows you to inspect the cart positions. Your return value will be ignored,
+but you can raise an OrderError with an appropriate exception message if you like to block
+the order. We strongly discourage making changes to the order here.
+
+As with all event-plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
 validate_cart = EventPluginSignal(
     providing_args=["positions"]
 )
 """
 This signal is sent out before the user starts checkout. It includes an iterable
 with the current CartPosition objects.
+The response of receivers will be ignored, but you can raise a CartError with an
+appropriate exception message.
+
+As with all event-plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
+validate_cart_addons = EventPluginSignal(
+    providing_args=["addons", "base_position", "iao"]
+)
+"""
+This signal is sent when a user tries to select a combination of addons. In contrast to
+ ``validate_cart``, this is executed before the cart is actually modified. You are passed
+an argument ``addons`` containing a set of ``(item, variation or None)`` tuples as well
+as the ``ItemAddOn`` object as the argument ``iao`` and the base cart position as
+``base_position``.
 The response of receivers will be ignored, but you can raise a CartError with an
 appropriate exception message.
 
@@ -501,4 +529,38 @@ dictionaries as values that contain keys like in the following example::
 
 The evaluate member will be called with the order position, order and event as arguments. The event might
 also be a subevent, if applicable.
+"""
+
+
+timeline_events = EventPluginSignal()
+"""
+This signal is sent out to collect events for the time line shown on event dashboards. You are passed
+a ``subevent`` argument which might be none and you are expected to return a list of instances of
+``pretix.base.timeline.TimelineEvent``, which is a ``namedtuple`` with the fields ``event``, ``subevent``,
+``datetime``, ``description`` and ``edit_url``.
+"""
+
+
+quota_availability = EventPluginSignal(
+    providing_args=['quota', 'result', 'count_waitinglist']
+)
+"""
+This signal allows you to modify the availability of a quota. You are passed the ``quota`` and an
+``availability`` result calculated by pretix code or other plugins. ``availability`` is a tuple
+with the first entry being one of the ``Quota.AVAILABILITY_*`` constants and the second entry being
+the number of available tickets (or ``None`` for unlimited). You are expected to return a value
+of the same time. The parameter ``count_waitinglists`` specifies whether waiting lists should be taken
+into account.
+
+**Warning: Use this signal with great caution, it allows you to screw up the performance of the
+system really bad.** Also, keep in mind that your response is subject to caching and out-of-date
+quotas might be used for display (not for actual order processing).
+"""
+
+order_split = EventPluginSignal(
+    providing_args=["original", "split_order"]
+)
+"""
+This signal is sent out when an order is split into two orders and allows you to copy related models
+to the new order. You will be passed the old order as ``original`` and the new order as ``split_order``.
 """
