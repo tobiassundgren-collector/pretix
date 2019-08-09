@@ -1,32 +1,19 @@
-@import "../../pretixbase/scss/_variables.scss";
-@import "../../bootstrap/scss/_bootstrap.scss";
-@import "../../pretixbase/scss/_theme.scss";
-@import "../../datetimepicker/_bootstrap-datetimepicker.scss";
+@import "./variables";
+@import "./bootstrap/bootstrap.scss";
+@import "./bootstrap/bootstrap-grid.scss";
+//@import "../../bootstrap/scss/_bootstrap.scss";
+@import "./theme";
+// @import "../../datetimepicker/_bootstrap-datetimepicker.scss";
 @import "../../fontawesome/scss/font-awesome.scss";
 
-@import "../../pretixpresale/scss/_event.scss";
+//@import "../../pretixpresale/scss/_event.scss";
 @import "../../pretixpresale/scss/_cart.scss";
-@import "../../pretixpresale/scss/_forms.scss";
-@import "../../pretixpresale/scss/_calendar.scss";
-@import "../../pretixpresale/scss/_checkout.scss";
-@import "../../pretixbase/scss/webfont.scss";
+//@import "../../pretixpresale/scss/_forms.scss";
+//@import "../../pretixpresale/scss/_calendar.scss";
+//@import "../../pretixpresale/scss/_checkout.scss";
+//@import "../../pretixbase/scss/webfont.scss";
 
 
-
-.header-1 #site-navigation .cart a{
-	background-color: #f89406; 
-	background-size:25px 23px!important;
-	border:1px solid #f89406;
-}
-
-.header-1 #site-navigation .cart i.fa-opencart{
-
-	position: absolute;
-	z-index: 2;
-	margin: 14px 0 0 46px;
-	color:#fff;
-	font-size:20px;
-}
 
 .mobile-cart{
 	position:absolute;
@@ -58,21 +45,6 @@
 	top:7px;
 	right:20px;
 	font-size:18px
-}
-
-
-.header-3 .top-header .top-left ul li a{
-	color:#fff
-}	
-
-.header-3 .top-header  .top-left ul li a i{
-	color:#96b790
-}
-
-
-.header-3 .top-header .top-right ul li:first-child a,
-.header-3 .top-header .top-right ul li a{
-	color:#fff
 }
 
 .header-3 #site-navigation .cart a{
@@ -134,10 +106,6 @@
 }
 .huge {
     font-size: 40px;
-}
-a:hover .panel-primary > .panel-heading {
-    background-color: darken($btn-primary-bg, 10%);
-    border-color: darken($btn-primary-border, 12%);
 }
 
 .thank-you {
@@ -261,40 +229,6 @@ body.loading .container {
     }
 }
 
-@media (min-width: $screen-md-min) {
-    .thank-you {
-        min-height: 170px;
-        width: 70%;
-        margin: auto;
-
-        .fa {
-            float: left;
-            margin-right: 30px;
-        }
-
-        h2 {
-            padding-top: 35px;
-        }
-
-        p {
-            margin-left: 158px;
-        }
-    }
-}
-@media (max-width: $screen-sm-max) {
-    .thank-you {
-        text-align: center;
-    }
-    h2 {
-        margin-top: 0;
-    }
-    .checkout-button-row > div {
-        margin-bottom: 15px;
-    }
-    .checkout-button-row > div.clearfix {
-        margin: 0;
-    }
-}
 
 .dl-horizontal dt  {
     white-space: normal;
@@ -328,9 +262,6 @@ body.loading .container {
     background-color: #eeeeee;
 }
 
-.panel-primary .panel-title a[data-toggle="collapse"]:hover {
-    background-color: darken($btn-primary-bg, 10%);
-}
 
 
 details {
@@ -363,6 +294,6 @@ h2 .label {
     display: inline-block;
 }
 
-@import "../../pretixpresale/scss/_iframe.scss";
-@import "../../pretixpresale/scss/_a11y.scss";
-@import "../../pretixpresale/scss/_print.scss";
+//@import "../../pretixpresale/scss/_iframe.scss";
+//@import "../../pretixpresale/scss/_a11y.scss";
+//@import "../../pretixpresale/scss/_print.scss";
