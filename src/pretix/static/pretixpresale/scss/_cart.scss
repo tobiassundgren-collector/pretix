@@ -72,7 +72,8 @@
         }
     }
 }
-@include media-breakpoint-down(sm) {
+
+@media(max-width: $screen-sm-max) {
     .cart-row {
         .download-mobile {
             display: block;

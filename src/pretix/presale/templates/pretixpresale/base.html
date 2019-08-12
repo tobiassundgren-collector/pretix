@@ -6,25 +6,17 @@
 {% load thumb %}
 <!DOCTYPE html>
 <html>
-
 <head>
     <title>{% block thetitle %}{% endblock %}</title>
-
     {% compress css %}
-    <!-- <link rel="stylesheet" type="text/css" href="{% static "tobtic/css/bootstrap.min.css" %}" /> -->
-    <link rel="stylesheet" type="text/css" href="{% static "tobtic/css/all.css" %}" />
-    <link rel="stylesheet" type="text/css" href="{% static "tobtic/css/style.css" %}" />
-    <link rel="stylesheet" type="text/x-scss" href="{% static "lightbox/css/lightbox.scss" %}" />
+        <link rel="stylesheet" type="text/x-scss" href="{% static "lightbox/css/lightbox.scss" %}" />
     {% endcompress %}
     {% if css_file %}
-    <link rel="stylesheet" type="text/css" href="{{ css_file }}" />
-    {% compress css %}
-    <link rel="stylesheet" type="text/x-scss" href="{% static "tobtic/scss/main.scss" %}" />
-    {% endcompress %}
+        <link rel="stylesheet" type="text/css" href="{{ css_file }}" />
     {% else %}
-    {% compress css %}
-    <link rel="stylesheet" type="text/x-scss" href="{% static "tobtic/scss/main.scss" %}" />
-    {% endcompress %}
+        {% compress css %}
+            <link rel="stylesheet" type="text/x-scss" href="{% static "pretixpresale/scss/main.scss" %}"/>
+        {% endcompress %}
     {% endif %}
 
     {% include "pretixpresale/fragment_js.html" %}
@@ -33,74 +25,41 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=0">
     {% block custom_header %}{% endblock %}
     {% if settings.favicon %}
-    <link rel="icon" href="{{ settings.favicon|thumb:'16x16^' }}">
-    <link rel="shortcut icon" href="{{ settings.favicon|thumb:'16x16^' }}">
-    <link rel="icon" type="image/png" sizes="32x32" href="{{ settings.favicon|thumb:'32x32^' }}">
-    <link rel="icon" type="image/png" sizes="194x194" href="{{ settings.favicon|thumb:'194x194^' }}">
-    <link rel="icon" type="image/png" sizes="16x16" href="{{ settings.favicon|thumb:'16x16^' }}">
+        <link rel="icon" href="{{ settings.favicon|thumb:'16x16^' }}">
+        <link rel="shortcut icon" href="{{ settings.favicon|thumb:'16x16^' }}">
+        <link rel="icon" type="image/png" sizes="32x32" href="{{ settings.favicon|thumb:'32x32^' }}">
+        <link rel="icon" type="image/png" sizes="194x194" href="{{ settings.favicon|thumb:'194x194^' }}">
+        <link rel="icon" type="image/png" sizes="16x16" href="{{ settings.favicon|thumb:'16x16^' }}">
     {% else %}
-    <link rel="icon" href="{% static "pretixbase/img/favicon.ico" %}">
-    <link rel="shortcut icon" href="{% static "pretixbase/img/favicon.ico" %}">
-    <link rel="icon" type="image/png" sizes="32x32" href="{% static "pretixbase/img/icons/favicon-32x32.png" %}">
-    <link rel="icon" type="image/png" sizes="194x194" href="{% static "pretixbase/img/icons/favicon-194x194.png" %}">
-    <link rel="icon" type="image/png" sizes="16x16" href="{% static "pretixbase/img/icons/favicon-16x16.png" %}">
+        <link rel="icon" href="{% static "pretixbase/img/favicon.ico" %}">
+        <link rel="shortcut icon" href="{% static "pretixbase/img/favicon.ico" %}">
+        <link rel="icon" type="image/png" sizes="32x32" href="{% static "pretixbase/img/icons/favicon-32x32.png" %}">
+        <link rel="icon" type="image/png" sizes="194x194" href="{% static "pretixbase/img/icons/favicon-194x194.png" %}">
+        <link rel="icon" type="image/png" sizes="16x16" href="{% static "pretixbase/img/icons/favicon-16x16.png" %}">
     {% endif %}
     <link rel="apple-touch-icon" sizes="180x180" href="{% static "pretixbase/img/icons/apple-touch-icon.png" %}">
-    <link rel="icon" type="image/png" sizes="192x192"
-        href="{% static "pretixbase/img/icons/android-chrome-192x192.png" %}">
+    <link rel="icon" type="image/png" sizes="192x192" href="{% static "pretixbase/img/icons/android-chrome-192x192.png" %}">
     <link rel="manifest" href="{% url "presale:site.webmanifest" %}">
-    <link rel="mask-icon" href="{% static "pretixbase/img/icons/safari-pinned-tab.svg" %}"
-        color="{{ settings.primary_color|default:"#3b1c4a" }}">
+    <link rel="mask-icon" href="{% static "pretixbase/img/icons/safari-pinned-tab.svg" %}" color="{{ settings.primary_color|default:"#3b1c4a" }}">
     <meta name="msapplication-TileColor" content="{{ settings.primary_color|default:"#3b1c4a" }}">
     <meta name="msapplication-config" content="{% url "presale:browserconfig.xml" %}">
     <meta name="theme-color" content="{{ settings.primary_color|default:"#3b1c4a" }}">
 </head>
-
-<body class="nojs" data-locale="{{ request.LANGUAGE_CODE }}" data-now="{% now "U.u" %}"
-    data-datetimeformat="{{ js_datetime_format }}" data-timeformat="{{ js_time_format }}"
-    data-dateformat="{{ js_date_format }}" data-datetimelocale="{{ js_locale }}">
-    {{ html_page_header|safe }}
-    {% block above %}
+<body class="nojs" data-locale="{{ request.LANGUAGE_CODE }}" data-now="{% now "U.u" %}" data-datetimeformat="{{ js_datetime_format }}" data-timeformat="{{ js_time_format }}" data-dateformat="{{ js_date_format }}" data-datetimelocale="{{ js_locale }}">
+{{ html_page_header|safe }}
+{% block above %}
+{% endblock %}
+<div class="container">
+    {% block page %}
     {% endblock %}
-    <nav class="navbar navbar-expand-sm sticky-top  tobtic-navbar">
-        <div class="container">
-            <a href="/" class="logo navbar-brand" title="Till startsidan">
-                <svg width="100" height="40">
-                    <use xlink:href="{% static "tobtic/img/map.svg#logo" %}"></use>
-                </svg><br />
-            </a>
-            <button class="navbar-toggler navbar-toggler-right" type="button" data-toggle="collapse"
-                data-target="#navbar1">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="navbar-collapse collapse" id="navbar1">
-                <ul class="navbar-nav my-2 mr-auto">
-                </ul>
-                <ul class="navbar-nav my-2">
-                    <li class="nav-item">
-                        <a class="nav-link" href="#">Sök evenemang<span class="sr-only">(current)</span></a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#">Arrangör</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#">Om TobTic</a>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-    <div class="container">
-        {% block page %}
+    <footer>
+        {% block footer %}
         {% endblock %}
-        <footer>
-            {% block footer %}
-            {% endblock %}
-            {% if footer_text %}
+        {% if footer_text %}
             {{ footer_text }}
             &middot;
-            {% endif %}
-            {% for f in footer %}
+        {% endif %}
+        {% for f in footer %}
             <a href="{% safelink f.url %}" target="_blank" rel="noopener">{{ f.label }}</a>
             &middot;
         {% endfor %}
@@ -110,43 +69,14 @@
 {% include "pretixpresale/fragment_modals.html" %}
 {% if DEBUG %}
     <script type="text/javascript" src="{% url 'javascript-catalog' lang=request.LANGUAGE_CODE %}" async></script>
-    {% else %}
+{% else %}
     <script src="{% statici18n LANGUAGE_CODE %}" async></script>
-    {% endif %}
+{% endif %}
+{% if request.session.iframe_session %}
     {% compress js %}
-    <script src="{% static "tobtic/js/bootstrap.min.js" %}" type="text/javascript"></script>
-    <script src="{% static "tobtic/js/jquery-3.3.1.slim.min.js" %}" type="text/javascript"></script>
-    <script src="{% static "tobtic/js/popper.min.js" %}" type="text/javascript"></script>
-    <script src="{% static "tobtic/js/main.js" %}" type="text/javascript"></script>
-    <script src="{% static "tobtic/js/svg4everybody.min.js" %}" type="text/javascript"></script>
+        <script type="text/javascript" src="{% static "iframeresizer/iframeResizer.contentWindow.js" %}"></script>
     {% endcompress %}
-    {% if request.session.iframe_session %}
-    {% compress js %}
-    <script type="text/javascript" src="{% static "iframeresizer/iframeResizer.contentWindow.js" %}"></script>
-    {% endcompress %}
-    {% compress js %}
-    <script type="text/javascript" src="{% static "moment/moment-with-locales.js" %}"></script>
-    <script type="text/javascript" src="{% static "js/jquery.formset.js" %}"></script>
-    <script type="text/javascript" src="{% static "datetimepicker/bootstrap-datetimepicker.js" %}"></script>
-    <script type="text/javascript" src="{% static "pretixcontrol/js/jquery.qrcode.min.js" %}"></script>
-    <script type="text/javascript" src="{% static "pretixpresale/js/ui/questions.js" %}"></script>
-    <script type="text/javascript" src="{% static "pretixpresale/js/ui/main.js" %}"></script>
-    <script type="text/javascript" src="{% static "pretixbase/js/asynctask.js" %}"></script>
-    <script type="text/javascript" src="{% static "pretixbase/js/details.js" %}"></script>
-    <script type="text/javascript" src="{% static "pretixpresale/js/ui/cart.js" %}"></script>
-    <script type="text/javascript" src="{% static "lightbox/js/lightbox.min.js" %}"></script>
-    {% endcompress %}
-    {% endif %}
-    {{ html_foot|safe }}
-    <script>
-        (new IntersectionObserver(function (e, o) {
-            if (e[0].intersectionRatio > 0) {
-                document.documentElement.removeAttribute('class');
-            } else {
-                document.documentElement.setAttribute('class', 'stuck');
-            };
-        })).observe(document.querySelector('.trigger'));
-    </script>
+{% endif %}
+{{ html_foot|safe }}
 </body>
-
 </html>
