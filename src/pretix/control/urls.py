@@ -62,8 +62,8 @@ urlpatterns = [
         name='user.settings.2fa.regenemergency'),
     url(r'^settings/2fa/totp/(?P<device>[0-9]+)/confirm', user.User2FADeviceConfirmTOTPView.as_view(),
         name='user.settings.2fa.confirm.totp'),
-    url(r'^settings/2fa/u2f/(?P<device>[0-9]+)/confirm', user.User2FADeviceConfirmU2FView.as_view(),
-        name='user.settings.2fa.confirm.u2f'),
+    url(r'^settings/2fa/webauthn/(?P<device>[0-9]+)/confirm', user.User2FADeviceConfirmWebAuthnView.as_view(),
+        name='user.settings.2fa.confirm.webauthn'),
     url(r'^settings/2fa/(?P<devicetype>[^/]+)/(?P<device>[0-9]+)/delete', user.User2FADeviceDeleteView.as_view(),
         name='user.settings.2fa.delete'),
     url(r'^organizers/$', organizer.OrganizerList.as_view(), name='organizers'),
@@ -106,6 +106,7 @@ urlpatterns = [
     url(r'^search/orders/$', search.OrderSearch.as_view(), name='search.orders'),
     url(r'^event/(?P<organizer>[^/]+)/(?P<event>[^/]+)/', include([
         url(r'^$', dashboards.event_index, name='event.index'),
+        url(r'^widgets.json$', dashboards.event_index_widgets_lazy, name='event.index.widgets'),
         url(r'^live/$', event.EventLive.as_view(), name='event.live'),
         url(r'^logs/$', event.EventLog.as_view(), name='event.log'),
         url(r'^delete/$', event.EventDelete.as_view(), name='event.delete'),

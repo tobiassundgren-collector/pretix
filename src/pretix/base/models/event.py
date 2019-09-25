@@ -65,7 +65,7 @@ class EventMixin:
             "SHORT_DATETIME_FORMAT" if self.settings.show_times else "DATE_FORMAT"
         )
 
-    def get_date_from_display(self, tz=None, show_times=True) -> str:
+    def get_date_from_display(self, tz=None, show_times=True, short=False) -> str:
         """
         Returns a formatted string containing the start date of the event with respect
         to the current locale and to the ``show_times`` setting.
@@ -73,7 +73,7 @@ class EventMixin:
         tz = tz or self.timezone
         return _date(
             self.date_from.astimezone(tz),
-            "DATETIME_FORMAT" if self.settings.show_times and show_times else "DATE_FORMAT"
+            ("SHORT_" if short else "") + ("DATETIME_FORMAT" if self.settings.show_times and show_times else "DATE_FORMAT")
         )
 
     def get_time_from_display(self, tz=None) -> str:
@@ -86,7 +86,7 @@ class EventMixin:
             self.date_from.astimezone(tz), "TIME_FORMAT"
         )
 
-    def get_date_to_display(self, tz=None) -> str:
+    def get_date_to_display(self, tz=None, short=False) -> str:
         """
         Returns a formatted string containing the start date of the event with respect
         to the current locale and to the ``show_times`` setting. Returns an empty string
@@ -97,7 +97,7 @@ class EventMixin:
             return ""
         return _date(
             self.date_to.astimezone(tz),
-            "DATETIME_FORMAT" if self.settings.show_times else "DATE_FORMAT"
+            ("SHORT_" if short else "") + ("DATETIME_FORMAT" if self.settings.show_times else "DATE_FORMAT")
         )
 
     def get_date_range_display(self, tz=None, force_show_end=False) -> str:
@@ -608,22 +608,24 @@ class Event(EventMixin, LoggedModel):
             question_map=question_map
         )
 
-    def get_payment_providers(self) -> dict:
+    def get_payment_providers(self, cached=False) -> dict:
         """
         Returns a dictionary of initialized payment providers mapped by their identifiers.
         """
         from ..signals import register_payment_providers
 
-        responses = register_payment_providers.send(self)
-        providers = {}
-        for receiver, response in responses:
-            if not isinstance(response, list):
-                response = [response]
-            for p in response:
-                pp = p(self)
-                providers[pp.identifier] = pp
+        if not cached or not hasattr(self, '_cached_payment_providers'):
+            responses = register_payment_providers.send(self)
+            providers = {}
+            for receiver, response in responses:
+                if not isinstance(response, list):
+                    response = [response]
+                for p in response:
+                    pp = p(self)
+                    providers[pp.identifier] = pp
 
-        return OrderedDict(sorted(providers.items(), key=lambda v: str(v[1].verbose_name)))
+            self._cached_payment_providers = OrderedDict(sorted(providers.items(), key=lambda v: str(v[1].verbose_name)))
+        return self._cached_payment_providers
 
     def get_html_mail_renderer(self):
         """
@@ -824,17 +826,23 @@ class Event(EventMixin, LoggedModel):
 
     def enable_plugin(self, module, allow_restricted=False):
         plugins_active = self.get_plugins()
+        from pretix.presale.style import regenerate_css
 
         if module not in plugins_active:
             plugins_active.append(module)
             self.set_active_plugins(plugins_active, allow_restricted=allow_restricted)
 
+        regenerate_css.apply_async(args=(self.pk,))
+
     def disable_plugin(self, module):
         plugins_active = self.get_plugins()
+        from pretix.presale.style import regenerate_css
 
         if module in plugins_active:
             plugins_active.remove(module)
             self.set_active_plugins(plugins_active)
+
+        regenerate_css.apply_async(args=(self.pk,))
 
     @staticmethod
     def clean_has_subevents(event, has_subevents):

@@ -395,8 +395,8 @@ class EventSettingsForm(SettingsForm):
                     "only to that email address. If you enable this option, the system will additionally ask for "
                     "individual email addresses for every admission ticket. This might be useful if you want to "
                     "obtain individual addresses for every attendee even in case of group orders. However, "
-                    "pretix will send the order confirmation only to the one primary email address, not to the "
-                    "per-attendee addresses."),
+                    "pretix will send the order confirmation by default only to the one primary email address, not to "
+                    "the per-attendee addresses. You can however enable this in the E-mail settings."),
         required=False
     )
     attendee_emails_required = forms.BooleanField(
@@ -534,7 +534,7 @@ class EventSettingsForm(SettingsForm):
 
     def clean(self):
         data = super().clean()
-        if data['locale'] not in data['locales']:
+        if 'locales' in data and data['locale'] not in data['locales']:
             raise ValidationError({
                 'locale': _('Your default locale must also be enabled for your event (see box above).')
             })

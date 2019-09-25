@@ -46,6 +46,7 @@ guid
 hardcoded
 hostname
 idempotency
+iframe
 incrementing
 inofficial
 invalidations
@@ -104,6 +105,7 @@ screenshot
 scss
 searchable
 selectable
+serializable
 serializers
 serializers
 sexualized

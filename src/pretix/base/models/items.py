@@ -982,6 +982,7 @@ class Question(LoggedModel):
         (TYPE_DATETIME, _("Date and time")),
         (TYPE_COUNTRYCODE, _("Country code (ISO 3166-1 alpha-2)")),
     )
+    UNLOCALIZED_TYPES = [TYPE_DATE, TYPE_TIME, TYPE_DATETIME]
 
     event = models.ForeignKey(
         Event,
@@ -1031,6 +1032,10 @@ class Question(LoggedModel):
     hidden = models.BooleanField(
         verbose_name=_('Hidden question'),
         help_text=_('This question will only show up in the backend.'),
+        default=False
+    )
+    print_on_invoice = models.BooleanField(
+        verbose_name=_('Print answer on invoices'),
         default=False
     )
     dependency_question = models.ForeignKey(

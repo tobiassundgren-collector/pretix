@@ -53,7 +53,9 @@ invoice_address                       object                     Invoice address
 ├ street                              string                     Customer street
 ├ zipcode                             string                     Customer ZIP code
 ├ city                                string                     Customer city
-├ country                             string                     Customer country
+├ country                             string                     Customer country code
+├ state                               string                     Customer state (ISO 3166-2 code). Only supported in
+                                                                 AU, BR, CA, CN, MY, MX, and US.
 ├ internal_reference                  string                     Customer's internal reference to be printed on the invoice
 ├ vat_id                              string                     Customer VAT ID
 └ vat_id_validated                    string                     ``true``, if the VAT ID has been validated against the
@@ -82,6 +84,7 @@ require_approval                      boolean                    If ``true`` and
                                                                  needs approval by an organizer before it can
                                                                  continue. If ``true`` and the order is canceled,
                                                                  this order has been denied by the event organizer.
+url                                   string                     The full URL to the order confirmation page
 payments                              list of objects            List of payment processes (see below)
 refunds                               list of objects            List of refund processes (see below)
 last_modified                         datetime                   Last modification of this object
@@ -136,6 +139,12 @@ last_modified                         datetime                   Last modificati
 .. versionchanged:: 2.5:
 
    The ``testmode`` attribute has been added and ``DELETE`` has been implemented for orders.
+
+.. versionchanged:: 3.1:
+
+   The ``invoice_address.state`` and ``url`` attributes have been added. When creating orders through the API,
+   vouchers are now supported and many fields are now optional.
+
 
 .. _order-position-resource:
 
@@ -221,13 +230,27 @@ amount                                money (string)             Payment amount
 created                               datetime                   Date and time of creation of this payment
 payment_date                          datetime                   Date and time of completion of this payment (or ``null``)
 provider                              string                     Identification string of the payment provider
+payment_url                           string                     The URL where an user can continue with the payment (or ``null``)
+details                               object                     Payment-specific information. This is a dictionary
+                                                                 with various fields that can be different between
+                                                                 payment providers, versions, payment states, etc. If
+                                                                 you read this field, you always need to be able to
+                                                                 deal with situations where values that you expect are
+                                                                 missing. Mostly, the field contains various IDs that
+                                                                 can be used for matching with other systems. If a
+                                                                 payment provider does not implement this feature,
+                                                                 the object is empty.
 ===================================== ========================== =======================================================
 
 .. versionchanged:: 2.0
 
   This resource has been added.
 
-.. _order-payment-resource:
+.. versionchanged:: 3.1
+
+  The attributes ``payment_url`` and ``details`` have been added.
+
+.. _order-refund-resource:
 
 Order refund resource
 ---------------------
@@ -288,6 +311,7 @@ List of all orders
             "status": "p",
             "testmode": false,
             "secret": "k24fiuwvu8kxz3y1",
+            "url": "https://test.pretix.eu/dummy/dummy/order/ABC12/k24fiuwvu8kxz3y1/",
             "email": "tester@example.org",
             "locale": "en",
             "sales_channel": "web",
@@ -310,7 +334,8 @@ List of all orders
                 "street": "Test street 12",
                 "zipcode": "12345",
                 "city": "Testington",
-                "country": "Testikistan",
+                "country": "DE",
+                "state": "",
                 "internal_reference": "",
                 "vat_id": "EU123456789",
                 "vat_id_validated": false
@@ -373,6 +398,8 @@ List of all orders
                 "amount": "23.00",
                 "created": "2017-12-01T10:00:00Z",
                 "payment_date": "2017-12-04T12:13:12Z",
+                "payment_url": null,
+                "details": {},
                 "provider": "banktransfer"
               }
             ],
@@ -431,6 +458,7 @@ Fetching individual orders
         "status": "p",
         "testmode": false,
         "secret": "k24fiuwvu8kxz3y1",
+        "url": "https://test.pretix.eu/dummy/dummy/order/ABC12/k24fiuwvu8kxz3y1/",
         "email": "tester@example.org",
         "locale": "en",
         "sales_channel": "web",
@@ -453,7 +481,8 @@ Fetching individual orders
             "street": "Test street 12",
             "zipcode": "12345",
             "city": "Testington",
-            "country": "Testikistan",
+            "country": "DE",
+            "state": "",
             "internal_reference": "",
             "vat_id": "EU123456789",
             "vat_id_validated": false
@@ -516,6 +545,8 @@ Fetching individual orders
             "amount": "23.00",
             "created": "2017-12-01T10:00:00Z",
             "payment_date": "2017-12-04T12:13:12Z",
+            "payment_url": null,
+            "details": {},
             "provider": "banktransfer"
           }
         ],
@@ -691,6 +722,8 @@ Deleting orders
    :statuscode 403: The requested organizer/event does not exist **or** you have no permission to delete this resource **or** the order may not be deleted.
    :statuscode 404: The requested order does not exist.
 
+.. _rest-orders-create:
+
 Creating orders
 ---------------
 
@@ -716,22 +749,16 @@ Creating orders
 
        * does not validate the number of items per order or the number of times an item can be included in an order
 
-       * does not validate any requirements related to add-on products
+       * does not validate any requirements related to add-on products and does not add bundled products automatically
 
-       * does not check or calculate prices but believes any prices you send
-
-       * does not support the redemption of vouchers
+       * does not check prices but believes any prices you send
 
        * does not prevent you from buying items that can only be bought with a voucher
 
-       * does not calculate fees
+       * does not calculate fees automatically
 
        * does not allow to pass data to plugins and will therefore cause issues with some plugins like the shipping
          module
-
-       * does not send order confirmations via email
-
-       * does not support reverse charge taxation
 
        * does not support file upload questions
 
@@ -750,9 +777,9 @@ Creating orders
    * ``email``
    * ``locale``
    * ``sales_channel``
-   * ``payment_provider`` – The identifier of the payment provider set for this order. This needs to be an existing
-     payment provider. You should use ``"free"`` for free orders, and we strongly advise to use ``"manual"`` for all
-     orders you create as paid.
+   * ``payment_provider`` (optional) – The identifier of the payment provider set for this order. This needs to be an
+    existing payment provider. You should use ``"free"`` for free orders, and we strongly advise to use ``"manual"``
+    for all orders you create as paid.
    * ``payment_info`` (optional) – You can pass a nested JSON object that will be set as the internal ``info``
      value of the payment object that will be created. How this value is handled is up to the payment provider and you
      should only use this if you know the specific payment provider in detail. Please keep in mind that the payment
@@ -770,17 +797,22 @@ Creating orders
       * ``zipcode``
       * ``city``
       * ``country``
+      * ``state``
       * ``internal_reference``
       * ``vat_id``
+      * ``vat_id_validated`` (optional) – If you need support for reverse charge (rarely the case), you need to check
+       yourself if the passed VAT ID is a valid EU VAT ID. In that case, set this to ``true``. Only valid VAT IDs will
+       trigger reverse charge taxation. Don't forget to set ``is_business`` as well!
 
    * ``positions``
 
       * ``positionid`` (optional, see below)
       * ``item``
       * ``variation``
-      * ``price``
+      * ``price`` (optional, if set to ``null`` or missing the price will be computed from the given product)
       * ``seat`` (The ``seat_guid`` attribute of a seat. Required when the specified ``item`` requires a seat, otherwise must be ``null``.)
       * ``attendee_name`` **or** ``attendee_name_parts``
+      * ``voucher`` (optional, the ``code`` attribute of a valid voucher)
       * ``attendee_email``
       * ``secret`` (optional)
       * ``addon_to`` (optional, see below)
@@ -800,6 +832,8 @@ Creating orders
       * ``tax_rule``
 
    * ``force`` (optional). If set to ``true``, quotas will be ignored.
+   * ``send_mail`` (optional). If set to ``true``, the same emails will be sent as for a regular order. Defaults to
+     ``false``.
 
    If you want to use add-on products, you need to set the ``positionid`` fields of all positions manually
    to incrementing integers starting with ``1``. Then, you can reference one of these
@@ -837,6 +871,7 @@ Creating orders
           "zipcode": "12345",
           "city": "Sample City",
           "country": "UK",
+          "state": "",
           "internal_reference": "",
           "vat_id": ""
         },
@@ -860,7 +895,7 @@ Creating orders
             ],
             "subevent": null
           }
-        ],
+        ]
       }
 
    **Example response**:
@@ -1546,6 +1581,8 @@ Order payment endpoints
             "amount": "23.00",
             "created": "2017-12-01T10:00:00Z",
             "payment_date": "2017-12-04T12:13:12Z",
+            "payment_url": null,
+            "details": {},
             "provider": "banktransfer"
           }
         ]
@@ -1586,6 +1623,8 @@ Order payment endpoints
         "amount": "23.00",
         "created": "2017-12-01T10:00:00Z",
         "payment_date": "2017-12-04T12:13:12Z",
+        "payment_url": null,
+        "details": {},
         "provider": "banktransfer"
       }
 

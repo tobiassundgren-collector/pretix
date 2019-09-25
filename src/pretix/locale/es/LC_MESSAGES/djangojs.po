@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2019-08-08 07:55+0000\n"
+"POT-Creation-Date: 2019-09-10 08:00+0000\n"
 "PO-Revision-Date: 2019-03-31 08:00+0000\n"
 "Last-Translator: oocf <oswaldocerna@gmail.com>\n"
 "Language-Team: Spanish <https://translate.pretix.eu/projects/pretix/pretix-"
@@ -178,15 +178,16 @@ msgstr "Diseño del ticket"
 msgid "Saving failed."
 msgstr "El guardado falló."
 
-#: pretix/static/pretixcontrol/js/ui/editor.js:735
-msgid "Do you really want to leave the editor without saving your changes?"
-msgstr "¿Realmente desea salir del editor sin haber guardado sus cambios?"
-
-#: pretix/static/pretixcontrol/js/ui/editor.js:749
+#: pretix/static/pretixcontrol/js/ui/editor.js:736
+#: pretix/static/pretixcontrol/js/ui/editor.js:774
 msgid "Error while uploading your PDF file, please try again."
 msgstr ""
 "Ha habido un error mientras se cargaba el archivo PDF, por favor, intente de "
 "nuevo."
+
+#: pretix/static/pretixcontrol/js/ui/editor.js:759
+msgid "Do you really want to leave the editor without saving your changes?"
+msgstr "¿Realmente desea salir del editor sin haber guardado sus cambios?"
 
 #: pretix/static/pretixcontrol/js/ui/mail.js:18
 msgid "An error has occurred."
@@ -218,19 +219,19 @@ msgstr ""
 "Tu color tiene mal contraste para un texto con fondo blanco, por favor "
 "escoge un tono más oscuro."
 
-#: pretix/static/pretixcontrol/js/ui/main.js:319
+#: pretix/static/pretixcontrol/js/ui/main.js:355
 msgid "All"
 msgstr "Todos"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:320
+#: pretix/static/pretixcontrol/js/ui/main.js:356
 msgid "None"
 msgstr "Ninguno"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:609
+#: pretix/static/pretixcontrol/js/ui/main.js:645
 msgid "Use a different name internally"
 msgstr "Usar un nombre diferente internamente"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:666
+#: pretix/static/pretixcontrol/js/ui/main.js:702
 msgid "Click to close"
 msgstr "Click para cerrar"
 

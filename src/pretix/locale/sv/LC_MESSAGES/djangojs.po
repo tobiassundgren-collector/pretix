@@ -7,9 +7,9 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2019-08-08 07:55+0000\n"
-"PO-Revision-Date: 2019-06-17 09:07+0000\n"
-"Last-Translator: Mattias Axell <mattias@libertador.es>\n"
+"POT-Creation-Date: 2019-09-10 08:00+0000\n"
+"PO-Revision-Date: 2019-08-11 00:00+0000\n"
+"Last-Translator: Tobias Sundgren <syrgas@gmail.com>\n"
 "Language-Team: Swedish <https://translate.pretix.eu/projects/pretix/pretix-"
 "js/sv/>\n"
 "Language: sv\n"
@@ -54,13 +54,11 @@ msgstr "Totalt"
 #: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:146
 #: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:177
 msgid "Confirming your payment …"
-msgstr ""
+msgstr "Bekräftar din betalning …"
 
 #: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:153
-#, fuzzy
-#| msgid "Contacting Stripe …"
 msgid "Contacting your bank …"
-msgstr "Kontakta Stripe …"
+msgstr "Kontaktar din bank …"
 
 #: pretix/static/pretixbase/js/asynctask.js:39
 #: pretix/static/pretixbase/js/asynctask.js:105
@@ -175,13 +173,14 @@ msgstr "Biljettdesign"
 msgid "Saving failed."
 msgstr "Misslyckades att spara."
 
-#: pretix/static/pretixcontrol/js/ui/editor.js:735
-msgid "Do you really want to leave the editor without saving your changes?"
-msgstr "Vill du verkligen lämna editorn utan att spara dina ändringar?"
-
-#: pretix/static/pretixcontrol/js/ui/editor.js:749
+#: pretix/static/pretixcontrol/js/ui/editor.js:736
+#: pretix/static/pretixcontrol/js/ui/editor.js:774
 msgid "Error while uploading your PDF file, please try again."
 msgstr "Ett fel uppstod när du laddade upp din PDF-fil, vänligen försök igen."
+
+#: pretix/static/pretixcontrol/js/ui/editor.js:759
+msgid "Do you really want to leave the editor without saving your changes?"
+msgstr "Vill du verkligen lämna editorn utan att spara dina ändringar?"
 
 #: pretix/static/pretixcontrol/js/ui/mail.js:18
 msgid "An error has occurred."
@@ -211,19 +210,19 @@ msgstr ""
 "Din färg har dålig kontrast för text på vit bakgrund, var god välj en "
 "mörkare nyans."
 
-#: pretix/static/pretixcontrol/js/ui/main.js:319
+#: pretix/static/pretixcontrol/js/ui/main.js:355
 msgid "All"
 msgstr "Alla"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:320
+#: pretix/static/pretixcontrol/js/ui/main.js:356
 msgid "None"
 msgstr "Ingen"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:609
+#: pretix/static/pretixcontrol/js/ui/main.js:645
 msgid "Use a different name internally"
 msgstr "Använd ett annat namn internt"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:666
+#: pretix/static/pretixcontrol/js/ui/main.js:702
 msgid "Click to close"
 msgstr "Klicka för att stänga"
 
@@ -284,7 +283,7 @@ msgstr "Köp"
 #: pretix/static/pretixpresale/js/widget/widget.js:17
 msgctxt "widget"
 msgid "Register"
-msgstr ""
+msgstr "Registrera"
 
 #: pretix/static/pretixpresale/js/widget/widget.js:18
 msgctxt "widget"
@@ -439,7 +438,7 @@ msgstr "Föregående månad"
 #: pretix/static/pretixpresale/js/widget/widget.js:48
 msgctxt "widget"
 msgid "Open seat selection"
-msgstr ""
+msgstr "Ingen platsbokning"
 
 #: pretix/static/pretixpresale/js/widget/widget.js:50
 msgid "Mo"

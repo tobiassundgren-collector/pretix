@@ -226,11 +226,15 @@ class CartManager:
 
     def _check_item_constraints(self, op):
         if isinstance(op, self.AddOperation) or isinstance(op, self.ExtendOperation):
-            if op.item.require_voucher and op.voucher is None:
-                raise CartError(error_messages['voucher_required'])
+            if not (
+                (isinstance(op, self.AddOperation) and op.addon_to == 'FAKE') or
+                (isinstance(op, self.ExtendOperation) and op.position.is_bundled)
+            ):
+                if op.item.require_voucher and op.voucher is None:
+                    raise CartError(error_messages['voucher_required'])
 
-            if op.item.hide_without_voucher and (op.voucher is None or not op.voucher.show_hidden_items):
-                raise CartError(error_messages['voucher_required'])
+                if op.item.hide_without_voucher and (op.voucher is None or not op.voucher.show_hidden_items):
+                    raise CartError(error_messages['voucher_required'])
 
             if not op.item.is_available() or (op.variation and not op.variation.active):
                 raise CartError(error_messages['unavailable'])
@@ -432,6 +436,8 @@ class CartManager:
                     seat = (subevent or self.event).seats.get(seat_guid=i.get('seat'))
                 except Seat.DoesNotExist:
                     raise CartError(error_messages['seat_invalid'])
+                except Seat.MultipleObjectsReturned:
+                    raise CartError(error_messages['seat_invalid'])
                 i['item'] = seat.product_id
                 if i['item'] not in self._items_cache:
                     self._update_items_cache([i['item']], [i['variation']])
@@ -612,7 +618,7 @@ class CartManager:
 
                 op = self.AddOperation(
                     count=1, item=item, variation=variation, price=price, voucher=None, quotas=quotas,
-                    addon_to=cp, subevent=cp.subevent, includes_tax=bool(price.rate), bundled=[], seat=cp.seat
+                    addon_to=cp, subevent=cp.subevent, includes_tax=bool(price.rate), bundled=[], seat=None
                 )
                 self._check_item_constraints(op)
                 operations.append(op)
@@ -791,8 +797,9 @@ class CartManager:
                     for b in op.bundled:
                         b_quotas = list(b.quotas)
                         if not b_quotas:
-                            err = err or error_messages['unavailable']
-                            available_count = 0
+                            if not op.voucher or not op.voucher.allow_ignore_quota:
+                                err = err or error_messages['unavailable']
+                                available_count = 0
                             continue
                         b_quota_available_count = min(available_count * b.count, min(quotas_ok[q] for q in b_quotas))
                         if b_quota_available_count < b.count:

@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2019-08-08 07:55+0000\n"
+"POT-Creation-Date: 2019-09-10 08:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -162,12 +162,13 @@ msgstr ""
 msgid "Saving failed."
 msgstr ""
 
-#: pretix/static/pretixcontrol/js/ui/editor.js:735
-msgid "Do you really want to leave the editor without saving your changes?"
+#: pretix/static/pretixcontrol/js/ui/editor.js:736
+#: pretix/static/pretixcontrol/js/ui/editor.js:774
+msgid "Error while uploading your PDF file, please try again."
 msgstr ""
 
-#: pretix/static/pretixcontrol/js/ui/editor.js:749
-msgid "Error while uploading your PDF file, please try again."
+#: pretix/static/pretixcontrol/js/ui/editor.js:759
+msgid "Do you really want to leave the editor without saving your changes?"
 msgstr ""
 
 #: pretix/static/pretixcontrol/js/ui/mail.js:18
@@ -196,19 +197,19 @@ msgid ""
 "darker shade."
 msgstr ""
 
-#: pretix/static/pretixcontrol/js/ui/main.js:319
+#: pretix/static/pretixcontrol/js/ui/main.js:355
 msgid "All"
 msgstr ""
 
-#: pretix/static/pretixcontrol/js/ui/main.js:320
+#: pretix/static/pretixcontrol/js/ui/main.js:356
 msgid "None"
 msgstr ""
 
-#: pretix/static/pretixcontrol/js/ui/main.js:609
+#: pretix/static/pretixcontrol/js/ui/main.js:645
 msgid "Use a different name internally"
 msgstr ""
 
-#: pretix/static/pretixcontrol/js/ui/main.js:666
+#: pretix/static/pretixcontrol/js/ui/main.js:702
 msgid "Click to close"
 msgstr ""
 

@@ -239,7 +239,7 @@ class PDFCheckinList(ReportlabExportMixin, CheckInListMixin, BaseExporter):
                 name += "<br/>" + iac
 
             row = [
-                '!!' if op.item.checkin_attention else '',
+                '!!' if op.item.checkin_attention or op.order.checkin_attention else '',
                 CBFlowable(bool(op.last_checked_in)),
                 '✘' if op.order.status != Order.STATUS_PAID else '✔',
                 op.order.code,
@@ -250,9 +250,19 @@ class PDFCheckinList(ReportlabExportMixin, CheckInListMixin, BaseExporter):
             acache = {}
             if op.addon_to:
                 for a in op.addon_to.answers.all():
-                    acache[a.question_id] = str(a)
+                    # We do not want to localize Date, Time and Datetime question answers, as those can lead
+                    # to difficulties parsing the data (for example 2019-02-01 may become Février, 2019 01 in French).
+                    if a.question.type in Question.UNLOCALIZED_TYPES:
+                        acache[a.question_id] = a.answer
+                    else:
+                        acache[a.question_id] = str(a)
             for a in op.answers.all():
-                acache[a.question_id] = str(a)
+                # We do not want to localize Date, Time and Datetime question answers, as those can lead
+                # to difficulties parsing the data (for example 2019-02-01 may become Février, 2019 01 in French).
+                if a.question.type in Question.UNLOCALIZED_TYPES:
+                    acache[a.question_id] = a.answer
+                else:
+                    acache[a.question_id] = str(a)
             for q in questions:
                 txt = acache.get(q.pk, '')
                 p = Paragraph(txt, self.get_style())
@@ -321,6 +331,8 @@ class CSVCheckinList(CheckInListMixin, ListExporter):
         headers.append(_('Company'))
         headers.append(_('Voucher code'))
         headers.append(_('Order date'))
+        headers.append(_('Requires special attention'))
+        headers.append(_('Comment'))
         yield headers
 
         for op in qs:
@@ -365,15 +377,27 @@ class CSVCheckinList(CheckInListMixin, ListExporter):
             acache = {}
             if op.addon_to:
                 for a in op.addon_to.answers.all():
-                    acache[a.question_id] = str(a)
+                    # We do not want to localize Date, Time and Datetime question answers, as those can lead
+                    # to difficulties parsing the data (for example 2019-02-01 may become Février, 2019 01 in French).
+                    if a.question.type in Question.UNLOCALIZED_TYPES:
+                        acache[a.question_id] = a.answer
+                    else:
+                        acache[a.question_id] = str(a)
             for a in op.answers.all():
-                acache[a.question_id] = str(a)
+                # We do not want to localize Date, Time and Datetime question answers, as those can lead
+                # to difficulties parsing the data (for example 2019-02-01 may become Février, 2019 01 in French).
+                if a.question.type in Question.UNLOCALIZED_TYPES:
+                    acache[a.question_id] = a.answer
+                else:
+                    acache[a.question_id] = str(a)
             for q in questions:
                 row.append(acache.get(q.pk, ''))
 
             row.append(ia.company)
             row.append(op.voucher.code if op.voucher else "")
             row.append(op.order.datetime.astimezone(self.event.timezone).strftime('%Y-%m-%d'))
+            row.append(_('Yes') if op.order.checkin_attention or op.item.checkin_attention else _('No'))
+            row.append(op.order.comment or "")
             yield row
 
     def get_filename(self):

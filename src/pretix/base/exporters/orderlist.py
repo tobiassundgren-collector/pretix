@@ -9,7 +9,7 @@ from django.utils.formats import date_format, localize
 from django.utils.translation import pgettext, ugettext as _, ugettext_lazy
 
 from pretix.base.models import (
-    InvoiceAddress, InvoiceLine, Order, OrderPosition,
+    InvoiceAddress, InvoiceLine, Order, OrderPosition, Question,
 )
 from pretix.base.models.orders import OrderFee, OrderPayment, OrderRefund
 from pretix.base.settings import PERSON_NAME_SCHEMES
@@ -96,7 +96,7 @@ class OrderListExporter(MultiSheetListExporter):
             for k, label, w in name_scheme['fields']:
                 headers.append(label)
         headers += [
-            _('Address'), _('ZIP code'), _('City'), _('Country'), _('VAT ID'),
+            _('Address'), _('ZIP code'), _('City'), _('Country'), pgettext('address', 'State'), _('VAT ID'),
             _('Date of last payment'), _('Fees'), _('Order locale')
         ]
 
@@ -109,6 +109,8 @@ class OrderListExporter(MultiSheetListExporter):
 
         headers.append(_('Invoice numbers'))
         headers.append(_('Sales channel'))
+        headers.append(_('Requires special attention'))
+        headers.append(_('Comment'))
 
         yield headers
 
@@ -153,10 +155,11 @@ class OrderListExporter(MultiSheetListExporter):
                     order.invoice_address.city,
                     order.invoice_address.country if order.invoice_address.country else
                     order.invoice_address.country_old,
+                    order.invoice_address.state,
                     order.invoice_address.vat_id,
                 ]
             except InvoiceAddress.DoesNotExist:
-                row += [''] * (7 + (len(name_scheme['fields']) if len(name_scheme['fields']) > 1 else 0))
+                row += [''] * (8 + (len(name_scheme['fields']) if len(name_scheme['fields']) > 1 else 0))
 
             row += [
                 order.payment_date.astimezone(tz).strftime('%Y-%m-%d') if order.payment_date else '',
@@ -178,6 +181,8 @@ class OrderListExporter(MultiSheetListExporter):
 
             row.append(', '.join([i.number for i in order.invoices.all()]))
             row.append(order.sales_channel)
+            row.append(_('Yes') if order.checkin_attention else _('No'))
+            row.append(order.comment or "")
             yield row
 
     def iterate_fees(self, form_data: dict):
@@ -208,7 +213,7 @@ class OrderListExporter(MultiSheetListExporter):
             for k, label, w in name_scheme['fields']:
                 headers.append(_('Invoice address name') + ': ' + str(label))
         headers += [
-            _('Address'), _('ZIP code'), _('City'), _('Country'), _('VAT ID'),
+            _('Address'), _('ZIP code'), _('City'), _('Country'), pgettext('address', 'State'), _('VAT ID'),
         ]
 
         yield headers
@@ -243,10 +248,11 @@ class OrderListExporter(MultiSheetListExporter):
                     order.invoice_address.city,
                     order.invoice_address.country if order.invoice_address.country else
                     order.invoice_address.country_old,
+                    order.invoice_address.state,
                     order.invoice_address.vat_id,
                 ]
             except InvoiceAddress.DoesNotExist:
-                row += [''] * (7 + (len(name_scheme['fields']) if len(name_scheme['fields']) > 1 else 0))
+                row += [''] * (8 + (len(name_scheme['fields']) if len(name_scheme['fields']) > 1 else 0))
             yield row
 
     def iterate_positions(self, form_data: dict):
@@ -301,7 +307,7 @@ class OrderListExporter(MultiSheetListExporter):
             for k, label, w in name_scheme['fields']:
                 headers.append(_('Invoice address name') + ': ' + str(label))
         headers += [
-            _('Address'), _('ZIP code'), _('City'), _('Country'), _('VAT ID'),
+            _('Address'), _('ZIP code'), _('City'), _('Country'), pgettext('address', 'State'), _('VAT ID'),
         ]
         headers.append(_('Sales channel'))
 
@@ -339,7 +345,12 @@ class OrderListExporter(MultiSheetListExporter):
             ]
             acache = {}
             for a in op.answers.all():
-                acache[a.question_id] = str(a)
+                # We do not want to localize Date, Time and Datetime question answers, as those can lead
+                # to difficulties parsing the data (for example 2019-02-01 may become Février, 2019 01 in French).
+                if a.question.type in Question.UNLOCALIZED_TYPES:
+                    acache[a.question_id] = a.answer
+                else:
+                    acache[a.question_id] = str(a)
             for q in questions:
                 row.append(acache.get(q.pk, ''))
             try:
@@ -358,10 +369,11 @@ class OrderListExporter(MultiSheetListExporter):
                     order.invoice_address.city,
                     order.invoice_address.country if order.invoice_address.country else
                     order.invoice_address.country_old,
+                    order.invoice_address.state,
                     order.invoice_address.vat_id,
                 ]
             except InvoiceAddress.DoesNotExist:
-                row += [''] * (7 + (len(name_scheme['fields']) if len(name_scheme['fields']) > 1 else 0))
+                row += [''] * (8 + (len(name_scheme['fields']) if len(name_scheme['fields']) > 1 else 0))
             row.append(order.sales_channel)
             yield row
 
@@ -503,6 +515,7 @@ class InvoiceDataExporter(MultiSheetListExporter):
                 _('Invoice recipient:') + ' ' + _('ZIP code'),
                 _('Invoice recipient:') + ' ' + _('City'),
                 _('Invoice recipient:') + ' ' + _('Country'),
+                _('Invoice recipient:') + ' ' + pgettext('address', 'State'),
                 _('Invoice recipient:') + ' ' + _('VAT ID'),
                 _('Invoice recipient:') + ' ' + _('Beneficiary'),
                 _('Invoice recipient:') + ' ' + _('Internal reference'),
@@ -552,6 +565,7 @@ class InvoiceDataExporter(MultiSheetListExporter):
                     i.invoice_to_zipcode,
                     i.invoice_to_city,
                     i.invoice_to_country,
+                    i.invoice_to_state,
                     i.invoice_to_vat_id,
                     i.invoice_to_beneficiary,
                     i.internal_reference,
@@ -591,6 +605,7 @@ class InvoiceDataExporter(MultiSheetListExporter):
                 _('Invoice recipient:') + ' ' + _('ZIP code'),
                 _('Invoice recipient:') + ' ' + _('City'),
                 _('Invoice recipient:') + ' ' + _('Country'),
+                _('Invoice recipient:') + ' ' + pgettext('address', 'State'),
                 _('Invoice recipient:') + ' ' + _('VAT ID'),
                 _('Invoice recipient:') + ' ' + _('Beneficiary'),
                 _('Invoice recipient:') + ' ' + _('Internal reference'),
@@ -630,6 +645,7 @@ class InvoiceDataExporter(MultiSheetListExporter):
                     i.invoice_to_zipcode,
                     i.invoice_to_city,
                     i.invoice_to_country,
+                    i.invoice_to_state,
                     i.invoice_to_vat_id,
                     i.invoice_to_beneficiary,
                     i.internal_reference,

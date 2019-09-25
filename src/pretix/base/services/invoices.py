@@ -73,12 +73,15 @@ def build_invoice(invoice: Invoice) -> Invoice:
             addr_template = pgettext("invoice", """{i.company}
 {i.name}
 {i.street}
-{i.zipcode} {i.city}
+{i.zipcode} {i.city} {state}
 {country}""")
-            invoice.invoice_to = addr_template.format(
-                i=ia,
-                country=ia.country.name if ia.country else ia.country_old
-            ).strip()
+            invoice.invoice_to = "\n".join(
+                a.strip() for a in addr_template.format(
+                    i=ia,
+                    country=ia.country.name if ia.country else ia.country_old,
+                    state=ia.state_for_address
+                ).split("\n") if a.strip()
+            )
             invoice.internal_reference = ia.internal_reference
             invoice.invoice_to_company = ia.company
             invoice.invoice_to_name = ia.name
@@ -86,6 +89,7 @@ def build_invoice(invoice: Invoice) -> Invoice:
             invoice.invoice_to_zipcode = ia.zipcode
             invoice.invoice_to_city = ia.city
             invoice.invoice_to_country = ia.country
+            invoice.invoice_to_state = ia.state
             invoice.invoice_to_beneficiary = ia.beneficiary
 
             if ia.vat_id:
@@ -125,7 +129,7 @@ def build_invoice(invoice: Invoice) -> Invoice:
         positions = list(
             invoice.order.positions.select_related('addon_to', 'item', 'tax_rule', 'subevent', 'variation').annotate(
                 addon_c=Count('addons')
-            ).order_by('positionid', 'id')
+            ).prefetch_related('answers', 'answers__question').order_by('positionid', 'id')
         )
 
         reverse_charge = False
@@ -142,6 +146,16 @@ def build_invoice(invoice: Invoice) -> Invoice:
                 desc = "  + " + desc
             if invoice.event.settings.invoice_attendee_name and p.attendee_name:
                 desc += "<br />" + pgettext("invoice", "Attendee: {name}").format(name=p.attendee_name)
+
+            for answ in p.answers.all():
+                if not answ.question.print_on_invoice:
+                    continue
+                desc += "<br />{}{} {}".format(
+                    answ.question.question,
+                    "" if str(answ.question.question).endswith("?") else ":",
+                    str(answ)
+                )
+
             if invoice.event.has_subevents:
                 desc += "<br />" + pgettext("subevent", "Date: {}").format(p.subevent)
             InvoiceLine.objects.create(

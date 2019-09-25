@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2019-08-08 07:55+0000\n"
+"POT-Creation-Date: 2019-09-10 08:00+0000\n"
 "PO-Revision-Date: 2019-08-03 22:00+0000\n"
 "Last-Translator: Maarten van den Berg <maartenberg1@gmail.com>\n"
 "Language-Team: Dutch (informal) <https://translate.pretix.eu/projects/pretix/"
@@ -175,13 +175,14 @@ msgstr "Kaartjesontwerp"
 msgid "Saving failed."
 msgstr "Opslaan mislukt."
 
-#: pretix/static/pretixcontrol/js/ui/editor.js:735
-msgid "Do you really want to leave the editor without saving your changes?"
-msgstr "Wil je de editor verlaten zonder je wijzigingen op te slaan?"
-
-#: pretix/static/pretixcontrol/js/ui/editor.js:749
+#: pretix/static/pretixcontrol/js/ui/editor.js:736
+#: pretix/static/pretixcontrol/js/ui/editor.js:774
 msgid "Error while uploading your PDF file, please try again."
 msgstr "Probleem bij het uploaden van het PDF-bestand, probeer het opnieuw."
+
+#: pretix/static/pretixcontrol/js/ui/editor.js:759
+msgid "Do you really want to leave the editor without saving your changes?"
+msgstr "Wil je de editor verlaten zonder je wijzigingen op te slaan?"
 
 #: pretix/static/pretixcontrol/js/ui/mail.js:18
 msgid "An error has occurred."
@@ -212,19 +213,19 @@ msgstr ""
 "Je kleur heeft een slecht contrast voor tekst op een witte achtergrond, kies "
 "een donkerdere kleur."
 
-#: pretix/static/pretixcontrol/js/ui/main.js:319
+#: pretix/static/pretixcontrol/js/ui/main.js:355
 msgid "All"
 msgstr "Alle"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:320
+#: pretix/static/pretixcontrol/js/ui/main.js:356
 msgid "None"
 msgstr "Geen"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:609
+#: pretix/static/pretixcontrol/js/ui/main.js:645
 msgid "Use a different name internally"
 msgstr "Gebruik intern een andere naam"
 
-#: pretix/static/pretixcontrol/js/ui/main.js:666
+#: pretix/static/pretixcontrol/js/ui/main.js:702
 msgid "Click to close"
 msgstr "Klik om te sluiten"
 

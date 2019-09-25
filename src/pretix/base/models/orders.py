@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Union
 
 import dateutil
+import pycountry
 import pytz
 from django.conf import settings
 from django.db import models, transaction
@@ -696,7 +697,7 @@ class Order(LockModel, LoggedModel):
     def send_mail(self, subject: str, template: Union[str, LazyI18nString],
                   context: Dict[str, Any]=None, log_entry_type: str='pretix.event.order.email.sent',
                   user: User=None, headers: dict=None, sender: str=None, invoices: list=None,
-                  auth=None, attach_tickets=False, position: 'OrderPosition'=None):
+                  auth=None, attach_tickets=False, position: 'OrderPosition'=None, auto_email=True):
         """
         Sends an email to the user that placed this order. Basically, this method does two things:
 
@@ -736,7 +737,7 @@ class Order(LockModel, LoggedModel):
                     recipient, subject, template, context,
                     self.event, self.locale, self, headers=headers, sender=sender,
                     invoices=invoices, attach_tickets=attach_tickets,
-                    position=position
+                    position=position, auto_email=auto_email
                 )
             except SendMailException:
                 raise
@@ -1195,7 +1196,7 @@ class OrderPayment(models.Model):
         """
         Cached access to an instance of the payment provider in use.
         """
-        return self.order.event.get_payment_providers().get(self.provider)
+        return self.order.event.get_payment_providers(cached=True).get(self.provider)
 
     def _mark_paid(self, force, count_waitinglist, user, auth, ignore_date=False, overpaid=False):
         from pretix.base.signals import order_paid
@@ -2019,6 +2020,7 @@ class InvoiceAddress(models.Model):
     city = models.CharField(max_length=255, verbose_name=_('City'), blank=False)
     country_old = models.CharField(max_length=255, verbose_name=_('Country'), blank=False)
     country = CountryField(verbose_name=_('Country'), blank=False, blank_label=_('Select country'))
+    state = models.CharField(max_length=255, verbose_name=pgettext_lazy('address', 'State'), blank=True)
     vat_id = models.CharField(max_length=255, blank=True, verbose_name=_('VAT ID'),
                               help_text=_('Only for business customers within the EU.'))
     vat_id_validated = models.BooleanField(default=False)
@@ -2044,6 +2046,22 @@ class InvoiceAddress(models.Model):
             self.name_cached = ""
             self.name_parts = {}
         super().save(**kwargs)
+
+    @property
+    def state_name(self):
+        sd = pycountry.subdivisions.get(code='{}-{}'.format(self.country, self.state))
+        if sd:
+            return sd.name
+        return self.state
+
+    @property
+    def state_for_address(self):
+        from pretix.base.settings import COUNTRIES_WITH_STATE_IN_ADDRESS
+        if not self.state or str(self.country) not in COUNTRIES_WITH_STATE_IN_ADDRESS:
+            return ""
+        if COUNTRIES_WITH_STATE_IN_ADDRESS[str(self.country)][1] == 'long':
+            return self.state_name
+        return self.state
 
     @property
     def name(self):
