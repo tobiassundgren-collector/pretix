@@ -406,7 +406,8 @@ ALL_LANGUAGES = [
     ('pl', _('Polish')),
     ('it', _('Italian')),
     ('zh-hans', _('Chinese (simplified)')),
-    ('el', _('Greek'))
+    ('el', _('Greek')),
+    ('sv', _('Swedish'))
 ]
 LANGUAGES_OFFICIAL = {
     'en', 'de', 'de-informal'

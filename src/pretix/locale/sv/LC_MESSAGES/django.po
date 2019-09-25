@@ -7882,7 +7882,7 @@ msgstr ""
 #: pretix/control/templates/pretixcontrol/base.html:126
 #: pretix/control/templates/pretixcontrol/base.html:131
 msgid "Go to shop"
-msgstr ""
+msgstr "Gå till butik"
 
 #: pretix/control/templates/pretixcontrol/base.html:189
 msgid "End admin session"
@@ -7890,20 +7890,20 @@ msgstr ""
 
 #: pretix/control/templates/pretixcontrol/base.html:201
 msgid "Account Settings"
-msgstr ""
+msgstr "Kontoinställningar"
 
 #: pretix/control/templates/pretixcontrol/base.html:206
 #: pretix/control/templates/pretixcontrol/base.html:208
 msgid "Log out"
-msgstr ""
+msgstr "Logga ut"
 
 #: pretix/control/templates/pretixcontrol/base.html:234
 msgid "Organizer account"
-msgstr ""
+msgstr "Arrangörskonto"
 
 #: pretix/control/templates/pretixcontrol/base.html:257
 msgid "Search for events"
-msgstr ""
+msgstr "Sök efter event"
 
 #: pretix/control/templates/pretixcontrol/base.html:312
 msgid ""
@@ -16078,7 +16078,7 @@ msgstr ""
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:26
 msgid "Upcoming events"
-msgstr ""
+msgstr "Kommande event"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:47
 msgid "Show upcoming"
