@@ -1,84 +1,16 @@
-@import "./variables";
-@import "./bootstrap/bootstrap.scss";
-@import "./bootstrap/bootstrap-grid.scss";
-//@import "../../bootstrap/scss/_bootstrap.scss";
-@import "./theme";
-// @import "../../datetimepicker/_bootstrap-datetimepicker.scss";
+@import "../../pretixbase/scss/_variables.scss";
+@import "../../bootstrap/scss/_bootstrap.scss";
+@import "../../pretixbase/scss/_theme.scss";
+@import "../../datetimepicker/_bootstrap-datetimepicker.scss";
 @import "../../fontawesome/scss/font-awesome.scss";
 
-//@import "../../pretixpresale/scss/_event.scss";
-@import "../../pretixpresale/scss/_cart.scss";
-//@import "../../pretixpresale/scss/_forms.scss";
-//@import "../../pretixpresale/scss/_calendar.scss";
-//@import "../../pretixpresale/scss/_checkout.scss";
-//@import "../../pretixbase/scss/webfont.scss";
+@import "_event.scss";
+@import "_cart.scss";
+@import "_forms.scss";
+@import "_calendar.scss";
+@import "_checkout.scss";
+@import "../../pretixbase/scss/webfont.scss";
 
-
-
-.mobile-cart{
-	position:absolute;
-	right:60px;
-	bottom:0;
-	display:none;
-}
-
-.mobile-cart a{	
-	font-size:15px;
-	line-height:20px;
-	text-transform:uppercase;
-	color:#fff;
-	border:1px solid #f89406;
-	border-radius:20px;
-	margin:6px 0;
-	padding:7px 20px!important;
-	font-family: "Montserrat-Light";
-	width:90px;
-	position:relative;
-	display:block;
-}
-
-.mobile-cart a:before{
-	display:block;
-	content: "\f23d";
-	font-family: 'FontAwesome';
-	position:absolute;
-	top:7px;
-	right:20px;
-	font-size:18px
-}
-
-.header-3 #site-navigation .cart a{
-	border:1px solid #fff
-}
-
-#site-navigation .cart{
-	margin:0 0 0 20px;
-}
-
-#site-navigation .cart a{
-	border:1px solid #ff6600;
-	border-radius:20px;
-	margin:6px 0;
-	padding:7px 20px!important;
-	font-family: "Montserrat-Light";
-	width:90px;
-	background-size:25px 23px!important;
-	position:relative;
-}
-
-#site-navigation .cart a:before{
-	display:block;
-	content: "\f23d";
-	font-family: 'FontAwesome';
-	position:absolute;
-	top:7px;
-	right:20px;
-	font-size:18px
-}
-
-.closecanvas{
-	display:none;
-}
 
 
 /* See https://github.com/pretix/pretix/pull/761 */
@@ -86,6 +18,29 @@
     line-height: 1.8em;
 }
 
+footer {
+    text-align: center;
+    padding: 10px 0;
+    font-size: 11999px;
+}
+.page-header {
+    position: relative;
+    padding-bottom: 9px;
+
+    h1 {
+        margin: 0;
+    }
+    h1 small {
+        white-space: nowrap;
+    }
+    .loginbox {
+        padding-top: 15px;
+    }
+    .event-logo, .organizer-logo {
+        max-width: 100%;
+        height: auto;
+    }
+}
 .js-only {
     display: none;
 }
@@ -106,6 +61,10 @@
 }
 .huge {
     font-size: 40px;
+}
+a:hover .panel-primary > .panel-heading {
+    background-color: darken($btn-primary-bg, 10%);
+    border-color: darken($btn-primary-border, 12%);
 }
 
 .thank-you {
@@ -131,6 +90,12 @@ body.loading .container {
     filter: blur(2px);
 }
 
+.big-rotating-icon {
+    -webkit-animation: fa-spin 8s infinite linear;
+    animation: fa-spin 8s infinite linear;
+    font-size: 120px;
+    color: $brand-primary;
+}
 #loadingmodal, #ajaxerr {
     position: fixed;
     top: 0;
@@ -164,12 +129,6 @@ body.loading .container {
             float: left;
             width: 150px;
             text-align: center;
-            .big-rotating-icon {
-                -webkit-animation: fa-spin 8s infinite linear;
-                animation: fa-spin 8s infinite linear;
-                font-size: 120px;
-                color: $brand-primary;
-            }
         }
         .modal-card-content {
             margin-left: 160px;
@@ -229,6 +188,40 @@ body.loading .container {
     }
 }
 
+@media (min-width: $screen-md-min) {
+    .thank-you {
+        min-height: 170px;
+        width: 70%;
+        margin: auto;
+
+        .fa {
+            float: left;
+            margin-right: 30px;
+        }
+
+        h2 {
+            padding-top: 35px;
+        }
+
+        p {
+            margin-left: 158px;
+        }
+    }
+}
+@media (max-width: $screen-sm-max) {
+    .thank-you {
+        text-align: center;
+    }
+    h2 {
+        margin-top: 0;
+    }
+    .checkout-button-row > div {
+        margin-bottom: 15px;
+    }
+    .checkout-button-row > div.clearfix {
+        margin: 0;
+    }
+}
 
 .dl-horizontal dt  {
     white-space: normal;
@@ -262,6 +255,9 @@ body.loading .container {
     background-color: #eeeeee;
 }
 
+.panel-primary .panel-title a[data-toggle="collapse"]:hover {
+    background-color: darken($btn-primary-bg, 10%);
+}
 
 
 details {
@@ -294,6 +290,6 @@ h2 .label {
     display: inline-block;
 }
 
-//@import "../../pretixpresale/scss/_iframe.scss";
-//@import "../../pretixpresale/scss/_a11y.scss";
-//@import "../../pretixpresale/scss/_print.scss";
+@import "_iframe.scss";
+@import "_a11y.scss";
+@import "_print.scss";
