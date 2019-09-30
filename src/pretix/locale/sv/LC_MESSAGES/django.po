@@ -16102,7 +16102,7 @@ msgstr ""
 
 #: pretix/presale/templates/pretixpresale/index.html:7
 msgid "Hello!"
-msgstr ""
+msgstr "Hej!"
 
 #: pretix/presale/templates/pretixpresale/index.html:9
 #, python-format
@@ -16130,7 +16130,7 @@ msgstr ""
 
 #: pretix/presale/templates/pretixpresale/organizers/calendar.html:6
 msgid "Event overview"
-msgstr ""
+msgstr "Översikt"
 
 #: pretix/presale/templates/pretixpresale/organizers/calendar.html:37
 #: pretix/presale/templates/pretixpresale/organizers/index.html:44
@@ -16139,179 +16139,181 @@ msgstr ""
 
 #: pretix/presale/templates/pretixpresale/organizers/calendar.html:71
 msgid "Note that the events in this view are in different timezones."
-msgstr ""
+msgstr "Observera att eventen i denna vy visas i olika tidszoner."
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:7
 msgid "Event list"
-msgstr ""
+msgstr "Evenemangslista"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:24
 msgid "Past events"
-msgstr ""
+msgstr "Tidigare evenemang"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:26
 msgid "Upcoming events"
-msgstr "Kommande event"
+msgstr "Kommande evenemang"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:47
 msgid "Show upcoming"
-msgstr ""
+msgstr "Visa kommande evenemang"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:49
 msgid "Show past events"
-msgstr ""
+msgstr "Visa tidigare evenemang"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:100
 #: pretix/presale/templates/pretixpresale/organizers/index.html:101
 msgid "Buy tickets"
-msgstr ""
+msgstr "Köp biljetter"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:102
 msgid "More info"
-msgstr ""
+msgstr "Mer information"
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:111
 msgid "No archived events found."
-msgstr ""
+msgstr "Inga evenemang hittades."
 
 #: pretix/presale/templates/pretixpresale/organizers/index.html:117
 msgid "No public upcoming events found."
-msgstr ""
+msgstr "Inga tidigare evenemang kunde hittas."
 
 #: pretix/presale/templates/pretixpresale/pagination.html:14
 #, python-format
 msgid "Page %(page)s of %(of)s"
-msgstr ""
+msgstr "Sida %(page)s av %(of)s"
 
 #: pretix/presale/utils.py:37 pretix/presale/utils.py:132
 #: pretix/presale/utils.py:133
 msgid "The selected event was not found."
-msgstr ""
+msgstr "Det valda evenemang kunde inte hittas."
 
 #: pretix/presale/utils.py:97
 msgid "The selected ticket shop is currently not available."
-msgstr ""
+msgstr "Den valda biljett-shoppen är inte tillgänglig."
 
 #: pretix/presale/utils.py:102
 msgid "This feature is not enabled."
-msgstr ""
+msgstr "Denna funktion är inte aktiverad."
 
 #: pretix/presale/utils.py:141 pretix/presale/utils.py:145
 msgid "The selected organizer was not found."
-msgstr ""
+msgstr "Den valda arrangören kunde inte hittas."
 
 #: pretix/presale/views/cart.py:111 pretix/presale/views/cart.py:116
 #: pretix/presale/views/cart.py:133 pretix/presale/views/cart.py:145
 msgid "Please enter numbers only."
-msgstr ""
+msgstr "Vänligen skriv endast siffror."
 
 #: pretix/presale/views/cart.py:118
 msgid "Please enter positive numbers only."
-msgstr ""
+msgstr "Vänligen skriv endast positiva siffror."
 
 #: pretix/presale/views/cart.py:337
 msgid "Your cart has been updated."
-msgstr ""
+msgstr "Din varukorg har uppdaterats."
 
 #: pretix/presale/views/cart.py:340 pretix/presale/views/cart.py:361
 msgid "Your cart is now empty."
-msgstr ""
+msgstr "Din varukorg är nu tom."
 
 #: pretix/presale/views/cart.py:375
 msgid "The products have been successfully added to your cart."
-msgstr ""
+msgstr "Artiklarna har nu lagts i din varukorg."
 
 #: pretix/presale/views/checkout.py:34
 msgid "Your cart is empty"
-msgstr ""
+msgstr "Din varukorg är tom"
 
 #: pretix/presale/views/checkout.py:38
 msgid "The presale for this event is over or has not yet started."
-msgstr ""
+msgstr "Förköp för detta evenemang har avslutats eller har inte startats."
 
 #: pretix/presale/views/event.py:423
 msgid "Unknown event code or not authorized to access this event."
-msgstr ""
+msgstr "Okänd evenemangskod eller så har du inte rättigheter att se detta evenemang."
 
 #: pretix/presale/views/event.py:430
 msgctxt "subevent"
 msgid "No date selected."
-msgstr ""
+msgstr "Inget datum valt."
 
 #: pretix/presale/views/event.py:433
 msgctxt "subevent"
 msgid "Unknown date selected."
-msgstr ""
+msgstr "Okänt datum valt."
 
 #: pretix/presale/views/event.py:456 pretix/presale/views/event.py:464
 #: pretix/presale/views/event.py:467
 msgid "Please go back and try again."
-msgstr ""
+msgstr "Vänligen gå tillbaka och försök igen."
 
 #: pretix/presale/views/order.py:285 pretix/presale/views/order.py:350
 #: pretix/presale/views/order.py:407
 msgid "The payment for this order cannot be continued."
-msgstr ""
+msgstr "Betalningen för denna beställning kan inte slutföras."
 
 #: pretix/presale/views/order.py:290 pretix/presale/views/order.py:359
 #: pretix/presale/views/order.py:416 pretix/presale/views/order.py:455
 msgid "The payment is too late to be accepted."
-msgstr ""
+msgstr "Betalningen inkom för sent för att kunna accepteras."
 
 #: pretix/presale/views/order.py:450
 msgid "The payment method for this order cannot be changed."
-msgstr ""
+msgstr "Betalmetoden för denna beställning kan inte ändras."
 
 #: pretix/presale/views/order.py:461
 msgid "A payment is currently pending for this order."
-msgstr ""
+msgstr "En betalning är pågående för denna beställning."
 
 #: pretix/presale/views/order.py:676
 msgid "You cannot modify this order"
-msgstr ""
+msgstr "Du kan inte ändra denna beställning"
 
 #: pretix/presale/views/order.py:791
 msgid "Ticket download is not (yet) enabled for this order."
-msgstr ""
+msgstr "Nedladdning av biljetter har inte (ännu) aktiverat för denna beställning."
 
 #: pretix/presale/views/user.py:25
 msgid "We had difficulties processing your input."
-msgstr ""
+msgstr "Vi hade problem att processa din indata."
 
 #: pretix/presale/views/user.py:34
 msgid "We already sent you an email in the last 24 hours."
-msgstr ""
+msgstr "Vi har redan skickat dig ett email under de senaste 24 timmarna."
 
 #: pretix/presale/views/user.py:53
 msgid "Your orders for {}"
-msgstr ""
+msgstr "Dina beställningar för {}"
 
 #: pretix/presale/views/user.py:64
 msgid "We have trouble sending emails right now, please check back later."
-msgstr ""
+msgstr "Vi har problem att skicka email just nu. Vänligen försök senare igen."
 
 #: pretix/presale/views/user.py:67
 msgid ""
 "If there were any orders by this user, they will receive an email with their "
 "order codes."
 msgstr ""
+"Om det fanns några beställningar gjorda av denna kund, så kommer de ha fått "
+"email skickade med beställningsnummer."
 
 #: pretix/presale/views/waiting.py:77
 msgid "Waiting lists are disabled for this event."
-msgstr ""
+msgstr "Väntelista är inte aktiverat för detta evenemang."
 
 #: pretix/presale/views/waiting.py:81
 msgid "We could not identify the product you selected."
-msgstr ""
+msgstr "Vi kunde inte hitta den produkt du valt."
 
 #: pretix/presale/views/waiting.py:85
 msgid "The waiting list is disabled for this product."
-msgstr ""
+msgstr "Väntelista är inte aktiverat för denna produkt."
 
 #: pretix/presale/views/waiting.py:94
 msgctxt "subevent"
 msgid "You need to select a date."
-msgstr ""
+msgstr "Du måste välja ett datum."
 
 #: pretix/presale/views/waiting.py:106
 msgid ""
@@ -16327,7 +16329,7 @@ msgstr ""
 
 #: pretix/presale/views/widget.py:252
 msgid "This ticket shop is currently disabled."
-msgstr ""
+msgstr "Denna biljett-shop är inte aktiverad. "
 
 #: pretix/presale/views/widget.py:261
 msgid "The selected date does not exist in this event series."
