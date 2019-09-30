@@ -9,7 +9,7 @@
     {{ block.super }}
     <meta property="og:title" content="{{ organizer.name }}" />
     {% if organizer_logo %}
-        <meta property="og:image" content="{{ organizer_logo|thumb:'5000x120' }}" />
+        <meta property="og:image" content="{{ organizer_logo|thumb:'5000x400' }}" />
     {% endif %}
     <meta property="og:type" content="website" />
     <meta property="og:url" content="{% abseventurl organizer "presale:organizer.index" %}" />

@@ -16,29 +16,38 @@ body {
 }
 
 #content-wrap {
-  padding-bottom: 3.5rem;    /* Footer height */
+  padding-bottom: 7.5rem;    /* Footer height */
+}
+
+.event-logo {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: 50%;
 }
 
 .footer {
   position: absolute;
   bottom: 0;
   width: 100%;
-  height: 3.5rem;            /* Footer height */
-  background-color: #4c6072;
-  color: #ffffff;
+  height: 5.5rem;            /* Footer height */
+  background-color: #fff;
+  color: #000;
+  border-top: solid 1px #cccccc;
+  margin-top: 2rem;
 }
 
 .footer a {
-  color: #ffffff;
+  color: #000;
 }
 
 .footer h6 {
-  color: #fff
+  color: #000
 }
 
-footer p {
+.footer p {
   font-size: 0.8em;
-  color: #fff;
+  color: #000;
 }
 
 a.footer-link,
