@@ -22,7 +22,7 @@ from i18nfield.fields import I18nCharField, I18nTextField
 
 from pretix.base.models.base import LoggedModel
 from pretix.base.reldate import RelativeDateWrapper
-from pretix.base.validators import EventSlugBlacklistValidator
+from pretix.base.validators import EventSlugBanlistValidator
 from pretix.helpers.database import GroupConcat
 from pretix.helpers.daterange import daterange
 from pretix.helpers.json import safe_string
@@ -291,7 +291,7 @@ class Event(EventMixin, LoggedModel):
                 regex="^[a-zA-Z0-9.-]+$",
                 message=_("The slug may only contain letters, numbers, dots and dashes."),
             ),
-            EventSlugBlacklistValidator()
+            EventSlugBanlistValidator()
         ],
         verbose_name=_("Short form"),
     )
@@ -323,6 +323,14 @@ class Event(EventMixin, LoggedModel):
         null=True, blank=True,
         max_length=200,
         verbose_name=_("Location"),
+    )
+    geo_lat = models.FloatField(
+        verbose_name=_("Latitude"),
+        null=True, blank=True,
+    )
+    geo_lon = models.FloatField(
+        verbose_name=_("Longitude"),
+        null=True, blank=True,
     )
     plugins = models.TextField(
         null=False, blank=True,
@@ -730,7 +738,7 @@ class Event(EventMixin, LoggedModel):
     def has_payment_provider(self):
         result = False
         for provider in self.get_payment_providers().values():
-            if provider.is_enabled and provider.identifier not in ('free', 'boxoffice', 'offsetting'):
+            if provider.is_enabled and provider.identifier not in ('free', 'boxoffice', 'offsetting', 'giftcard'):
                 result = True
                 break
         return result
@@ -928,6 +936,14 @@ class SubEvent(EventMixin, LoggedModel):
         null=True, blank=True,
         max_length=200,
         verbose_name=_("Location"),
+    )
+    geo_lat = models.FloatField(
+        verbose_name=_("Latitude"),
+        null=True, blank=True,
+    )
+    geo_lon = models.FloatField(
+        verbose_name=_("Longitude"),
+        null=True, blank=True
     )
     frontpage_text = I18nTextField(
         null=True, blank=True,

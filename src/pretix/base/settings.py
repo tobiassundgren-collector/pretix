@@ -133,6 +133,10 @@ DEFAULTS = {
         'default': 'True',
         'type': bool
     },
+    'payment_giftcard__enabled': {
+        'default': 'True',
+        'type': bool
+    },
     'payment_term_accept_late': {
         'default': 'True',
         'type': bool
@@ -292,6 +296,10 @@ DEFAULTS = {
     'mail_html_renderer': {
         'default': 'classic',
         'type': str
+    },
+    'mail_attach_ical': {
+        'default': 'False',
+        'type': bool
     },
     'mail_prefix': {
         'default': None,
@@ -695,6 +703,18 @@ Your {event} team"""))
     'banner_message_detail': {
         'default': '',
         'type': LazyI18nString
+    },
+    'opencagedata_apikey': {
+        'default': None,
+        'type': str
+    },
+    'leaflet_tiles': {
+        'default': None,
+        'type': str
+    },
+    'leaflet_tiles_attribution': {
+        'default': None,
+        'type': str
     },
     'frontpage_subevent_ordering': {
         'default': 'date_ascending',

@@ -119,7 +119,7 @@ class ItemSerializer(I18nAwareModelSerializer):
                   'require_voucher', 'hide_without_voucher', 'allow_cancel', 'require_bundling',
                   'min_per_order', 'max_per_order', 'checkin_attention', 'has_variations', 'variations',
                   'addons', 'bundles', 'original_price', 'require_approval', 'generate_tickets',
-                  'show_quota_left', 'hidden_if_available', 'allow_waitinglist')
+                  'show_quota_left', 'hidden_if_available', 'allow_waitinglist', 'issue_giftcard')
         read_only_fields = ('has_variations', 'picture')
 
     def get_serializer_context(self):
@@ -133,6 +133,17 @@ class ItemSerializer(I18nAwareModelSerializer):
 
         Item.clean_per_order(data.get('min_per_order'), data.get('max_per_order'))
         Item.clean_available(data.get('available_from'), data.get('available_until'))
+
+        if data.get('issue_giftcard'):
+            if data.get('tax_rule') and data.get('tax_rule').rate > 0:
+                raise ValidationError(
+                    _("Gift card products should not be associated with non-zero tax rates since sales tax will be "
+                      "applied when the gift card is redeemed.")
+                )
+            if data.get('admission'):
+                raise ValidationError(_(
+                    "Gift card products should not be admission products at the same time."
+                ))
 
         return data
 
@@ -249,6 +260,9 @@ class QuestionSerializer(I18nAwareModelSerializer):
 
         dep = full_data.get('dependency_question')
         if dep:
+            if dep.ask_during_checkin:
+                raise ValidationError(_('Question cannot depend on a question asked during check-in.'))
+
             seen_ids = {self.instance.pk} if self.instance else set()
             while dep:
                 if dep.pk in seen_ids:

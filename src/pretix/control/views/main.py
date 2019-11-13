@@ -78,6 +78,9 @@ class EventList(PaginationMixin, ListView):
             pk__in=self.request.user.teams.values_list('organizer', flat=True)
         ).count()
         ctx['hide_orga'] = orga_c <= 1
+        ctx['meta_fields'] = [
+            self.filter_form[k] for k in self.filter_form.fields if k.startswith('meta_')
+        ]
 
         for s in ctx['events']:
             s.first_quotas = s.first_quotas[:4]
@@ -134,6 +137,8 @@ class EventWizard(SafeSessionWizardView):
                 initial['currency'] = self.clone_from.currency
                 initial['date_from'] = self.clone_from.date_from
                 initial['date_to'] = self.clone_from.date_to
+                initial['geo_lat'] = self.clone_from.geo_lat
+                initial['geo_lon'] = self.clone_from.geo_lon
                 initial['presale_start'] = self.clone_from.presale_start
                 initial['presale_end'] = self.clone_from.presale_end
                 initial['location'] = self.clone_from.location
@@ -245,6 +250,8 @@ class EventWizard(SafeSessionWizardView):
                     presale_start=event.presale_start,
                     presale_end=event.presale_end,
                     location=event.location,
+                    geo_lat=event.geo_lat,
+                    geo_lon=event.geo_lon,
                     active=True
                 )
 

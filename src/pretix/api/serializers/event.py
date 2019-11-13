@@ -70,7 +70,7 @@ class EventSerializer(I18nAwareModelSerializer):
         model = Event
         fields = ('name', 'slug', 'live', 'testmode', 'currency', 'date_from',
                   'date_to', 'date_admission', 'is_public', 'presale_start',
-                  'presale_end', 'location', 'has_subevents', 'meta_data', 'seating_plan',
+                  'presale_end', 'location', 'geo_lat', 'geo_lon', 'has_subevents', 'meta_data', 'seating_plan',
                   'plugins', 'seat_category_mapping')
 
     def validate(self, data):
@@ -239,6 +239,7 @@ class CloneEventSerializer(EventSerializer):
         plugins = validated_data.pop('plugins', None)
         is_public = validated_data.pop('is_public', None)
         testmode = validated_data.pop('testmode', None)
+        has_subevents = validated_data.pop('has_subevents', None)
         new_event = super().create(validated_data)
 
         event = Event.objects.filter(slug=self.context['event'], organizer=self.context['organizer'].pk).first()
@@ -250,6 +251,8 @@ class CloneEventSerializer(EventSerializer):
             new_event.is_public = is_public
         if testmode is not None:
             new_event.testmode = testmode
+        if has_subevents is not None:
+            new_event.has_subevents = has_subevents
         new_event.save()
 
         return new_event
@@ -277,8 +280,9 @@ class SubEventSerializer(I18nAwareModelSerializer):
     class Meta:
         model = SubEvent
         fields = ('id', 'name', 'date_from', 'date_to', 'active', 'date_admission',
-                  'presale_start', 'presale_end', 'location', 'event', 'is_public', 'seating_plan',
-                  'item_price_overrides', 'variation_price_overrides', 'meta_data', 'seat_category_mapping')
+                  'presale_start', 'presale_end', 'location', 'geo_lat', 'geo_lon', 'event', 'is_public',
+                  'seating_plan', 'item_price_overrides', 'variation_price_overrides', 'meta_data',
+                  'seat_category_mapping')
 
     def validate(self, data):
         data = super().validate(data)

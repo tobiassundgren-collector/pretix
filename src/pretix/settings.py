@@ -61,6 +61,8 @@ DEBUG = config.getboolean('django', 'debug', fallback=debug_fallback)
 
 PDFTK = config.get('tools', 'pdftk', fallback=None)
 
+PRETIX_AUTH_BACKENDS = config.get('pretix', 'auth_backends', fallback='pretix.base.auth.NativeAuthBackend').split(',')
+
 db_backend = config.get('database', 'backend', fallback='sqlite3')
 if db_backend == 'postgresql_psycopg2':
     db_backend = 'postgresql'
@@ -239,6 +241,7 @@ ENTROPY = {
     'order_code': config.getint('entropy', 'order_code', fallback=5),
     'ticket_secret': config.getint('entropy', 'ticket_secret', fallback=32),
     'voucher_code': config.getint('entropy', 'voucher_code', fallback=16),
+    'giftcard_secret': config.getint('entropy', 'giftcard_secret', fallback=12),
 }
 
 # Internal settings
@@ -416,6 +419,9 @@ LANGUAGES_OFFICIAL = {
 LANGUAGES_INCUBATING = {
     'pt-br', 'pl', 'it',
 } - set(config.get('languages', 'allow_incubating', fallback='').split(','))
+LANGUAGES_RTL = {
+    'ar', 'hw'
+}
 
 if DEBUG:
     LANGUAGES = ALL_LANGUAGES

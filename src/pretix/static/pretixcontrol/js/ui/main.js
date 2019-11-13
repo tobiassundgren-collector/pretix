@@ -256,7 +256,7 @@ var form_handlers = function (el) {
         dependency.on("change", update);
     });
 
-    el.find("input[data-inverse-dependency]").each(function () {
+    el.find("select[data-inverse-dependency], input[data-inverse-dependency]").each(function () {
         var dependency = $(this).attr("data-inverse-dependency");
         if (dependency.substr(0, 1) === '<') {
             dependency = $(this).closest("form, .form-horizontal").find(dependency.substr(1));
@@ -273,13 +273,13 @@ var form_handlers = function (el) {
         dependency.on("change", update);
     });
 
-    $("div[data-display-dependency], input[data-display-dependency]").each(function () {
+    el.find("div[data-display-dependency], textarea[data-display-dependency], input[data-display-dependency]").each(function () {
         var dependent = $(this),
             dependency = $($(this).attr("data-display-dependency")),
             update = function (ev) {
                 var enabled = (dependency.attr("type") === 'checkbox' || dependency.attr("type") === 'radio') ? dependency.prop('checked') : !!dependency.val();
                 var $toggling = dependent;
-                if (dependent.get(0).tagName.toLowerCase() === "input") {
+                if (dependent.get(0).tagName.toLowerCase() !== "div") {
                     $toggling = dependent.closest('.form-group');
                 }
                 if (ev) {
@@ -371,6 +371,38 @@ var form_handlers = function (el) {
     el.find('.select2-static').select2({
         theme: "bootstrap",
         language: $("body").attr("data-select2-locale"),
+    });
+
+    el.find('input[data-typeahead-url]').each(function () {
+        var $inp = $(this);
+        $inp.typeahead(null, {
+            minLength: 1,
+            highlight: true,
+            source: new Bloodhound({
+                datumTokenizer: Bloodhound.tokenizers.obj.whitespace('value'),
+                queryTokenizer: Bloodhound.tokenizers.whitespace,
+                remote: {
+                    url: $inp.attr("data-typeahead-url"),
+                    prepare: function (query, settings) {
+                        var sep = (settings.url.indexOf('?') > 0) ? '&' : '?';
+                        settings.url = settings.url + sep + 'q=' + encodeURIComponent(query);
+                        return settings;
+                    },
+                    transform: function (object) {
+                        var results = object.results;
+                        var suggs = [];
+                        var reslen = results.length;
+                        for (var i = 0; i < reslen; i++) {
+                            suggs.push(results[i]);
+                        }
+                        return suggs;
+                    }
+                }
+            }),
+            display: function (obj) {
+                return obj.name;
+            },
+        });
     });
 
     el.find('[data-model-select2=generic]').each(function () {

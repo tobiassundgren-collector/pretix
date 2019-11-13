@@ -18,7 +18,7 @@ from pretix.base.services.cart import CartError, error_messages
 from pretix.base.signals import validate_cart_addons
 from pretix.base.templatetags.money import money_filter
 from pretix.base.templatetags.rich_text import rich_text
-from pretix.base.validators import EmailBlacklistValidator
+from pretix.base.validators import EmailBanlistValidator
 from pretix.helpers.templatetags.thumb import thumb
 from pretix.presale.signals import contact_form_fields
 
@@ -28,7 +28,7 @@ class ContactForm(forms.Form):
     email = forms.EmailField(label=_('E-mail'),
                              help_text=_('Make sure to enter a valid email address. We will send you an order '
                                          'confirmation including a link that you need to access your order later.'),
-                             validators=[EmailBlacklistValidator()],
+                             validators=[EmailBanlistValidator()],
                              widget=forms.EmailInput(attrs={'autocomplete': 'section-contact email'})
                              )
 
@@ -134,7 +134,7 @@ class AddOnsForm(forms.Form):
     This form class is responsible for selecting add-ons to a product in the cart.
     """
 
-    def _label(self, event, item_or_variation, avail, override_price=None):
+    def _label(self, event, item_or_variation, avail, override_price=None, initial=False):
         if isinstance(item_or_variation, ItemVariation):
             variation = item_or_variation
             item = item_or_variation.item
@@ -172,13 +172,14 @@ class AddOnsForm(forms.Form):
                 taxes=number_format(price.rate), taxname=price.name
             )
 
-        if avail[0] < Quota.AVAILABILITY_RESERVED:
-            n += ' – {}'.format(_('SOLD OUT'))
-        elif avail[0] < Quota.AVAILABILITY_OK:
-            n += ' – {}'.format(_('Currently unavailable'))
-        else:
-            if avail[1] is not None and item.do_show_quota_left:
-                n += ' – {}'.format(_('%(num)s currently available') % {'num': avail[1]})
+        if not initial:
+            if avail[0] < Quota.AVAILABILITY_RESERVED:
+                n += ' – {}'.format(_('SOLD OUT'))
+            elif avail[0] < Quota.AVAILABILITY_OK:
+                n += ' – {}'.format(_('Currently unavailable'))
+            else:
+                if avail[1] is not None and item.do_show_quota_left:
+                    n += ' – {}'.format(_('%(num)s currently available') % {'num': avail[1]})
 
         if not isinstance(item_or_variation, ItemVariation) and item.picture:
             n = escape(n)
@@ -272,7 +273,8 @@ class AddOnsForm(forms.Form):
                         choices.append(
                             (v.pk,
                              self._label(self.event, v, cached_availability,
-                                         override_price=var_price_override.get(v.pk)),
+                                         override_price=var_price_override.get(v.pk),
+                                         initial=current_addons.get(i.pk) == v.pk),
                              v.description)
                         )
 
@@ -308,7 +310,8 @@ class AddOnsForm(forms.Form):
                     continue
                 field = forms.BooleanField(
                     label=self._label(self.event, i, cached_availability,
-                                      override_price=item_price_override.get(i.pk)),
+                                      override_price=item_price_override.get(i.pk),
+                                      initial=i.pk in current_addons),
                     required=False,
                     initial=i.pk in current_addons,
                     help_text=rich_text(str(i.description)),

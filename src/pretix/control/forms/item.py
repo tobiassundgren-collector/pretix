@@ -48,7 +48,8 @@ class QuestionForm(I18nModelForm):
         self.fields['items'].queryset = self.instance.event.items.all()
         self.fields['items'].required = True
         self.fields['dependency_question'].queryset = self.instance.event.questions.filter(
-            type__in=(Question.TYPE_BOOLEAN, Question.TYPE_CHOICE, Question.TYPE_CHOICE_MULTIPLE)
+            type__in=(Question.TYPE_BOOLEAN, Question.TYPE_CHOICE, Question.TYPE_CHOICE_MULTIPLE),
+            ask_during_checkin=False
         )
         if self.instance.pk:
             self.fields['dependency_question'].queryset = self.fields['dependency_question'].queryset.exclude(
@@ -65,6 +66,9 @@ class QuestionForm(I18nModelForm):
     def clean_dependency_question(self):
         dep = val = self.cleaned_data.get('dependency_question')
         if dep:
+            if dep.ask_during_checkin:
+                raise ValidationError(_('Question cannot depend on a question asked during check-in.'))
+
             seen_ids = {self.instance.pk} if self.instance else set()
             while dep:
                 if dep.pk in seen_ids:
@@ -365,9 +369,9 @@ class ItemCreateForm(I18nModelForm):
 class ShowQuotaNullBooleanSelect(forms.NullBooleanSelect):
     def __init__(self, attrs=None):
         choices = (
-            ('1', _('(Event default)')),
-            ('2', _('Yes')),
-            ('3', _('No')),
+            ('unknown', _('(Event default)')),
+            ('true', _('Yes')),
+            ('false', _('No')),
         )
         super(forms.NullBooleanSelect, self).__init__(attrs, choices)
 
@@ -375,9 +379,9 @@ class ShowQuotaNullBooleanSelect(forms.NullBooleanSelect):
 class TicketNullBooleanSelect(forms.NullBooleanSelect):
     def __init__(self, attrs=None):
         choices = (
-            ('1', _('Choose automatically depending on event settings')),
-            ('2', _('Yes, if ticket generation is enabled in general')),
-            ('3', _('Never')),
+            ('unknown', _('Choose automatically depending on event settings')),
+            ('true', _('Yes, if ticket generation is enabled in general')),
+            ('false', _('Never')),
         )
         super(forms.NullBooleanSelect, self).__init__(attrs, choices)
 
@@ -417,6 +421,23 @@ class ItemUpdateForm(I18nModelForm):
         self.fields['hidden_if_available'].widget.choices = self.fields['hidden_if_available'].choices
         self.fields['hidden_if_available'].required = False
 
+    def clean(self):
+        d = super().clean()
+        if d['issue_giftcard']:
+            if d['tax_rule'] and d['tax_rule'].rate > 0:
+                self.add_error(
+                    'tax_rule',
+                    _("Gift card products should not be associated with non-zero tax rates since sales tax will be applied when the gift card is redeemed.")
+                )
+            if d['admission']:
+                self.add_error(
+                    'admission',
+                    _(
+                        "Gift card products should not be admission products at the same time."
+                    )
+                )
+        return d
+
     class Meta:
         model = Item
         localized_fields = '__all__'
@@ -447,6 +468,7 @@ class ItemUpdateForm(I18nModelForm):
             'require_bundling',
             'show_quota_left',
             'hidden_if_available',
+            'issue_giftcard',
         ]
         field_classes = {
             'available_from': SplitDateTimeField,

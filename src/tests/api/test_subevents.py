@@ -79,6 +79,8 @@ TEST_SUBEVENT_RES = {
     'id': 1,
     'variation_price_overrides': [],
     'location': None,
+    "geo_lat": None,
+    "geo_lon": None,
     'is_public': True,
     'item_price_overrides': [],
     'meta_data': {'type': 'Workshop'}
@@ -126,6 +128,17 @@ def test_subevent_list(token_client, organizer, event, subevent):
     resp = token_client.get(
         '/api/v1/organizers/{}/events/{}/subevents/?ends_after=2017-12-27T10:01:01Z'.format(organizer.slug, event.slug))
     assert [] == resp.data['results']
+
+
+@pytest.mark.django_db
+def test_subevent_list_filter(token_client, organizer, event, subevent):
+    resp = token_client.get('/api/v1/organizers/{}/events/{}/subevents/?attr[type]=Workshop'.format(organizer.slug, event.slug))
+    assert resp.status_code == 200
+    assert resp.data['count'] == 1
+
+    resp = token_client.get('/api/v1/organizers/{}/events/{}/subevents/?attr[type]=Conference'.format(organizer.slug, event.slug))
+    assert resp.status_code == 200
+    assert resp.data['count'] == 0
 
 
 @pytest.mark.django_db

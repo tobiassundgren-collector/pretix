@@ -16,7 +16,8 @@ from django.db.models import (
 )
 from django.forms import formset_factory
 from django.http import (
-    FileResponse, Http404, HttpResponseNotAllowed, JsonResponse,
+    FileResponse, Http404, HttpResponseNotAllowed, HttpResponseRedirect,
+    JsonResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -70,9 +71,9 @@ from pretix.control.forms.filter import (
 )
 from pretix.control.forms.orders import (
     CancelForm, CommentForm, ConfirmPaymentForm, ExporterForm, ExtendForm,
-    MarkPaidForm, OrderContactForm, OrderLocaleForm, OrderMailForm,
-    OrderPositionAddForm, OrderPositionAddFormset, OrderPositionChangeForm,
-    OrderRefundForm, OtherOperationsForm,
+    MarkPaidForm, OrderContactForm, OrderFeeChangeForm, OrderLocaleForm,
+    OrderMailForm, OrderPositionAddForm, OrderPositionAddFormset,
+    OrderPositionChangeForm, OrderRefundForm, OtherOperationsForm,
 )
 from pretix.control.permissions import EventPermissionRequiredMixin
 from pretix.control.views import PaginationMixin
@@ -225,7 +226,8 @@ class OrderDetail(OrderView):
                 'text': provider.download_button_text or 'Ticket',
                 'icon': provider.download_button_icon or 'fa-download',
                 'identifier': provider.identifier,
-                'multi': provider.multi_download_enabled
+                'multi': provider.multi_download_enabled,
+                'javascript_required': provider.javascript_required
             })
         return buttons
 
@@ -237,7 +239,7 @@ class OrderDetail(OrderView):
         ).select_related(
             'item', 'variation', 'addon_to', 'tax_rule'
         ).prefetch_related(
-            'item__questions',
+            'item__questions', 'issued_gift_cards',
             Prefetch('answers', queryset=QuestionAnswer.objects.prefetch_related('options').select_related('question')),
             'checkins', 'checkins__list'
         ).order_by('positionid')
@@ -340,12 +342,16 @@ class OrderDownload(AsyncAction, OrderView):
                 'message': str(self.get_success_message(value))
             })
         if isinstance(value, CachedTicket):
-            resp = FileResponse(value.file.file, content_type=value.type)
-            resp['Content-Disposition'] = 'attachment; filename="{}-{}-{}-{}{}"'.format(
-                self.request.event.slug.upper(), self.order.code, self.order_position.positionid,
-                self.output.identifier, value.extension
-            )
-            return resp
+            if value.type == 'text/uri-list':
+                resp = HttpResponseRedirect(value.file.file.read())
+                return resp
+            else:
+                resp = FileResponse(value.file.file, content_type=value.type)
+                resp['Content-Disposition'] = 'attachment; filename="{}-{}-{}-{}{}"'.format(
+                    self.request.event.slug.upper(), self.order.code, self.order_position.positionid,
+                    self.output.identifier, value.extension
+                )
+                return resp
         elif isinstance(value, CachedCombinedTicket):
             resp = FileResponse(value.file.file, content_type=value.type)
             resp['Content-Disposition'] = 'attachment; filename="{}-{}-{}{}"'.format(
@@ -761,7 +767,7 @@ class OrderRefundView(OrderView):
                     if r.payment or r.provider == "offsetting":
                         try:
                             r.payment_provider.execute_refund(r)
-                        except PaymentException as e:
+                        except (PaymentException, Quota.QuotaExceededException) as e:
                             r.state = OrderRefund.REFUND_STATE_FAILED
                             r.save()
                             messages.error(self.request, _('One of the refunds failed to be processed. You should '
@@ -897,23 +903,26 @@ class OrderTransition(OrderView):
             else:
                 messages.success(self.request, _('The payment has been created successfully.'))
         elif self.order.cancel_allowed() and to == 'c' and self.mark_canceled_form.is_valid():
-            cancel_order(self.order, user=self.request.user,
-                         send_mail=self.mark_canceled_form.cleaned_data['send_email'],
-                         cancellation_fee=self.mark_canceled_form.cleaned_data.get('cancellation_fee'))
-            self.order.refresh_from_db()
+            try:
+                cancel_order(self.order, user=self.request.user,
+                             send_mail=self.mark_canceled_form.cleaned_data['send_email'],
+                             cancellation_fee=self.mark_canceled_form.cleaned_data.get('cancellation_fee'))
+            except OrderError as e:
+                messages.error(self.request, str(e))
+            else:
+                self.order.refresh_from_db()
+                if self.order.pending_sum < 0:
+                    messages.success(self.request, _('The order has been canceled. You can now select how you want to '
+                                                     'transfer the money back to the user.'))
+                    return redirect(reverse('control:event.order.refunds.start', kwargs={
+                        'event': self.request.event.slug,
+                        'organizer': self.request.event.organizer.slug,
+                        'code': self.order.code
+                    }) + '?start-action=do_nothing&start-mode=partial&start-partial_amount={}'.format(
+                        self.order.pending_sum * -1
+                    ))
 
-            if self.order.pending_sum < 0:
-                messages.success(self.request, _('The order has been canceled. You can now select how you want to '
-                                                 'transfer the money back to the user.'))
-                return redirect(reverse('control:event.order.refunds.start', kwargs={
-                    'event': self.request.event.slug,
-                    'organizer': self.request.event.organizer.slug,
-                    'code': self.order.code
-                }) + '?start-action=do_nothing&start-mode=partial&start-partial_amount={}'.format(
-                    self.order.pending_sum * -1
-                ))
-
-            messages.success(self.request, _('The order has been canceled.'))
+                messages.success(self.request, _('The order has been canceled.'))
         elif self.order.status == Order.STATUS_PENDING and to == 'e':
             mark_order_expired(self.order, user=self.request.user)
             messages.success(self.request, _('The order has been marked as expired.'))
@@ -1201,6 +1210,19 @@ class OrderChange(OrderView):
         )
 
     @cached_property
+    def fees(self):
+        fees = list(self.order.fees.all())
+        for f in fees:
+            f.form = OrderFeeChangeForm(prefix='of-{}'.format(f.pk), instance=f,
+                                        data=self.request.POST if self.request.method == "POST" else None)
+            try:
+                ia = self.order.invoice_address
+            except InvoiceAddress.DoesNotExist:
+                ia = None
+            f.apply_tax = self.request.event.settings.tax_rate_default and self.request.event.settings.tax_rate_default.tax_applicable(invoice_address=ia)
+        return fees
+
+    @cached_property
     def positions(self):
         positions = list(self.order.positions.all())
         for p in positions:
@@ -1216,6 +1238,7 @@ class OrderChange(OrderView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         ctx['positions'] = self.positions
+        ctx['fees'] = self.fees
         ctx['add_formset'] = self.add_formset
         ctx['other_form'] = self.other_form
         return ctx
@@ -1255,6 +1278,24 @@ class OrderChange(OrderView):
                 except OrderError as e:
                     f.custom_error = str(e)
                     return False
+        return True
+
+    def _process_fees(self, ocm):
+        for f in self.fees:
+            if not f.form.is_valid():
+                return False
+
+            try:
+                if f.form.cleaned_data['operation_cancel']:
+                    ocm.cancel_fee(f)
+                    continue
+
+                if f.form.cleaned_data['value'] != f.value:
+                    ocm.change_fee(f, f.form.cleaned_data['value'])
+
+            except OrderError as e:
+                f.custom_error = str(e)
+                return False
         return True
 
     def _process_change(self, ocm):
@@ -1309,7 +1350,7 @@ class OrderChange(OrderView):
             notify=notify,
             reissue_invoice=self.other_form.cleaned_data['reissue_invoice'] if self.other_form.is_valid() else True
         )
-        form_valid = self._process_add(ocm) and self._process_change(ocm) and self._process_other(ocm)
+        form_valid = self._process_add(ocm) and self._process_fees(ocm) and self._process_change(ocm) and self._process_other(ocm)
 
         if not form_valid:
             messages.error(self.request, _('An error occurred. Please see the details below.'))

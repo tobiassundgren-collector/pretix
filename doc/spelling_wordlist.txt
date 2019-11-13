@@ -31,6 +31,7 @@ deprovision
 discoverable
 django
 dockerfile
+downloadable
 durations
 eu
 filename
@@ -41,6 +42,7 @@ formsets
 frontend
 frontpage
 gettext
+giftcard
 gunicorn
 guid
 hardcoded
@@ -55,6 +57,7 @@ Jimdo
 libpretixprint
 libsass
 linters
+login
 memcached
 metadata
 middleware
@@ -76,6 +79,7 @@ overpayment
 param
 passphrase
 percental
+pluggable
 positionid
 pre
 prepend
@@ -137,6 +141,7 @@ username
 url
 versa
 versioning
+viewable
 viewset
 viewsets
 waitinglist

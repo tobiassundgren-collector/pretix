@@ -112,6 +112,8 @@ class EventWizardBasicsForm(I18nModelForm):
             'presale_start',
             'presale_end',
             'location',
+            'geo_lat',
+            'geo_lon',
         ]
         field_classes = {
             'date_from': SplitDateTimeField,
@@ -282,6 +284,8 @@ class EventUpdateForm(I18nModelForm):
             'presale_start',
             'presale_end',
             'location',
+            'geo_lat',
+            'geo_lon',
         ]
         field_classes = {
             'date_from': SplitDateTimeField,
@@ -753,9 +757,6 @@ class InvoiceSettingsForm(SettingsForm):
     invoice_name_required = forms.BooleanField(
         label=_("Require customer name"),
         required=False,
-        widget=forms.CheckboxInput(
-            attrs={'data-inverse-dependency': '#id_invoice_address_required'}
-        ),
     )
     invoice_address_vatid = forms.BooleanField(
         label=_("Ask for VAT ID"),
@@ -978,6 +979,11 @@ class MailSettingsForm(SettingsForm):
         validators=[multimail_validate],
         required=False,
         max_length=255
+    )
+    mail_attach_ical = forms.BooleanField(
+        label=_("Attach calendar files"),
+        help_text=_("If enabled, we will attach an .ics calendar file to order confirmation emails."),
+        required=False
     )
 
     mail_text_signature = I18nFormField(

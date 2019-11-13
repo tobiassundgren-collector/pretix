@@ -1,17 +1,20 @@
 from datetime import datetime, time
+from urllib.parse import urlencode
 
 from django import forms
 from django.apps import apps
 from django.db.models import Exists, F, OuterRef, Q
 from django.db.models.functions import Coalesce, ExtractWeekDay
 from django.urls import reverse, reverse_lazy
+from django.utils.functional import cached_property
 from django.utils.timezone import get_current_timezone, make_aware, now
 from django.utils.translation import pgettext_lazy, ugettext_lazy as _
 
 from pretix.base.forms.widgets import DatePickerWidget
 from pretix.base.models import (
-    Checkin, Event, Invoice, Item, Order, OrderPayment, OrderPosition,
-    OrderRefund, Organizer, Question, QuestionAnswer, SubEvent,
+    Checkin, Event, EventMetaProperty, EventMetaValue, Invoice, Item, Order,
+    OrderPayment, OrderPosition, OrderRefund, Organizer, Question,
+    QuestionAnswer, SubEvent,
 )
 from pretix.base.signals import register_payment_providers
 from pretix.control.forms.widgets import Select2
@@ -502,6 +505,29 @@ class OrganizerFilterForm(FilterForm):
         return qs
 
 
+class GiftCardFilterForm(FilterForm):
+    query = forms.CharField(
+        label=_('Search query'),
+        widget=forms.TextInput(attrs={
+            'placeholder': _('Search query'),
+            'autofocus': 'autofocus'
+        }),
+        required=False
+    )
+
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('request')
+        super().__init__(*args, **kwargs)
+
+    def filter_qs(self, qs):
+        fdata = self.cleaned_data
+
+        if fdata.get('query'):
+            query = fdata.get('query')
+            qs = qs.filter(secret__icontains=query)
+        return qs
+
+
 class EventFilterForm(FilterForm):
     orders = {
         'slug': 'slug',
@@ -549,14 +575,35 @@ class EventFilterForm(FilterForm):
     )
 
     def __init__(self, *args, **kwargs):
-        request = kwargs.pop('request')
+        self.request = kwargs.pop('request')
+        self.organizer = kwargs.pop('organizer', None)
         super().__init__(*args, **kwargs)
-        if request.user.has_active_staff_session(request.session.session_key):
-            self.fields['organizer'].queryset = Organizer.objects.all()
-        else:
-            self.fields['organizer'].queryset = Organizer.objects.filter(
-                pk__in=request.user.teams.values_list('organizer', flat=True)
+        seen = set()
+        for p in self.meta_properties.all():
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            self.fields['meta_{}'.format(p.name)] = forms.CharField(
+                label=p.name,
+                required=False,
+                widget=forms.TextInput(
+                    attrs={
+                        'data-typeahead-url': reverse('control:events.meta.typeahead') + '?' + urlencode({
+                            'property': p.name,
+                            'organizer': self.organizer.slug if self.organizer else ''
+                        })
+                    }
+                )
             )
+        if self.organizer:
+            del self.fields['organizer']
+        else:
+            if self.request.user.has_active_staff_session(self.request.session.session_key):
+                self.fields['organizer'].queryset = Organizer.objects.all()
+            else:
+                self.fields['organizer'].queryset = Organizer.objects.filter(
+                    pk__in=self.request.user.teams.values_list('organizer', flat=True)
+                )
 
     def filter_qs(self, qs):
         fdata = self.cleaned_data
@@ -605,10 +652,45 @@ class EventFilterForm(FilterForm):
                 Q(name__icontains=i18ncomp(query)) | Q(slug__icontains=query)
             )
 
+        filters_by_property_name = {}
+        for i, p in enumerate(self.meta_properties):
+            d = fdata.get('meta_{}'.format(p.name))
+            if d:
+                emv_with_value = EventMetaValue.objects.filter(
+                    event=OuterRef('pk'),
+                    property__pk=p.pk,
+                    value=d
+                )
+                emv_with_any_value = EventMetaValue.objects.filter(
+                    event=OuterRef('pk'),
+                    property__pk=p.pk,
+                )
+                qs = qs.annotate(**{'attr_{}'.format(i): Exists(emv_with_value)})
+                if p.name in filters_by_property_name:
+                    filters_by_property_name[p.name] |= Q(**{'attr_{}'.format(i): True})
+                else:
+                    filters_by_property_name[p.name] = Q(**{'attr_{}'.format(i): True})
+                if p.default == d:
+                    qs = qs.annotate(**{'attr_{}_any'.format(i): Exists(emv_with_any_value)})
+                    filters_by_property_name[p.name] |= Q(**{'attr_{}_any'.format(i): False, 'organizer_id': p.organizer_id})
+        for f in filters_by_property_name.values():
+            qs = qs.filter(f)
+
         if fdata.get('ordering'):
             qs = qs.order_by(self.get_order_by())
 
         return qs
+
+    @cached_property
+    def meta_properties(self):
+        if self.organizer:
+            return self.organizer.meta_properties.all()
+        else:
+            # We ignore superuser permissions here. This is intentional – we do not want to show super
+            # users a form with all meta properties ever assigned.
+            return EventMetaProperty.objects.filter(
+                organizer_id__in=self.request.user.teams.values_list('organizer', flat=True)
+            )
 
 
 class CheckInFilterForm(FilterForm):

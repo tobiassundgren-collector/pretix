@@ -1,3 +1,9 @@
+.. spelling::
+
+   geo
+   lat
+   lon
+
 .. _rest-subevents:
 
 Event series dates / Sub-events
@@ -28,6 +34,8 @@ date_admission                        datetime                   The sub-event's
 presale_start                         datetime                   The sub-date at which the ticket shop opens (or ``null``)
 presale_end                           datetime                   The sub-date at which the ticket shop closes (or ``null``)
 location                              multi-lingual string       The sub-event location (or ``null``)
+geo_lat                               float                      Latitude of the location (or ``null``)
+geo_lon                               float                      Longitude of the location (or ``null``)
 item_price_overrides                  list of objects            List of items for which this sub-event overrides the
                                                                  default price
 ├ item                                integer                    The internal item ID
@@ -62,8 +70,16 @@ seat_category_mapping                 object                     An object mappi
 
    The attributes ``seating_plan`` and ``seat_category_mapping`` have been added.
 
+.. versionchanged:: 3.3
+
+   The attributes ``geo_lat`` and ``geo_lon`` have been added.
+
 Endpoints
 ---------
+
+.. versionchanged:: 3.3
+
+    The sub-events resource can now be filtered by meta data attributes.
 
 .. http:get:: /api/v1/organizers/(organizer)/events/(event)/subevents/
 
@@ -104,6 +120,8 @@ Endpoints
             "seating_plan": null,
             "seat_category_mapping": {},
             "location": null,
+            "geo_lat": null,
+            "geo_lon": null,
             "item_price_overrides": [
               {
                 "item": 2,
@@ -123,6 +141,11 @@ Endpoints
    :query ends_after: If set to a date and time, only events that happen during of after the given time are returned.
    :param organizer: The ``slug`` field of a valid organizer
    :param event: The ``slug`` field of the main event
+   :query array attr[meta_data_key]: By providing the key and value of a meta data attribute, the list of sub-events
+        will only contain the sub-events matching the set criteria. Providing ``?attr[Format]=Seminar`` would return
+        only those sub-events having set their ``Format`` meta data to ``Seminar``, ``?attr[Format]=`` only those, that
+        have no value set. Please note that this filter will respect default values set on 
+        organizer or event level.
    :statuscode 200: no error
    :statuscode 401: Authentication failure
    :statuscode 403: The requested organizer does not exist **or** you have no permission to view it.
@@ -152,6 +175,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "seating_plan": null,
         "seat_category_mapping": {},
         "item_price_overrides": [
@@ -184,6 +209,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "seating_plan": null,
         "seat_category_mapping": {},
         "item_price_overrides": [
@@ -237,6 +264,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "seating_plan": null,
         "seat_category_mapping": {},
         "item_price_overrides": [
@@ -303,6 +332,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "seating_plan": null,
         "seat_category_mapping": {},
         "item_price_overrides": [
@@ -389,6 +420,8 @@ Endpoints
             "presale_start": null,
             "presale_end": null,
             "location": null,
+            "geo_lat": null,
+            "geo_lon": null,
             "seating_plan": null,
             "seat_category_mapping": {},
             "item_price_overrides": [

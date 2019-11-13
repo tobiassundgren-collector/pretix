@@ -12,11 +12,19 @@ from django_scopes import scopes_disabled
 from pytz import timezone
 from tests.base import SoupTest
 
+from pretix.base.channels import SalesChannel
 from pretix.base.models import (
     Event, Item, ItemCategory, ItemVariation, Order, Organizer, Quota, Team,
     User, WaitingListEntry,
 )
 from pretix.base.models.items import SubEventItem, SubEventItemVariation
+
+
+class FoobarSalesChannel(SalesChannel):
+    identifier = "bar"
+    verbose_name = "Foobar"
+    icon = "home"
+    testmode_supported = True
 
 
 class EventTestMixin:
@@ -109,7 +117,7 @@ class ItemDisplayTest(EventTestMixin, SoupTest):
             q.items.add(item)
         html = self.client.get('/%s/%s/' % (self.orga.slug, self.event.slug)).rendered_content
         self.assertNotIn("Early-bird", html)
-        html = self.client.get('/%s/%s/' % (self.orga.slug, self.event.slug), PRETIX_SALES_CHANNEL="bar").rendered_content
+        html = self.client.get('/%s/%s/' % (self.orga.slug, self.event.slug), PRETIX_SALES_CHANNEL=FoobarSalesChannel).rendered_content
         self.assertIn("Early-bird", html)
 
     def test_timely_available(self):
@@ -1205,7 +1213,7 @@ class EventMicrodataTest(EventTestMixin, SoupTest):
         self.assertEqual(self.event.date_from.isoformat(), md['startDate'], msg='Date From not present')
 
 
-class EventSlugBlacklistValidatorTest(EventTestMixin, SoupTest):
+class EventSlugBanlistValidatorTest(EventTestMixin, SoupTest):
     @scopes_disabled()
     def test_slug_validation(self):
         event = Event(

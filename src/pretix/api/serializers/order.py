@@ -675,6 +675,20 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
             raise ValidationError(errs)
         return data
 
+    def validate_testmode(self, testmode):
+        if 'sales_channel' in self.initial_data:
+            try:
+                sales_channel = get_all_sales_channels()[self.initial_data['sales_channel']]
+
+                if testmode and not sales_channel.testmode_supported:
+                    raise ValidationError('This sales channel does not provide support for testmode.')
+            except KeyError:
+                # We do not need to raise a ValidationError here, since there is another check to validate the
+                # sales_channel
+                pass
+
+        return testmode
+
     def create(self, validated_data):
         fees_data = validated_data.pop('fees') if 'fees' in validated_data else []
         positions_data = validated_data.pop('positions') if 'positions' in validated_data else []
@@ -857,6 +871,9 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
 
         order.total = sum([p.price for p in order.positions.all()]) + sum([f.value for f in order.fees.all()])
         order.save(update_fields=['total'])
+
+        if order.total == Decimal('0.00') and validated_data.get('status') == Order.STATUS_PAID and not payment_provider:
+            payment_provider = 'free'
 
         if order.total == Decimal('0.00') and validated_data.get('status') != Order.STATUS_PAID:
             order.status = Order.STATUS_PAID

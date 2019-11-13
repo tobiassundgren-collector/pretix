@@ -69,6 +69,8 @@ TEST_EVENT_RES = {
     "presale_start": None,
     "presale_end": None,
     "location": None,
+    "geo_lat": None,
+    "geo_lon": None,
     "slug": "dummy",
     "has_subevents": False,
     "seating_plan": None,
@@ -131,6 +133,17 @@ def test_event_list(token_client, organizer, event):
     resp = token_client.get('/api/v1/organizers/{}/events/?ends_after=2017-12-27T09:59:59Z'.format(organizer.slug))
     assert resp.status_code == 200
     assert [TEST_EVENT_RES] == resp.data['results']
+
+
+@pytest.mark.django_db
+def test_event_list_filter(token_client, organizer, event):
+    resp = token_client.get('/api/v1/organizers/{}/events/?attr[type]=Conference'.format(organizer.slug))
+    assert resp.status_code == 200
+    assert resp.data['count'] == 1
+
+    resp = token_client.get('/api/v1/organizers/{}/events/?attr[type]='.format(organizer.slug))
+    assert resp.status_code == 200
+    assert resp.data['count'] == 0
 
 
 @pytest.mark.django_db

@@ -39,6 +39,7 @@ from pretix.base.models import User
 from pretix.base.reldate import RelativeDateWrapper
 from pretix.base.services.locking import NoLockManager
 from pretix.base.settings import PERSON_NAME_SCHEMES
+from pretix.base.signals import order_gracefully_delete
 
 from .base import LockModel, LoggedModel
 from .event import Event, SubEvent
@@ -201,7 +202,7 @@ class Order(LockModel, LoggedModel):
         return self.full_code
 
     def gracefully_delete(self, user=None, auth=None):
-        from . import Voucher
+        from . import Voucher, GiftCard, GiftCardTransaction
 
         if not self.testmode:
             raise TypeError("Only test mode orders can be deleted.")
@@ -212,11 +213,17 @@ class Order(LockModel, LoggedModel):
             }
         )
 
+        order_gracefully_delete.send(self.event, order=self)
+
         if self.status != Order.STATUS_CANCELED:
             for position in self.positions.all():
                 if position.voucher:
                     Voucher.objects.filter(pk=position.voucher.pk).update(redeemed=Greatest(0, F('redeemed') - 1))
 
+        GiftCardTransaction.objects.filter(payment__in=self.payments.all()).update(payment=None)
+        GiftCardTransaction.objects.filter(refund__in=self.refunds.all()).update(refund=None)
+        GiftCardTransaction.objects.filter(order=self).update(order=None)
+        GiftCard.objects.filter(issued_in__in=self.positions.all()).update(issued_in=None)
         OrderPosition.all.filter(order=self, addon_to__isnull=False).delete()
         OrderPosition.all.filter(order=self).delete()
         OrderFee.all.filter(order=self).delete()
@@ -458,11 +465,15 @@ class Order(LockModel, LoggedModel):
         positions = list(
             self.positions.all().annotate(
                 has_checkin=Exists(Checkin.objects.filter(position_id=OuterRef('pk')))
-            ).select_related('item')
+            ).select_related('item').prefetch_related('issued_gift_cards')
         )
         cancelable = all([op.item.allow_cancel and not op.has_checkin for op in positions])
         if not cancelable or not positions:
             return False
+        for op in positions:
+            for gc in op.issued_gift_cards.all():
+                if gc.value != op.price:
+                    return False
         if self.user_cancel_deadline and now() > self.user_cancel_deadline:
             return False
         if self.status == Order.STATUS_PENDING:
@@ -713,7 +724,8 @@ class Order(LockModel, LoggedModel):
     def send_mail(self, subject: str, template: Union[str, LazyI18nString],
                   context: Dict[str, Any]=None, log_entry_type: str='pretix.event.order.email.sent',
                   user: User=None, headers: dict=None, sender: str=None, invoices: list=None,
-                  auth=None, attach_tickets=False, position: 'OrderPosition'=None, auto_email=True):
+                  auth=None, attach_tickets=False, position: 'OrderPosition'=None, auto_email=True,
+                  attach_ical=False):
         """
         Sends an email to the user that placed this order. Basically, this method does two things:
 
@@ -730,6 +742,7 @@ class Order(LockModel, LoggedModel):
         :param headers: Dictionary with additional mail headers
         :param sender: Custom email sender.
         :param attach_tickets: Attach tickets of this order, if they are existing and ready to download
+        :param attach_ical: Attach relevant ICS files
         :param position: An order position this refers to. If given, no invoices will be attached, the tickets will
                          only be attached for this position and child positions, the link will only point to the
                          position and the attendee email will be used if available.
@@ -753,7 +766,7 @@ class Order(LockModel, LoggedModel):
                     recipient, subject, template, context,
                     self.event, self.locale, self, headers=headers, sender=sender,
                     invoices=invoices, attach_tickets=attach_tickets,
-                    position=position, auto_email=auto_email
+                    position=position, auto_email=auto_email, attach_ical=attach_ical
                 )
             except SendMailException:
                 raise
@@ -769,6 +782,7 @@ class Order(LockModel, LoggedModel):
                         'recipient': recipient,
                         'invoices': [i.pk for i in invoices] if invoices else [],
                         'attach_tickets': attach_tickets,
+                        'attach_ical': attach_ical,
                     }
                 )
 
@@ -780,7 +794,7 @@ class Order(LockModel, LoggedModel):
             self.send_mail(
                 email_subject, email_template, email_context,
                 'pretix.event.order.email.resend', user=user, auth=auth,
-                attach_tickets=True
+                attach_tickets=True,
             )
 
     @property
@@ -1043,6 +1057,8 @@ class AbstractPosition(models.Model):
         }
 
         def question_is_visible(parentid, qvals):
+            if parentid not in question_cache:
+                return False
             parentq = question_cache[parentid]
             if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_values):
                 return False
@@ -1322,7 +1338,8 @@ class OrderPayment(models.Model):
                     email_subject, email_template, email_context,
                     'pretix.event.order.email.order_paid', user,
                     invoices=[], position=position,
-                    attach_tickets=True
+                    attach_tickets=True,
+                    attach_ical=self.order.event.settings.mail_attach_ical
                 )
             except SendMailException:
                 logger.exception('Order paid email could not be sent')
@@ -1339,7 +1356,8 @@ class OrderPayment(models.Model):
                     email_subject, email_template, email_context,
                     'pretix.event.order.email.order_paid', user,
                     invoices=[invoice] if invoice and self.order.event.settings.invoice_email_attachment else [],
-                    attach_tickets=True
+                    attach_tickets=True,
+                    attach_ical=self.order.event.settings.mail_attach_ical
                 )
             except SendMailException:
                 logger.exception('Order paid email could not be sent')

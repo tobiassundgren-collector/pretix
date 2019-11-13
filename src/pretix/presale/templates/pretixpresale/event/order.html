@@ -52,7 +52,7 @@
                 {% trans "View in backend" %}
             </a>
         {% endif %}
-        {% include "pretixpresale/event/fragment_order_status.html" with order=order class="pull-right" %}
+        {% include "pretixpresale/event/fragment_order_status.html" with order=order class="pull-right flip" %}
         <div class="clearfix"></div>
     </h2>
     {% if order.status == "n" and not order.require_approval %}
@@ -72,7 +72,7 @@
                 {% if last_payment %}
                     {{ last_payment_info }}
                     {% if can_pay %}
-                        <div class="text-right">
+                        <div class="text-right flip">
                             <a href="{% eventurl event "presale:event.order.pay.change" secret=order.secret order=order.code %}"
                                     class="btn btn-default">
                                 {% trans "Re-try payment or choose another payment method" %}
@@ -81,7 +81,7 @@
                     {% endif %}
                 {% else %}
                     {% if can_pay %}
-                        <div class="text-right">
+                        <div class="text-right flip">
                             <a href="{% eventurl event "presale:event.order.pay.change" secret=order.secret order=order.code %}"
                                     class="btn btn-primary btn-lg">{% trans "Pay now" %}</a>
                         </div>
@@ -115,7 +115,7 @@
     <div class="panel panel-primary cart">
         <div class="panel-heading">
             {% if order.can_modify_answers %}
-                <div class="pull-right">
+                <div class="pull-right flip">
                     <a href="{% eventurl event "presale:event.order.modify" secret=order.secret order=order.code %}">
                         <span class="fa fa-edit"></span>
                         {% trans "Change details" %}
@@ -128,6 +128,26 @@
         </div>
         <div class="panel-body">
             {% include "pretixpresale/event/fragment_cart.html" with cart=cart event=request.event download=can_download editable=False %}
+            {% if order.status == "n" and order.total > pending_sum %}
+                <div class="row cart-row">
+                    <div class="col-md-4 col-xs-6">
+                        <strong>{% trans "Successful payments" %}</strong>
+                    </div>
+                    <div class="col-md-3 col-xs-6 col-md-offset-5 price">
+                        <strong>{{ payment_sum_neg|money:event.currency }}</strong>
+                    </div>
+                    <div class="clearfix"></div>
+                </div>
+                <div class="row cart-row total">
+                    <div class="col-md-4 col-xs-6">
+                        <strong>{% trans "Pending total" %}</strong>
+                    </div>
+                    <div class="col-md-3 col-xs-6 col-md-offset-5 price">
+                        <strong>{{ pending_sum|money:event.currency }}</strong>
+                    </div>
+                    <div class="clearfix"></div>
+                </div>
+            {% endif %}
         </div>
     </div>
     {% eventsignal event "pretix.presale.signals.order_info" order=order %}
@@ -178,7 +198,7 @@
                 <div class="panel panel-primary">
                     <div class="panel-heading">
                         {% if order.can_modify_answers %}
-                            <div class="pull-right">
+                            <div class="pull-right flip">
                                 <a href="{% eventurl event "presale:event.order.modify" secret=order.secret order=order.code %}">
                                     <span class="fa fa-edit"></span>
                                     {% trans "Change details" %}

@@ -131,16 +131,16 @@ last_modified                         datetime                   Last modificati
 
    The ``sales_channel`` attribute has been added.
 
-.. versionchanged:: 2.4:
+.. versionchanged:: 2.4
 
    ``order.status`` can no longer be ``r``, ``…/mark_canceled/`` now accepts a ``cancellation_fee`` parameter and
    ``…/mark_refunded/`` has been deprecated.
 
-.. versionchanged:: 2.5:
+.. versionchanged:: 2.5
 
    The ``testmode`` attribute has been added and ``DELETE`` has been implemented for orders.
 
-.. versionchanged:: 3.1:
+.. versionchanged:: 3.1
 
    The ``invoice_address.state`` and ``url`` attributes have been added. When creating orders through the API,
    vouchers are now supported and many fields are now optional.
@@ -218,6 +218,11 @@ pdf_data                              object                     Data object req
 .. versionchanged:: 3.2
 
   The value ``auto_checked_in`` has been added to the ``checkins``-attribute.
+
+.. versionchanged:: 3.3
+
+  The ``url`` of a ticket ``download`` can now also return a ``text/uri-list`` instead of a file. See
+  :ref:`order-position-ticket-download` for details.
 
 .. _order-payment-resource:
 
@@ -769,6 +774,8 @@ Creating orders
 
        * does not support file upload questions
 
+       * does not support redeeming gift cards
+
    You can supply the following fields of the resource:
 
    * ``code`` (optional)
@@ -785,8 +792,9 @@ Creating orders
    * ``locale``
    * ``sales_channel``
    * ``payment_provider`` (optional) – The identifier of the payment provider set for this order. This needs to be an
-    existing payment provider. You should use ``"free"`` for free orders, and we strongly advise to use ``"manual"``
-    for all orders you create as paid.
+     existing payment provider. You should use ``"free"`` for free orders, and we strongly advise to use ``"manual"``
+     for all orders you create as paid. This field is optional when the order status is ``"n"`` or the order total is
+     zero, otherwise it is required.
    * ``payment_info`` (optional) – You can pass a nested JSON object that will be set as the internal ``info``
      value of the payment object that will be created. How this value is handled is up to the payment provider and you
      should only use this if you know the specific payment provider in detail. Please keep in mind that the payment
@@ -1480,6 +1488,8 @@ Fetching individual positions
    :statuscode 403: The requested organizer/event does not exist **or** you have no permission to view this resource.
    :statuscode 404: The requested order position does not exist.
 
+.. _`order-position-ticket-download`:
+
 Order position ticket download
 ------------------------------
 
@@ -1488,6 +1498,11 @@ Order position ticket download
    Download tickets for one order position, identified by its internal ID.
    Depending on the chosen output, the response might be a ZIP file, PDF file or something else. The order details
    response contains a list of output options for this particular order position.
+
+   Be aware that the output does not have to be a file, but can also be a regular HTTP response with a ``Content-Type``
+   set to ``text/uri-list``. In this case, the user is expected to navigate to that URL in order to access their ticket.
+   The referenced URL can provide a download or a regular, human-viewable website - so it is advised to open this URL
+   in a webbrowser and leave it up to the user to handle the result.
 
    Tickets can be only downloaded if the order is paid and if ticket downloads are active. Also, depending on event
    configuration downloads might be only unavailable for add-on products or non-admission products.

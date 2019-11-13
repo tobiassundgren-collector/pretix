@@ -6,7 +6,7 @@
 {% load eventsignal %}
 {% load eventurl %}
 <!DOCTYPE html>
-<html>
+<html{% if rtl %} dir="rtl" class="rtl"{% endif %}>
 	<head>
 		<title>{% block title %}{% endblock %}{% if url_name != "index" %} :: {% endif %}
             {{ settings.PRETIX_INSTANCE_NAME }}</title>
@@ -43,14 +43,18 @@
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/quota.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/subevent.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/question.js" %}"></script>
+            <script type="text/javascript" src="{% static "pretixcontrol/js/ui/dragndroplist.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/mail.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/orderchange.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/typeahead.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/quicksetup.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/dashboard.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixcontrol/js/ui/tabs.js" %}"></script>
+            <script type="text/javascript" src="{% static "leaflet/leaflet.js" %}"></script>
+            <script type="text/javascript" src="{% static "pretixcontrol/js/ui/geo.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixbase/js/details.js" %}"></script>
             <script type="text/javascript" src="{% static "pretixbase/js/asynctask.js" %}"></script>
+            <script type="text/javascript" src="{% static "sortable/Sortable.js" %}"></script>
             <script type="text/javascript" src="{% static "colorpicker/bootstrap-colorpicker.js" %}"></script>
             <script type="text/javascript" src="{% static "fileupload/jquery.ui.widget.js" %}"></script>
             <script type="text/javascript" src="{% static "fileupload/jquery.fileupload.js" %}"></script>
@@ -121,7 +125,7 @@
                         {{ settings.PRETIX_INSTANCE_NAME }}
                     </a>
                 </div>
-                <ul class="nav navbar-nav navbar-top-links navbar-left hidden-xs">
+                <ul class="nav navbar-nav navbar-top-links navbar-left flip hidden-xs">
                     {% if request.event %}
                         <li>
                             {% if has_domain and not request.event.live %}
@@ -145,7 +149,7 @@
                         </li>
                     {% endif %}
                 </ul>
-                <ul class="nav navbar-nav navbar-top-links navbar-right">
+                <ul class="nav navbar-nav navbar-top-links navbar-right flip">
                     {% for nav in nav_topbar %}
                         <li {% if nav.children %}class="dropdown"{% endif %}>
                             <a href="{{ nav.url }}" title="{{ nav.title }}" {% if nav.active %}class="active"{% endif %}

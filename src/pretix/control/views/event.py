@@ -49,7 +49,7 @@ from pretix.multidomain.urlreverse import get_domain
 from pretix.plugins.stripe.payment import StripeSettingsHolder
 from pretix.presale.style import regenerate_css
 
-from ..logdisplay import OVERVIEW_BLACKLIST
+from ..logdisplay import OVERVIEW_BANLIST
 from . import CreateView, PaginationMixin, UpdateView
 
 
@@ -736,11 +736,14 @@ class TicketSettings(EventSettingsViewMixin, EventPermissionRequiredMixin, FormV
             provider.settings_content = provider.settings_content_render(self.request)
             provider.form.prepare_fields()
 
-            provider.preview_allowed = True
-            for k, v in provider.settings_form_fields.items():
-                if v.required and not self.request.event.settings.get('ticketoutput_%s_%s' % (provider.identifier, k)):
-                    provider.preview_allowed = False
-                    break
+            provider.evaluated_preview_allowed = True
+            if not provider.preview_allowed:
+                provider.evaluated_preview_allowed = False
+            else:
+                for k, v in provider.settings_form_fields.items():
+                    if v.required and not self.request.event.settings.get('ticketoutput_%s_%s' % (provider.identifier, k)):
+                        provider.evaluated_preview_allowed = False
+                        break
 
             providers.append(provider)
         return providers
@@ -868,7 +871,7 @@ class EventLog(EventPermissionRequiredMixin, ListView):
         qs = self.request.event.logentry_set.all().select_related(
             'user', 'content_type', 'api_token', 'oauth_application', 'device'
         ).order_by('-datetime')
-        qs = qs.exclude(action_type__in=OVERVIEW_BLACKLIST)
+        qs = qs.exclude(action_type__in=OVERVIEW_BANLIST)
         if not self.request.user.has_event_permission(self.request.organizer, self.request.event, 'can_view_orders',
                                                       request=self.request):
             qs = qs.exclude(content_type=ContentType.objects.get_for_model(Order))

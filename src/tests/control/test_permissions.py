@@ -141,6 +141,9 @@ organizer_urls = [
     'organizer/abc/webhook/add',
     'organizer/abc/webhook/1/edit',
     'organizer/abc/webhook/1/logs',
+    'organizer/abc/giftcards',
+    'organizer/abc/giftcard/add',
+    'organizer/abc/giftcard/1/',
 ]
 
 
@@ -249,6 +252,9 @@ event_permission_urls = [
     # ("can_change_items", "questions/", 200),
     ("can_change_items", "questions/2/", 404),
     ("can_change_items", "questions/2/delete", 404),
+    ("can_change_items", "questions/2/up", 404),
+    ("can_change_items", "questions/2/down", 404),
+    ("can_change_items", "questions/reorder", 400),
     ("can_change_items", "questions/add", 200),
     # ("can_change_items", "quotas/", 200),
     ("can_change_items", "quotas/2/change", 404),
@@ -387,10 +393,9 @@ organizer_permission_urls = [
     ("can_change_organizer_settings", "organizer/dummy/device/1/edit", 404),
     ("can_change_organizer_settings", "organizer/dummy/device/1/connect", 404),
     ("can_change_organizer_settings", "organizer/dummy/device/1/revoke", 404),
-    ("can_change_organizer_settings", "organizer/dummy/webhooks", 200),
-    ("can_change_organizer_settings", "organizer/dummy/webhook/add", 200),
-    ("can_change_organizer_settings", "organizer/dummy/webhook/1/edit", 404),
-    ("can_change_organizer_settings", "organizer/dummy/webhook/1/logs", 404),
+    ("can_manage_gift_cards", "organizer/dummy/giftcards", 200),
+    ("can_manage_gift_cards", "organizer/dummy/giftcard/add", 200),
+    ("can_manage_gift_cards", "organizer/dummy/giftcard/1/", 404),
 ]
 
 

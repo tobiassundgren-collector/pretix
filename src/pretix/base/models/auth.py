@@ -109,6 +109,7 @@ class User(AbstractBaseUser, PermissionsMixin, LoggingMixin):
         help_text=_('If turned off, you will not get any notifications.')
     )
     notifications_token = models.CharField(max_length=255, default=generate_notifications_token)
+    auth_backend = models.CharField(max_length=255, default='native')
 
     objects = UserManager()
 
@@ -332,6 +333,25 @@ class User(AbstractBaseUser, PermissionsMixin, LoggingMixin):
         return Event.objects.filter(
             Q(organizer_id__in=self.teams.filter(all_events=True, **kwargs).values_list('organizer', flat=True))
             | Q(id__in=self.teams.filter(**kwargs).values_list('limit_events__id', flat=True))
+        )
+
+    @scopes_disabled()
+    def get_organizers_with_permission(self, permission, request=None):
+        """
+        Returns a queryset of organizers the user has a specific permissions to.
+
+        :param request: The current request (optional). Required to detect staff sessions properly.
+        :return: Iterable of Organizers
+        """
+        from .event import Organizer
+
+        if request and self.has_active_staff_session(request.session.session_key):
+            return Organizer.objects.all()
+
+        kwargs = {permission: True}
+
+        return Organizer.objects.filter(
+            id__in=self.teams.filter(**kwargs).values_list('organizer', flat=True)
         )
 
     def has_active_staff_session(self, session_key=None):

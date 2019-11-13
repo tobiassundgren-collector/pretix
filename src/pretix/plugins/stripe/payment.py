@@ -3,6 +3,7 @@ import json
 import logging
 import urllib.parse
 from collections import OrderedDict
+from decimal import Decimal
 
 import stripe
 from django import forms
@@ -256,6 +257,20 @@ class StripeMethod(BasePaymentProvider):
     def _get_amount(self, payment):
         return self._decimal_to_int(payment.amount)
 
+    def _connect_kwargs(self, payment):
+        d = {}
+        if self.settings.connect_client_id and self.settings.connect_user_id:
+            fee = Decimal('0.00')
+            if self.settings.get('connect_app_fee_percent', as_type=Decimal):
+                fee = round_decimal(self.settings.get('connect_app_fee_percent', as_type=Decimal) * payment.amount / Decimal('100.00'), self.event.currency)
+            if self.settings.connect_app_fee_max:
+                fee = min(fee, self.settings.get('connect_app_fee_max', as_type=Decimal))
+            if self.settings.get('connect_app_fee_min', as_type=Decimal):
+                fee = max(fee, self.settings.get('connect_app_fee_min', as_type=Decimal))
+            if fee:
+                d['application_fee_amount'] = self._decimal_to_int(fee)
+        return d
+
     @property
     def api_kwargs(self):
         if self.settings.connect_client_id and self.settings.connect_user_id:
@@ -296,11 +311,13 @@ class StripeMethod(BasePaymentProvider):
         try:
             params = {}
             if not source.startswith('src_'):
-                params['statement_descriptor'] = ugettext('{event}-{code}').format(
+                params['statement_descriptor'] = '{event}-{code} {eventname}'.format(
                     event=self.event.slug.upper(),
-                    code=payment.order.code
+                    code=payment.order.code,
+                    eventname=str(self.event.name)
                 )[:22]
             params.update(self.api_kwargs)
+            params.update(self._connect_kwargs(payment))
             charge = stripe.Charge.create(
                 amount=self._get_amount(payment),
                 currency=self.event.currency.lower(),
@@ -612,6 +629,9 @@ class StripeCC(StripeMethod):
 
         try:
             if self.payment_is_valid_session(request):
+                params = {}
+                params.update(self._connect_kwargs(payment))
+                params.update(self.api_kwargs)
                 intent = stripe.PaymentIntent.create(
                     amount=self._get_amount(payment),
                     currency=self.event.currency.lower(),
@@ -622,9 +642,10 @@ class StripeCC(StripeMethod):
                         event=self.event.slug.upper(),
                         code=payment.order.code
                     ),
-                    statement_descriptor=ugettext('{event}-{code}').format(
+                    statement_descriptor='{event}-{code} {eventname}'.format(
                         event=self.event.slug.upper(),
-                        code=payment.order.code
+                        code=payment.order.code,
+                        eventname=str(self.event.name)
                     )[:22],
                     metadata={
                         'order': str(payment.order.id),
@@ -638,7 +659,7 @@ class StripeCC(StripeMethod):
                         'payment': payment.pk,
                         'hash': hashlib.sha1(payment.order.secret.lower().encode()).hexdigest(),
                     }),
-                    **self.api_kwargs
+                    **params
                 )
             else:
                 payment_info = json.loads(payment.info)
@@ -849,10 +870,11 @@ class StripeGiropay(StripeMethod):
                     'name': request.session.get('payment_stripe_giropay_account') or ugettext('unknown name')
                 },
                 giropay={
-                    'statement_descriptor': ugettext('{event}-{code}').format(
+                    'statement_descriptor': '{event}-{code} {eventname}'.format(
                         event=self.event.slug.upper(),
-                        code=payment.order.code
-                    )[:35]
+                        code=payment.order.code,
+                        eventname=str(self.event.name)
+                    )[:35],
                 },
                 redirect={
                     'return_url': build_absolute_uri(self.event, 'plugins:stripe:return', kwargs={
@@ -907,10 +929,11 @@ class StripeIdeal(StripeMethod):
                 'code': payment.order.code
             },
             ideal={
-                'statement_descriptor': ugettext('{event}-{code}').format(
+                'statement_descriptor': '{event}-{code} {eventname}'.format(
                     event=self.event.slug.upper(),
-                    code=payment.order.code
-                )[:22]
+                    code=payment.order.code,
+                    eventname=str(self.event.name)
+                )[:22],
             },
             redirect={
                 'return_url': build_absolute_uri(self.event, 'plugins:stripe:return', kwargs={
@@ -1010,10 +1033,11 @@ class StripeBancontact(StripeMethod):
                     'name': request.session.get('payment_stripe_bancontact_account') or ugettext('unknown name')
                 },
                 bancontact={
-                    'statement_descriptor': ugettext('{event}-{code}').format(
+                    'statement_descriptor': '{event}-{code} {eventname}'.format(
                         event=self.event.slug.upper(),
-                        code=payment.order.code
-                    )[:35]
+                        code=payment.order.code,
+                        eventname=str(self.event.name)
+                    )[:35],
                 },
                 redirect={
                     'return_url': build_absolute_uri(self.event, 'plugins:stripe:return', kwargs={
@@ -1082,10 +1106,11 @@ class StripeSofort(StripeMethod):
             },
             sofort={
                 'country': request.session.get('payment_stripe_sofort_bank_country'),
-                'statement_descriptor': ugettext('{event}-{code}').format(
+                'statement_descriptor': '{event}-{code} {eventname}'.format(
                     event=self.event.slug.upper(),
-                    code=payment.order.code
-                )[:35]
+                    code=payment.order.code,
+                    eventname=str(self.event.name)
+                )[:35],
             },
             redirect={
                 'return_url': build_absolute_uri(self.event, 'plugins:stripe:return', kwargs={

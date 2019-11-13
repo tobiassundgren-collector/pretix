@@ -247,7 +247,7 @@ class AddOnsStep(CartMixin, AsyncAction, TemplateFlowStep):
                         quota_cache=quota_cache,
                         item_cache=item_cache,
                         subevent=cartpos.subevent,
-                        sales_channel=self.request.sales_channel
+                        sales_channel=self.request.sales_channel.identifier
                     )
                 }
 
@@ -306,7 +306,7 @@ class AddOnsStep(CartMixin, AsyncAction, TemplateFlowStep):
 
         return self.do(self.request.event.id, data, get_or_create_cart_id(self.request),
                        invoice_address=self.invoice_address.pk, locale=get_language(),
-                       sales_channel=request.sales_channel)
+                       sales_channel=request.sales_channel.identifier)
 
 
 class QuestionsStep(QuestionsViewMixin, CartMixin, TemplateFlowStep):
@@ -441,6 +441,8 @@ class QuestionsStep(QuestionsViewMixin, CartMixin, TemplateFlowStep):
             }
 
             def question_is_visible(parentid, qvals):
+                if parentid not in question_cache:
+                    return False
                 parentq = question_cache[parentid]
                 if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_values):
                     return False
@@ -503,8 +505,10 @@ class PaymentStep(QuestionsViewMixin, CartMixin, TemplateFlowStep):
 
     @cached_property
     def _total_order_value(self):
+        cart = get_cart(self.request)
         total = get_cart_total(self.request)
-        total += sum([f.value for f in get_fees(self.request.event, self.request, total, self.invoice_address, None)])
+        total += sum([f.value for f in get_fees(self.request.event, self.request, total, self.invoice_address, None,
+                                                cart)])
         return Decimal(total)
 
     @cached_property
@@ -630,6 +634,8 @@ class ConfirmStep(CartMixin, AsyncAction, TemplateFlowStep):
         ctx['cart_session'] = self.cart_session
         ctx['invoice_address_asked'] = self.address_asked
 
+        self.cart_session['shown_total'] = str(ctx['cart']['total'])
+
         email = self.cart_session.get('contact_form_data', {}).get('email')
         if email != settings.PRETIX_EMAIL_NONE_VALUE:
             ctx['contact_info'] = [
@@ -707,7 +713,8 @@ class ConfirmStep(CartMixin, AsyncAction, TemplateFlowStep):
         return self.do(self.request.event.id, self.payment_provider.identifier if self.payment_provider else None,
                        [p.id for p in self.positions], self.cart_session.get('email'),
                        translation.get_language(), self.invoice_address.pk, meta_info,
-                       request.sales_channel)
+                       request.sales_channel.identifier, self.cart_session.get('gift_cards'),
+                       self.cart_session.get('shown_total'))
 
     def get_success_message(self, value):
         create_empty_cart_id(self.request)

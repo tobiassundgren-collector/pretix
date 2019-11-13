@@ -1,7 +1,7 @@
 from django.conf.urls import include, url
 
 from pretix.control.views import (
-    auth, checkin, dashboards, event, global_settings, item, main, oauth,
+    auth, checkin, dashboards, event, geo, global_settings, item, main, oauth,
     orders, organizer, pdf, search, shredder, subevents, typeahead, user,
     users, vouchers, waitinglist,
 )
@@ -22,6 +22,7 @@ urlpatterns = [
     url(r'^logdetail/$', global_settings.LogDetailView.as_view(), name='global.logdetail'),
     url(r'^logdetail/payment/$', global_settings.PaymentDetailView.as_view(), name='global.paymentdetail'),
     url(r'^logdetail/refund/$', global_settings.RefundDetailView.as_view(), name='global.refunddetail'),
+    url(r'^geocode/$', geo.GeoCodeView.as_view(), name='global.geocode'),
     url(r'^reauth/$', user.ReauthView.as_view(), name='user.reauth'),
     url(r'^sudo/$', user.StartStaffSession.as_view(), name='user.sudo'),
     url(r'^sudo/stop/$', user.StopStaffSession.as_view(), name='user.sudo.stop'),
@@ -75,6 +76,9 @@ urlpatterns = [
     url(r'^organizer/(?P<organizer>[^/]+)/delete$', organizer.OrganizerDelete.as_view(), name='organizer.delete'),
     url(r'^organizer/(?P<organizer>[^/]+)/settings/display$', organizer.OrganizerDisplaySettings.as_view(),
         name='organizer.display'),
+    url(r'^organizer/(?P<organizer>[^/]+)/giftcards$', organizer.GiftCardListView.as_view(), name='organizer.giftcards'),
+    url(r'^organizer/(?P<organizer>[^/]+)/giftcard/add$', organizer.GiftCardCreateView.as_view(), name='organizer.giftcard.add'),
+    url(r'^organizer/(?P<organizer>[^/]+)/giftcard/(?P<giftcard>[^/]+)/$', organizer.GiftCardDetailView.as_view(), name='organizer.giftcard'),
     url(r'^organizer/(?P<organizer>[^/]+)/webhooks$', organizer.WebHookListView.as_view(), name='organizer.webhooks'),
     url(r'^organizer/(?P<organizer>[^/]+)/webhook/add$', organizer.WebHookCreateView.as_view(),
         name='organizer.webhook.add'),
@@ -104,6 +108,7 @@ urlpatterns = [
     url(r'^events/$', main.EventList.as_view(), name='events'),
     url(r'^events/add$', main.EventWizard.as_view(), name='events.add'),
     url(r'^events/typeahead/$', typeahead.event_list, name='events.typeahead'),
+    url(r'^events/typeahead/meta/$', typeahead.meta_values, name='events.meta.typeahead'),
     url(r'^search/orders/$', search.OrderSearch.as_view(), name='search.orders'),
     url(r'^event/(?P<organizer>[^/]+)/(?P<event>[^/]+)/', include([
         url(r'^$', dashboards.event_index, name='event.index'),
@@ -165,6 +170,7 @@ urlpatterns = [
             name='event.items.categories.edit'),
         url(r'^categories/add$', item.CategoryCreate.as_view(), name='event.items.categories.add'),
         url(r'^questions/$', item.QuestionList.as_view(), name='event.items.questions'),
+        url(r'^questions/reorder$', item.reorder_questions, name='event.items.questions.reorder'),
         url(r'^questions/(?P<question>\d+)/delete$', item.QuestionDelete.as_view(),
             name='event.items.questions.delete'),
         url(r'^questions/(?P<question>\d+)/up$', item.question_move_up, name='event.items.questions.up'),

@@ -19,7 +19,7 @@ from pretix.base.models import (
 from pretix.base.signals import logentry_display
 from pretix.base.templatetags.money import money_filter
 
-OVERVIEW_BLACKLIST = [
+OVERVIEW_BANLIST = [
     'pretix.plugins.sendmail.order.email.sent'
 ]
 
@@ -64,6 +64,15 @@ def _display_order_changed(event: Event, logentry: LogEntry):
             posid=data.get('positionid', '?'),
             old_price=money_filter(Decimal(data['old_price']), event.currency),
             new_price=money_filter(Decimal(data['new_price']), event.currency),
+        )
+    elif logentry.action_type == 'pretix.event.order.changed.feevalue':
+        return text + ' ' + _('A fee was changed from {old_price} to {new_price}.').format(
+            old_price=money_filter(Decimal(data['old_price']), event.currency),
+            new_price=money_filter(Decimal(data['new_price']), event.currency),
+        )
+    elif logentry.action_type == 'pretix.event.order.changed.cancelfee':
+        return text + ' ' + _('A fee of {old_price} was removed.').format(
+            old_price=money_filter(Decimal(data['old_price']), event.currency),
         )
     elif logentry.action_type == 'pretix.event.order.changed.cancel':
         old_item = str(event.items.get(pk=data['old_item']))
@@ -244,6 +253,7 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.control.auth.user.forgot_password.recovered': _('The password has been reset.'),
         'pretix.organizer.deleted': _('The organizer "{name}" has been deleted.'),
         'pretix.voucher.added': _('The voucher has been created.'),
+        'pretix.voucher.sent': _('The voucher has been sent to {recipient}.'),
         'pretix.voucher.added.waitinglist': _('The voucher has been created and sent to a person on the waiting list.'),
         'pretix.voucher.changed': _('The voucher has been changed.'),
         'pretix.voucher.deleted': _('The voucher has been deleted.'),

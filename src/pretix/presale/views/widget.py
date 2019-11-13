@@ -139,7 +139,7 @@ def widget_js(request, lang, **kwargs):
         try:
             resp = HttpResponse(default_storage.open(fname).read(), content_type='text/javascript')
         except:
-            logger.critical('Failed to open widget.js')
+            logger.exception('Failed to open widget.js')
 
     if not resp:
         data = generate_widget_js(lang).encode()
@@ -281,7 +281,7 @@ class WidgetAPIProductList(EventListMixin, View):
         if ev.presale_is_running and event.settings.event_list_availability and ev.best_availability_state is not None:
             if ev.best_availability_state == Quota.AVAILABILITY_OK:
                 availability['color'] = 'green'
-                availability['text'] = ugettext('Tickets on sale')
+                availability['text'] = ugettext('Book now')
             elif event.settings.waiting_list_enabled and ev.best_availability_state >= 0:
                 availability['color'] = 'orange'
                 availability['text'] = ugettext('Waiting list')
@@ -293,7 +293,7 @@ class WidgetAPIProductList(EventListMixin, View):
                 availability['text'] = ugettext('Sold out')
         elif ev.presale_is_running:
             availability['color'] = 'green'
-            availability['text'] = ugettext('Tickets on sale')
+            availability['text'] = ugettext('Book now')
         elif ev.presale_has_ended:
             availability['color'] = 'red'
             availability['text'] = ugettext('Sale over')
@@ -302,7 +302,7 @@ class WidgetAPIProductList(EventListMixin, View):
             availability['text'] = ugettext('from %(start_date)s') % {'start_date': date_format(ev.presale_start, "SHORT_DATE_FORMAT")}
         else:
             availability['color'] = 'orange'
-            availability['text'] = ugettext('Sale Soon')
+            availability['text'] = ugettext('Sale soon')
         return availability
 
     def _serialize_events(self, ebd):
@@ -319,6 +319,7 @@ class WidgetAPIProductList(EventListMixin, View):
                 'time': date_format(ev.date_from.astimezone(tz), 'TIME_FORMAT') if e.get('time') and event.settings.show_times else
                 None,
                 'continued': e['continued'],
+                'location': str(ev.location),
                 'date_range': ev.get_date_range_display() + (
                     " " + date_format(ev.date_from.astimezone(tz), "TIME_FORMAT") if event.settings.show_times else ""
                 ),
@@ -393,12 +394,13 @@ class WidgetAPIProductList(EventListMixin, View):
         else:
             if hasattr(self.request, 'event'):
                 evs = self.request.event.subevents_sorted(
-                    filter_qs_by_attr(self.request.event.subevents_annotated(self.request.sales_channel), self.request)
+                    filter_qs_by_attr(self.request.event.subevents_annotated(self.request.sales_channel.identifier), self.request)
                 )
                 tz = pytz.timezone(request.event.settings.timezone)
                 data['events'] = [
                     {
                         'name': str(ev.name),
+                        'location': str(ev.location),
                         'date_range': ev.get_date_range_display(tz) + (
                             (" " + ev.get_time_from_display(tz)) if ev.event.settings.show_times else ""
                         ),
@@ -425,6 +427,7 @@ class WidgetAPIProductList(EventListMixin, View):
                         avail = self._get_availability(event, event)
                     data['events'].append({
                         'name': str(event.name),
+                        'location': str(event.location),
                         'date_range': dr,
                         'availability': avail,
                         'event_url': build_absolute_uri(event, 'presale:event.index'),

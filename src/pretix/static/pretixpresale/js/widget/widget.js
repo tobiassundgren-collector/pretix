@@ -784,6 +784,7 @@ Vue.component('pretix-widget-event-form', {
             this.$root.target_url = this.$root.parent_stack.pop();
             this.$root.error = null;
             this.$root.subevent = null;
+            this.$root.trigger_load_callback();
             if (this.$root.events !== undefined) {
                 this.$root.view = "events";
             } else {
@@ -797,6 +798,8 @@ Vue.component('pretix-widget-event-list-entry', {
     template: ('<a :class="classObject" @click.prevent="select">'
         + '<div class="pretix-widget-event-list-entry-name">{{ event.name }}</div>'
         + '<div class="pretix-widget-event-list-entry-date">{{ event.date_range }}</div>'
+        + '<div class="pretix-widget-event-list-entry-location">{{ location }}</div>'  // hidden by css for now, but
+                                                                                       // used by a few people
         + '<div class="pretix-widget-event-list-entry-availability"><span>{{ event.availability.text }}</span></div>'
         + '</a>'),
     props: {
@@ -809,6 +812,9 @@ Vue.component('pretix-widget-event-list-entry', {
             };
             o['pretix-widget-event-availability-' + this.event.availability.color] = true;
             return o
+        },
+        location: function () {
+            return this.event.location.replace(/\s*\n\s*/g, ', ');
         }
     },
     methods: {
@@ -1086,6 +1092,13 @@ var shared_root_methods = {
             return;
         }
     },
+    trigger_load_callback: function () {
+        this.$nextTick(function () {
+            for (var i = 0; i < window.PretixWidget._loaded.length; i++) {
+                window.PretixWidget._loaded[i]()
+            }
+        });
+    },
     reload: function () {
         var url;
         if (this.$root.subevent) {
@@ -1148,6 +1161,7 @@ var shared_root_methods = {
             }
             if (root.loading > 0) {
                 root.loading--;
+                root.trigger_load_callback();
             }
         }, function (error) {
             root.categories = [];
@@ -1155,6 +1169,7 @@ var shared_root_methods = {
             root.error = strings['loading_error'];
             if (root.loading > 0) {
                 root.loading--;
+                root.trigger_load_callback();
             }
         });
     },
@@ -1385,6 +1400,10 @@ var create_button = function (element) {
 /* Find all widgets on the page and render them */
 widgetlist = [];
 buttonlist = [];
+window.PretixWidget._loaded = [];
+window.PretixWidget.addLoadListener = function (f) {
+    window.PretixWidget._loaded.push(f);
+}
 window.PretixWidget.buildWidgets = function () {
     document.createElement("pretix-widget");
     document.createElement("pretix-button");

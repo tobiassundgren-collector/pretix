@@ -17,11 +17,13 @@ from django.utils.translation import ugettext as _
 from django_scopes import scopes_disabled
 
 from pretix.api.models import OAuthApplication
+from pretix.base.channels import get_all_sales_channels
 from pretix.base.email import get_email_context
 from pretix.base.i18n import LazyLocaleException, language
 from pretix.base.models import (
-    CartPosition, Device, Event, Item, ItemVariation, Order, OrderPayment,
-    OrderPosition, Quota, Seat, SeatCategoryMapping, User, Voucher,
+    CartPosition, Device, Event, GiftCard, Item, ItemVariation, Order,
+    OrderPayment, OrderPosition, Quota, Seat, SeatCategoryMapping, User,
+    Voucher,
 )
 from pretix.base.models.event import SubEvent
 from pretix.base.models.items import ItemBundle
@@ -30,7 +32,7 @@ from pretix.base.models.orders import (
     generate_secret,
 )
 from pretix.base.models.organizer import TeamAPIToken
-from pretix.base.models.tax import TaxedPrice
+from pretix.base.models.tax import TaxedPrice, TaxRule
 from pretix.base.payment import BasePaymentProvider, PaymentException
 from pretix.base.reldate import RelativeDateWrapper
 from pretix.base.services import tickets
@@ -43,8 +45,8 @@ from pretix.base.services.pricing import get_price
 from pretix.base.services.tasks import ProfiledEventTask, ProfiledTask
 from pretix.base.signals import (
     allow_ticket_download, order_approved, order_canceled, order_changed,
-    order_denied, order_expired, order_fee_calculation, order_placed,
-    order_split, periodic_task, validate_order,
+    order_denied, order_expired, order_fee_calculation, order_paid,
+    order_placed, order_split, periodic_task, validate_order,
 )
 from pretix.celery_app import app
 from pretix.helpers.models import modelcopy
@@ -154,7 +156,7 @@ def mark_order_expired(order, user=None, auth=None):
 
         order.log_action('pretix.event.order.expired', user=user, auth=auth)
         i = order.invoices.filter(is_cancellation=False).last()
-        if i:
+        if i and not i.refered.exists():
             generate_cancellation(i)
 
     order_expired.send(order.event, order=order)
@@ -290,6 +292,19 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
         i = order.invoices.filter(is_cancellation=False).last()
         if i:
             generate_cancellation(i)
+
+        for position in order.positions.all():
+            for gc in position.issued_gift_cards.all():
+                gc = GiftCard.objects.select_for_update().get(pk=gc.pk)
+                if gc.value < position.price:
+                    raise OrderError(
+                        _('This order can not be canceled since the gift card {card} purchased in '
+                          'this order has already been redeemed.').format(
+                            card=gc.secret
+                        )
+                    )
+                else:
+                    gc.transactions.create(value=-position.price, order=order)
 
         if cancellation_fee:
             with order.event.lock():
@@ -545,7 +560,7 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
 
 
 def _get_fees(positions: List[CartPosition], payment_provider: BasePaymentProvider, address: InvoiceAddress,
-              meta_info: dict, event: Event):
+              meta_info: dict, event: Event, gift_cards: List[GiftCard]):
     fees = []
     total = sum([c.price for c in positions])
 
@@ -553,8 +568,16 @@ def _get_fees(positions: List[CartPosition], payment_provider: BasePaymentProvid
                                                  meta_info=meta_info, positions=positions):
         if resp:
             fees += resp
-
     total += sum(f.value for f in fees)
+
+    gift_card_values = {}
+    for gc in gift_cards:
+        fval = Decimal(gc.value)  # TODO: don't require an extra query
+        fval = min(fval, total)
+        if fval > 0:
+            total -= fval
+            gift_card_values[gc] = fval
+
     if payment_provider:
         payment_fee = payment_provider.calculate_fee(total)
     else:
@@ -565,17 +588,36 @@ def _get_fees(positions: List[CartPosition], payment_provider: BasePaymentProvid
                       internal_type=payment_provider.identifier)
         fees.append(pf)
 
-    return fees, pf
+    return fees, pf, gift_card_values
 
 
 def _create_order(event: Event, email: str, positions: List[CartPosition], now_dt: datetime,
                   payment_provider: BasePaymentProvider, locale: str=None, address: InvoiceAddress=None,
-                  meta_info: dict=None, sales_channel: str='web'):
-    fees, pf = _get_fees(positions, payment_provider, address, meta_info, event)
-    total = sum([c.price for c in positions]) + sum([c.value for c in fees])
+                  meta_info: dict=None, sales_channel: str='web', gift_cards: list=None,
+                  shown_total=None):
     p = None
+    sales_channel = get_all_sales_channels()[sales_channel]
 
     with transaction.atomic():
+        checked_gift_cards = []
+        if gift_cards:
+            gc_qs = GiftCard.objects.select_for_update().filter(pk__in=gift_cards)
+            for gc in gc_qs:
+                if gc.currency != event.currency:
+                    raise OrderError(_("This gift card does not support this currency."))
+                if gc.testmode and not event.testmode:
+                    raise OrderError(_("This gift card can only be used in test mode."))
+                if not gc.testmode and event.testmode:
+                    raise OrderError(_("Only test gift cards can be used in test mode."))
+                if not gc.accepted_by(event.organizer):
+                    raise OrderError(_("This gift card is not accepted by this event organizer."))
+                checked_gift_cards.append(gc)
+        if checked_gift_cards and any(c.item.issue_giftcard for c in positions):
+            raise OrderError(_("You cannot pay with gift cards when buying a gift card."))
+
+        fees, pf, gift_card_values = _get_fees(positions, payment_provider, address, meta_info, event, checked_gift_cards)
+        total = pending_sum = sum([c.price for c in positions]) + sum([c.value for c in fees])
+
         order = Order(
             status=Order.STATUS_PENDING,
             event=event,
@@ -583,10 +625,10 @@ def _create_order(event: Event, email: str, positions: List[CartPosition], now_d
             datetime=now_dt,
             locale=locale,
             total=total,
-            testmode=event.testmode,
+            testmode=True if sales_channel.testmode_supported and event.testmode else False,
             meta_info=json.dumps(meta_info or {}),
             require_approval=any(p.item.require_approval for p in positions),
-            sales_channel=sales_channel
+            sales_channel=sales_channel.identifier
         )
         order.set_expires(now_dt, event.subevents.filter(id__in=[p.subevent_id for p in positions]))
         order.save()
@@ -606,11 +648,41 @@ def _create_order(event: Event, email: str, positions: List[CartPosition], now_d
                 fee.tax_rule = None  # TODO: deprecate
             fee.save()
 
+        for gc, val in gift_card_values.items():
+            p = order.payments.create(
+                state=OrderPayment.PAYMENT_STATE_CONFIRMED,
+                provider='giftcard',
+                amount=val,
+                fee=pf
+            )
+            trans = gc.transactions.create(
+                value=-1 * val,
+                order=order,
+                payment=p
+            )
+            p.info_data = {
+                'gift_card': gc.pk,
+                'transaction_id': trans.pk,
+            }
+            p.save()
+            pending_sum -= val
+
+        # Safety check: Is the amount we're now going to charge the same amount the user has been shown when they
+        # pressed "Confirm purchase"? If not, we should better warn the user and show the confirmation page again.
+        # The only *known* case where this happens is if a gift card is used in two concurrent sessions.
+        if shown_total is not None:
+            if Decimal(shown_total) != pending_sum:
+                raise OrderError(
+                    _('While trying to place your order, we noticed that the order total has changed. Either one of '
+                      'the prices changed just now, or a gift card you used has been used in the meantime. Please '
+                      'check the prices below and try again.')
+                )
+
         if payment_provider and not order.require_approval:
             p = order.payments.create(
                 state=OrderPayment.PAYMENT_STATE_CREATED,
                 provider=payment_provider.identifier,
-                amount=total,
+                amount=pending_sum,
                 fee=pf
             )
 
@@ -635,7 +707,8 @@ def _order_placed_email(event: Event, order: Order, pprov: BasePaymentProvider, 
             email_subject, email_template, email_context,
             log_entry,
             invoices=[invoice] if invoice and event.settings.invoice_email_attachment else [],
-            attach_tickets=True
+            attach_tickets=True,
+            attach_ical=event.settings.mail_attach_ical
         )
     except SendMailException:
         logger.exception('Order received email could not be sent')
@@ -651,14 +724,16 @@ def _order_placed_email_attendee(event: Event, order: Order, position: OrderPosi
             log_entry,
             invoices=[],
             attach_tickets=True,
-            position=position
+            position=position,
+            attach_ical=event.settings.mail_attach_ical
         )
     except SendMailException:
         logger.exception('Order received email could not be sent to attendee')
 
 
 def _perform_order(event: Event, payment_provider: str, position_ids: List[str],
-                   email: str, locale: str, address: int, meta_info: dict=None, sales_channel: str='web'):
+                   email: str, locale: str, address: int, meta_info: dict=None, sales_channel: str='web',
+                   gift_cards: list=None, shown_total=None):
     if payment_provider:
         pprov = event.get_payment_providers().get(payment_provider)
         if not pprov:
@@ -707,9 +782,10 @@ def _perform_order(event: Event, payment_provider: str, position_ids: List[str],
             raise OrderError(error_messages['internal'])
         _check_positions(event, now_dt, positions, address=addr)
         order, payment = _create_order(event, email, positions, now_dt, pprov,
-                                       locale=locale, address=addr, meta_info=meta_info, sales_channel=sales_channel)
+                                       locale=locale, address=addr, meta_info=meta_info, sales_channel=sales_channel,
+                                       gift_cards=gift_cards, shown_total=shown_total)
 
-        free_order_flow = payment and payment_provider == 'free' and order.total == Decimal('0.00') and not order.require_approval
+        free_order_flow = payment and payment_provider == 'free' and order.pending_sum == Decimal('0.00') and not order.require_approval
         if free_order_flow:
             try:
                 payment.confirm(send_mail=False, lock=not locked)
@@ -894,6 +970,7 @@ class OrderChangeManager:
         'seat_subevent_mismatch': _('You selected seat "{seat}" for a date that does not match the selected ticket date. Please choose a seat again.'),
         'seat_required': _('The selected product requires you to select a seat.'),
         'seat_forbidden': _('The selected product does not allow to select a seat.'),
+        'gift_card_change': _('You cannot change the price of a position that has been used to issue a gift card.'),
     }
     ItemOperation = namedtuple('ItemOperation', ('position', 'item', 'variation'))
     SubeventOperation = namedtuple('SubeventOperation', ('position', 'subevent'))
@@ -902,6 +979,8 @@ class OrderChangeManager:
     CancelOperation = namedtuple('CancelOperation', ('position',))
     AddOperation = namedtuple('AddOperation', ('item', 'variation', 'price', 'addon_to', 'subevent', 'seat'))
     SplitOperation = namedtuple('SplitOperation', ('position',))
+    FeeValueOperation = namedtuple('FeeValueOperation', ('fee', 'value'))
+    CancelFeeOperation = namedtuple('CancelFeeOperation', ('fee',))
     RegenerateSecretOperation = namedtuple('RegenerateSecretOperation', ('position',))
 
     def __init__(self, order: Order, user=None, auth=None, notify=True, reissue_invoice=True):
@@ -961,6 +1040,9 @@ class OrderChangeManager:
     def change_price(self, position: OrderPosition, price: Decimal):
         price = position.item.tax(price, base_price_is='gross')
 
+        if position.issued_gift_cards.exists():
+            raise OrderError(self.error_messages['gift_card_change'])
+
         self._totaldiff += price.gross - position.price
 
         if self.order.event.settings.invoice_include_free or price.gross != Decimal('0.00') or position.price != Decimal('0.00'):
@@ -990,8 +1072,19 @@ class OrderChangeManager:
                     self._totaldiff += price.gross - pos.price
                     self._operations.append(self.PriceOperation(pos, price))
 
+    def cancel_fee(self, fee: OrderFee):
+        self._totaldiff -= fee.value
+        self._operations.append(self.CancelFeeOperation(fee))
+        self._invoice_dirty = True
+
+    def change_fee(self, fee: OrderFee, value: Decimal):
+        value = (fee.tax_rule or TaxRule.zero()).tax(value, base_price_is='gross')
+        self._totaldiff += value.gross - fee.value
+        self._invoice_dirty = True
+        self._operations.append(self.FeeValueOperation(fee, value))
+
     def cancel(self, position: OrderPosition):
-        self._totaldiff += -position.price
+        self._totaldiff -= position.price
         self._quotadiff.subtract(position.quotas)
         self._operations.append(self.CancelOperation(position))
         if position.seat:
@@ -1107,19 +1200,25 @@ class OrderChangeManager:
 
     def _check_paid_to_free(self):
         if self.order.total == 0 and (self._totaldiff < 0 or (self.split_order and self.split_order.total > 0)) and not self.order.require_approval:
-            # if the order becomes free, mark it paid using the 'free' provider
-            # this could happen if positions have been made cheaper or removed (_totaldiff < 0)
-            # or positions got split off to a new order (split_order with positive total)
-            p = self.order.payments.create(
-                state=OrderPayment.PAYMENT_STATE_CREATED,
-                provider='free',
-                amount=0,
-                fee=None
-            )
-            try:
-                p.confirm(send_mail=False, count_waitinglist=False, user=self.user, auth=self.auth)
-            except Quota.QuotaExceededException:
-                raise OrderError(self.error_messages['paid_to_free_exceeded'])
+            if not self.order.fees.exists() and not self.order.positions.exists():
+                # The order is completely empty now, so we cancel it.
+                self.order.status = Order.STATUS_CANCELED
+                self.order.save(update_fields=['status'])
+                order_canceled.send(self.order.event, order=self.order)
+            else:
+                # if the order becomes free, mark it paid using the 'free' provider
+                # this could happen if positions have been made cheaper or removed (_totaldiff < 0)
+                # or positions got split off to a new order (split_order with positive total)
+                p = self.order.payments.create(
+                    state=OrderPayment.PAYMENT_STATE_CREATED,
+                    provider='free',
+                    amount=0,
+                    fee=None
+                )
+                try:
+                    p.confirm(send_mail=False, count_waitinglist=False, user=self.user, auth=self.auth)
+                except Quota.QuotaExceededException:
+                    raise OrderError(self.error_messages['paid_to_free_exceeded'])
 
         if self.split_order and self.split_order.total == 0 and not self.split_order.require_approval:
             p = self.split_order.payments.create(
@@ -1176,6 +1275,15 @@ class OrderChangeManager:
                 })
                 op.position.subevent = op.subevent
                 op.position.save()
+            elif isinstance(op, self.FeeValueOperation):
+                self.order.log_action('pretix.event.order.changed.feevalue', user=self.user, auth=self.auth, data={
+                    'fee': op.fee.pk,
+                    'old_price': op.fee.value,
+                    'new_price': op.value.gross
+                })
+                op.fee.value = op.value.gross
+                op.fee._calculate_tax()
+                op.fee.save()
             elif isinstance(op, self.PriceOperation):
                 self.order.log_action('pretix.event.order.changed.price', user=self.user, auth=self.auth, data={
                     'position': op.position.pk,
@@ -1187,7 +1295,26 @@ class OrderChangeManager:
                 op.position.price = op.price.gross
                 op.position._calculate_tax()
                 op.position.save()
+            elif isinstance(op, self.CancelFeeOperation):
+                self.order.log_action('pretix.event.order.changed.cancelfee', user=self.user, auth=self.auth, data={
+                    'fee': op.fee.pk,
+                    'fee_type': op.fee.fee_type,
+                    'old_price': op.fee.value,
+                })
+                op.fee.canceled = True
+                op.fee.save(update_fields=['canceled'])
             elif isinstance(op, self.CancelOperation):
+                for gc in op.position.issued_gift_cards.all():
+                    gc = GiftCard.objects.select_for_update().get(pk=gc.pk)
+                    if gc.value < op.position.price:
+                        raise OrderError(_(
+                            'A position can not be canceled since the gift card {card} purchased in this order has '
+                            'already been redeemed.').format(
+                            card=gc.secret
+                        ))
+                    else:
+                        gc.transactions.create(value=-op.position.price, order=self.order)
+
                 for opa in op.position.addons.all():
                     self.order.log_action('pretix.event.order.changed.cancel', user=self.user, auth=self.auth, data={
                         'position': opa.pk,
@@ -1303,19 +1430,25 @@ class OrderChangeManager:
                 fee.delete()
             split_order.total += fee.value
 
+        remaining_total = sum([p.price for p in self.order.positions.all()]) + sum([f.value for f in self.order.fees.all()])
+        offset_amount = min(max(0, self.completed_payment_sum - remaining_total), split_order.total)
+        if offset_amount >= split_order.total:
+            split_order.status = Order.STATUS_PAID
+        else:
+            split_order.status = Order.STATUS_PENDING
         split_order.save()
 
-        if split_order.status == Order.STATUS_PAID:
+        if offset_amount > Decimal('0.00'):
             split_order.payments.create(
                 state=OrderPayment.PAYMENT_STATE_CONFIRMED,
-                amount=split_order.total,
+                amount=offset_amount,
                 payment_date=now(),
                 provider='offsetting',
                 info=json.dumps({'orders': [self.order.code]})
             )
             self.order.refunds.create(
                 state=OrderRefund.REFUND_STATE_DONE,
-                amount=split_order.total,
+                amount=offset_amount,
                 execution_date=now(),
                 provider='offsetting',
                 info=json.dumps({'orders': [split_order.code]})
@@ -1352,10 +1485,19 @@ class OrderChangeManager:
             fee = None
             if self.open_payment.fee:
                 fee = self.open_payment.fee
-                current_fee = self.open_payment.fee.value
+                if any(isinstance(op, (self.FeeValueOperation, self.CancelFeeOperation)) for op in self._operations):
+                    fee.refresh_from_db()
+                if not self.open_payment.fee.canceled:
+                    current_fee = self.open_payment.fee.value
             total -= current_fee
 
-            if self.order.pending_sum - current_fee != 0:
+            if fee and any([isinstance(op, self.FeeValueOperation) and op.fee == fee for op in self._operations]):
+                # Do not automatically modify a fee that is being manually modified right now
+                payment_fee = fee.value
+            elif fee and any([isinstance(op, self.CancelFeeOperation) and op.fee == fee for op in self._operations]):
+                # Do not automatically modify a fee that is being manually removed right now
+                payment_fee = Decimal('0.00')
+            elif self.order.pending_sum - current_fee != 0:
                 prov = self.open_payment.payment_provider
                 if prov:
                     payment_fee = prov.calculate_fee(total - self.completed_payment_sum)
@@ -1368,7 +1510,7 @@ class OrderChangeManager:
                 if not self.open_payment.fee:
                     self.open_payment.fee = fee
                     self.open_payment.save(update_fields=['fee'])
-            elif fee:
+            elif fee and not fee.canceled:
                 fee.delete()
 
         self.order.total = total + payment_fee
@@ -1398,9 +1540,10 @@ class OrderChangeManager:
             generate_invoice(self.order)
 
     def _check_complete_cancel(self):
+        current = self.order.positions.count()
         cancels = len([o for o in self._operations if isinstance(o, (self.CancelOperation, self.SplitOperation))])
         adds = len([o for o in self._operations if isinstance(o, self.AddOperation)])
-        if self.order.positions.count() - cancels + adds < 1:
+        if current > 0 and current - cancels + adds < 1:
             raise OrderError(self.error_messages['complete_cancel'])
 
     @property
@@ -1466,12 +1609,12 @@ class OrderChangeManager:
 @app.task(base=ProfiledEventTask, bind=True, max_retries=5, default_retry_delay=1, throws=(OrderError,))
 def perform_order(self, event: Event, payment_provider: str, positions: List[str],
                   email: str=None, locale: str=None, address: int=None, meta_info: dict=None,
-                  sales_channel: str='web'):
+                  sales_channel: str='web', gift_cards: list=None, shown_total=None):
     with language(locale):
         try:
             try:
                 return _perform_order(event, payment_provider, positions, email, locale, address, meta_info,
-                                      sales_channel)
+                                      sales_channel, gift_cards, shown_total)
             except LockTimeoutException:
                 self.retry()
         except (MaxRetriesExceededError, LockTimeoutException):
@@ -1615,3 +1758,25 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
             generate_invoice(order)
 
     return old_fee, new_fee, fee, new_payment
+
+
+@receiver(order_paid, dispatch_uid="pretixbase_order_paid_giftcards")
+@transaction.atomic()
+def signal_listener_issue_giftcards(sender: Event, order: Order, **kwargs):
+    any_giftcards = False
+    for p in order.positions.all():
+        if p.item.issue_giftcard:
+            issued = Decimal('0.00')
+            for gc in p.issued_gift_cards.all():
+                issued += gc.transactions.first().value
+            if p.price - issued > 0:
+                gc = sender.organizer.issued_gift_cards.create(
+                    currency=sender.currency, issued_in=p, testmode=order.testmode
+                )
+                gc.transactions.create(value=p.price - issued, order=order)
+                any_giftcards = True
+                p.secret = gc.secret
+                p.save(update_fields=['secret'])
+
+    if any_giftcards:
+        tickets.invalidate_cache.apply_async(kwargs={'event': sender.pk, 'order': order.pk})

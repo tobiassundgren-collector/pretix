@@ -8,7 +8,9 @@ from django.contrib import messages
 from django.core.files import File
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, Sum
-from django.http import FileResponse, Http404, JsonResponse
+from django.http import (
+    FileResponse, Http404, HttpResponseRedirect, JsonResponse,
+)
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.decorators import method_decorator
 from django.utils.functional import cached_property
@@ -155,7 +157,8 @@ class OrderDetails(EventViewMixin, OrderDetailMixin, CartMixin, TicketPageMixin,
                 'text': provider.download_button_text or 'Download',
                 'icon': provider.download_button_icon or 'fa-download',
                 'identifier': provider.identifier,
-                'multi': provider.multi_download_enabled
+                'multi': provider.multi_download_enabled,
+                'javascript_required': provider.javascript_required
             })
         return buttons
 
@@ -163,7 +166,7 @@ class OrderDetails(EventViewMixin, OrderDetailMixin, CartMixin, TicketPageMixin,
         ctx = super().get_context_data(**kwargs)
         ctx['cart'] = self.get_cart(
             answers=True, downloads=ctx['can_download'],
-            queryset=self.order.positions.select_related('tax_rule'),
+            queryset=self.order.positions.prefetch_related('issued_gift_cards').select_related('tax_rule'),
             order=self.order
         )
         ctx['can_download_multi'] = any([b['multi'] for b in self.download_buttons]) and (
@@ -193,6 +196,7 @@ class OrderDetails(EventViewMixin, OrderDetailMixin, CartMixin, TicketPageMixin,
 
         if self.order.status == Order.STATUS_PENDING:
             ctx['pending_sum'] = self.order.pending_sum
+            ctx['payment_sum_neg'] = ctx['pending_sum'] - self.order.total
 
             lp = self.order.payments.last()
             ctx['can_pay'] = False
@@ -218,6 +222,8 @@ class OrderDetails(EventViewMixin, OrderDetailMixin, CartMixin, TicketPageMixin,
 
         ctx['refunds'] = self.order.refunds.filter(
             state__in=(OrderRefund.REFUND_STATE_DONE, OrderRefund.REFUND_STATE_TRANSIT, OrderRefund.REFUND_STATE_CREATED)
+        ).exclude(
+            provider__in=('offsetting', 'reseller', 'boxoffice', 'manual')
         )
 
         return ctx
@@ -246,7 +252,8 @@ class OrderPositionDetails(EventViewMixin, OrderPositionDetailMixin, CartMixin, 
                 'text': provider.download_button_text or 'Download',
                 'icon': provider.download_button_icon or 'fa-download',
                 'identifier': provider.identifier,
-                'multi': provider.multi_download_enabled
+                'multi': provider.multi_download_enabled,
+                'javascript_required': provider.javascript_required
             })
         return buttons
 
@@ -790,12 +797,16 @@ class OrderDownloadMixin:
                 'message': str(self.get_success_message(value))
             })
         if isinstance(value, CachedTicket):
-            resp = FileResponse(value.file.file, content_type=value.type)
-            resp['Content-Disposition'] = 'attachment; filename="{}-{}-{}-{}{}"'.format(
-                self.request.event.slug.upper(), self.order.code, self.order_position.positionid,
-                self.output.identifier, value.extension
-            )
-            return resp
+            if value.type == 'text/uri-list':
+                resp = HttpResponseRedirect(value.file.file.read())
+                return resp
+            else:
+                resp = FileResponse(value.file.file, content_type=value.type)
+                resp['Content-Disposition'] = 'attachment; filename="{}-{}-{}-{}{}"'.format(
+                    self.request.event.slug.upper(), self.order.code, self.order_position.positionid,
+                    self.output.identifier, value.extension
+                )
+                return resp
         elif isinstance(value, CachedCombinedTicket):
             resp = FileResponse(value.file.file, content_type=value.type)
             resp['Content-Disposition'] = 'attachment; filename="{}-{}-{}{}"'.format(

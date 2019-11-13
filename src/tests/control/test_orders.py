@@ -591,6 +591,8 @@ def test_order_extend_not_expired(client, env):
     with scopes_disabled():
         q = Quota.objects.create(event=env[0], size=0)
         q.items.add(env[3])
+        o = Order.objects.get(id=env[2].id)
+        generate_invoice(o)
     newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
@@ -600,6 +602,7 @@ def test_order_extend_not_expired(client, env):
     with scopes_disabled():
         o = Order.objects.get(id=env[2].id)
         assert o.expires.strftime("%Y-%m-%d %H:%M:%S") == newdate[:10] + " 23:59:59"
+        assert o.invoices.count() == 1
 
 
 @pytest.mark.django_db
@@ -631,6 +634,7 @@ def test_order_extend_overdue_quota_blocked_by_waiting_list(client, env):
         q = Quota.objects.create(event=env[0], size=1)
         q.items.add(env[3])
         env[0].waitinglistentries.create(item=env[3], email='foo@bar.com')
+        generate_cancellation(generate_invoice(o))
 
     newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
     client.login(email='dummy@dummy.dummy', password='dummy')
@@ -642,6 +646,7 @@ def test_order_extend_overdue_quota_blocked_by_waiting_list(client, env):
         o = Order.objects.get(id=env[2].id)
         assert o.expires.strftime("%Y-%m-%d %H:%M:%S") == newdate[:10] + " 23:59:59"
         assert o.status == Order.STATUS_PENDING
+        assert o.invoices.count() == 3
 
 
 @pytest.mark.django_db
@@ -1285,6 +1290,60 @@ class OrderChangeTests(SoupTest):
             assert op.price == Decimal('21.50')
             assert op.tax_value == Decimal('0.00')
             assert op.tax_rate == Decimal('0.00')
+
+    def test_change_fee_value_success(self):
+        with scopes_disabled():
+            fee = self.order.fees.create(fee_type="shipping", value=Decimal('5.00'), tax_rule=self.tr19)
+        self.order.total += Decimal('5.00')
+        self.order.save()
+        self.client.post('/control/event/{}/{}/orders/{}/change'.format(
+            self.event.organizer.slug, self.event.slug, self.order.code
+        ), {
+            'add-TOTAL_FORMS': '0',
+            'add-INITIAL_FORMS': '0',
+            'add-MIN_NUM_FORMS': '0',
+            'add-MAX_NUM_FORMS': '100',
+            'op-{}-price'.format(self.op1.pk): '24.00',
+            'op-{}-operation'.format(self.op2.pk): '',
+            'op-{}-itemvar'.format(self.op2.pk): str(self.ticket.pk),
+            'of-{}-value'.format(fee.pk): '3.50',
+        })
+        self.op1.refresh_from_db()
+        self.order.refresh_from_db()
+        assert self.op1.item == self.ticket
+        assert self.op1.price == Decimal('24.00')
+        fee.refresh_from_db()
+        self.op1.refresh_from_db()
+        self.op2.refresh_from_db()
+        assert self.order.total == self.op1.price + self.op2.price + Decimal('3.50')
+        assert fee.value == Decimal('3.50')
+
+    def test_cancel_fee_success(self):
+        with scopes_disabled():
+            fee = self.order.fees.create(fee_type="shipping", value=Decimal('5.00'), tax_rule=self.tr19)
+        self.order.total += Decimal('5.00')
+        self.order.save()
+        self.client.post('/control/event/{}/{}/orders/{}/change'.format(
+            self.event.organizer.slug, self.event.slug, self.order.code
+        ), {
+            'add-TOTAL_FORMS': '0',
+            'add-INITIAL_FORMS': '0',
+            'add-MIN_NUM_FORMS': '0',
+            'add-MAX_NUM_FORMS': '100',
+            'op-{}-operation'.format(self.op1.pk): 'price',
+            'op-{}-itemvar'.format(self.op1.pk): str(self.ticket.pk),
+            'op-{}-price'.format(self.op1.pk): '24.00',
+            'op-{}-operation'.format(self.op2.pk): '',
+            'op-{}-itemvar'.format(self.op2.pk): str(self.ticket.pk),
+            'of-{}-value'.format(fee.pk): '5.00',
+            'of-{}-operation_cancel'.format(fee.pk): 'on',
+        })
+        self.order.refresh_from_db()
+        fee.refresh_from_db()
+        assert fee.canceled
+        self.op1.refresh_from_db()
+        self.op2.refresh_from_db()
+        assert self.order.total == self.op1.price + self.op2.price
 
 
 @pytest.mark.django_db

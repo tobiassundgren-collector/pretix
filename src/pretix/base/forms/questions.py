@@ -348,6 +348,8 @@ class BaseQuestionsForm(forms.Form):
         question_cache = {f.question.pk: f.question for f in self.fields.values() if getattr(f, 'question', None)}
 
         def question_is_visible(parentid, qvals):
+            if parentid not in question_cache:
+                return False
             parentq = question_cache[parentid]
             if parentq.dependency_question_id and not question_is_visible(parentq.dependency_question_id, parentq.dependency_values):
                 return False
@@ -493,7 +495,8 @@ class BaseInvoiceAddressForm(forms.ModelForm):
             initial=(self.instance.name_parts if self.instance else self.instance.name_parts),
         )
         if event.settings.invoice_address_required and not event.settings.invoice_address_company_required and not self.all_optional:
-            self.fields['name_parts'].widget.attrs['data-required-if'] = '#id_is_business_0'
+            if not event.settings.invoice_name_required:
+                self.fields['name_parts'].widget.attrs['data-required-if'] = '#id_is_business_0'
             self.fields['name_parts'].widget.attrs['data-no-required-attr'] = '1'
             self.fields['company'].widget.attrs['data-required-if'] = '#id_is_business_1'
 

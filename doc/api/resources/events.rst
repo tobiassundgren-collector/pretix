@@ -1,3 +1,9 @@
+.. spelling::
+
+   geo
+   lat
+   lon
+
 Events
 ======
 
@@ -25,6 +31,8 @@ is_public                             boolean                    If ``true``, th
 presale_start                         datetime                   The date at which the ticket shop opens (or ``null``)
 presale_end                           datetime                   The date at which the ticket shop closes (or ``null``)
 location                              multi-lingual string       The event location (or ``null``)
+geo_lat                               float                      Latitude of the location (or ``null``)
+geo_lon                               float                      Longitude of the location (or ``null``)
 has_subevents                         boolean                    ``true`` if the event series feature is active for this
                                                                  event. Cannot change after event is created.
 meta_data                             object                     Values set for organizer-specific meta data parameters.
@@ -62,8 +70,16 @@ seat_category_mapping                 object                     An object mappi
 
    The attributes ``seating_plan`` and ``seat_category_mapping`` have been added.
 
+.. versionchanged:: 3.3
+
+   The attributes ``geo_lat`` and ``geo_lon`` have been added.
+
 Endpoints
 ---------
+
+.. versionchanged:: 3.3
+
+    The events resource can now be filtered by meta data attributes.
 
 .. http:get:: /api/v1/organizers/(organizer)/events/
 
@@ -105,6 +121,8 @@ Endpoints
             "presale_start": null,
             "presale_end": null,
             "location": null,
+            "geo_lat": null,
+            "geo_lon": null,
             "has_subevents": false,
             "meta_data": {},
             "seating_plan": null,
@@ -129,6 +147,10 @@ Endpoints
    :query string ordering: Manually set the ordering of results. Valid fields to be used are ``date_from`` and
                            ``slug``. Keep in mind that ``date_from`` of event series does not really tell you anything.
                            Default: ``slug``.
+   :query array attr[meta_data_key]: By providing the key and value of a meta data attribute, the list of events will
+        only contain the events matching the set criteria. Providing ``?attr[Format]=Seminar`` would return only those
+        events having set their ``Format`` meta data to ``Seminar``, ``?attr[Format]=`` only those, that have no value
+        set. Please note that this filter will respect default values set on organizer level.
    :param organizer: The ``slug`` field of a valid organizer
    :statuscode 200: no error
    :statuscode 401: Authentication failure
@@ -169,6 +191,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "has_subevents": false,
         "seating_plan": null,
         "seat_category_mapping": {},
@@ -220,6 +244,8 @@ Endpoints
         "seating_plan": null,
         "seat_category_mapping": {},
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "has_subevents": false,
         "meta_data": {},
         "plugins": [
@@ -249,6 +275,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "seating_plan": null,
         "seat_category_mapping": {},
         "has_subevents": false,
@@ -268,11 +296,11 @@ Endpoints
 
 .. http:post:: /api/v1/organizers/(organizer)/events/(event)/clone/
 
-   Creates a new event with properties as set in the request body. The properties that are copied are: 'is_public',
-   `testmode`, settings, plugin settings, items, variations, add-ons, quotas, categories, tax rules, questions.
+   Creates a new event with properties as set in the request body. The properties that are copied are: ``is_public``,
+   ``testmode``, ``has_subevents``, settings, plugin settings, items, variations, add-ons, quotas, categories, tax rules, questions.
 
-   If the 'plugins' and/or 'is_public' fields are present in the post body this will determine their value. Otherwise
-   their value will be copied from the existing event.
+   If the ``plugins``, ``has_subevents`` and/or ``is_public`` fields are present in the post body this will determine their
+   value. Otherwise their value will be copied from the existing event.
 
    Please note that you can only copy from events under the same organizer.
 
@@ -300,6 +328,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "seating_plan": null,
         "seat_category_mapping": {},
         "has_subevents": false,
@@ -331,6 +361,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "has_subevents": false,
         "seating_plan": null,
         "seat_category_mapping": {},
@@ -394,6 +426,8 @@ Endpoints
         "presale_start": null,
         "presale_end": null,
         "location": null,
+        "geo_lat": null,
+        "geo_lon": null,
         "has_subevents": false,
         "seating_plan": null,
         "seat_category_mapping": {},
