@@ -1,0 +1,32 @@
+På servern
+
+su - pretix
+source /var/pretix/venv/bin/activate
+pip3 install -U "git+https://github.com/tobiassundgren-collector/pretix.git#egg=pretix&subdirectory=src"
+python -m pretix migrate
+python -m pretix rebuild
+python -m pretix updatestyles
+exit
+systemctl restart pretix-web pretix-worker
+
+
+
+Lokalt
+
+* öppna Ubuntu för windows
+source env/bin/activate
+cd /mnt/c/Repos/tobtic/pretix/src/
+python manage.py runserver
+
+
+Hämta från Pretix för att uppdatera lokalt
+
+* öppna Ubuntu för windows
+source env/bin/activate
+cd /mnt/c/Repos/tobtic/pretix/src/
+git pull https://github.com/pretix/pretix release/3.1.x
+python -m pretix migrate
+python -m pretix rebuild
+python -m pretix updatestyles
+python manage.py runserver
+
