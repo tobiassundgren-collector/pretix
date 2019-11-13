@@ -12,7 +12,7 @@ from django.db.models import Max, OuterRef, Subquery, Sum
 from django.template.defaultfilters import floatformat
 from django.utils.formats import date_format, localize
 from django.utils.timezone import get_current_timezone, now
-from django.utils.translation import pgettext, ugettext as _
+from django.utils.translation import pgettext, ugettext as _, ugettext_lazy
 from reportlab.lib import colors
 
 from pretix.base.decimal import round_decimal
@@ -150,7 +150,7 @@ class Report(ReportlabExportMixin, BaseExporter):
 class OverviewReport(Report):
     name = "overview"
     identifier = 'pdfreport'
-    verbose_name = _('Order overview (PDF)')
+    verbose_name = ugettext_lazy('Order overview (PDF)')
 
     @property
     def pagesize(self):
@@ -295,7 +295,7 @@ class OverviewReport(Report):
 class OrderTaxListReportPDF(Report):
     name = "ordertaxlist"
     identifier = 'ordertaxes'
-    verbose_name = _('List of orders with taxes (PDF)')
+    verbose_name = ugettext_lazy('List of orders with taxes (PDF)')
 
     @property
     def export_form_fields(self):
@@ -303,7 +303,7 @@ class OrderTaxListReportPDF(Report):
             [
                 ('status',
                  forms.MultipleChoiceField(
-                     label=_('Filter by status'),
+                     label=ugettext_lazy('Filter by status'),
                      initial=[Order.STATUS_PAID],
                      choices=Order.STATUS_CHOICE,
                      widget=forms.CheckboxSelectMultiple,
@@ -311,11 +311,11 @@ class OrderTaxListReportPDF(Report):
                  )),
                 ('sort',
                  forms.ChoiceField(
-                     label=_('Sort by'),
+                     label=ugettext_lazy('Sort by'),
                      initial='datetime',
                      choices=(
-                         ('datetime', _('Order date')),
-                         ('payment_date', _('Payment date')),
+                         ('datetime', ugettext_lazy('Order date')),
+                         ('payment_date', ugettext_lazy('Payment date')),
                      ),
                      widget=forms.RadioSelect,
                      required=False
@@ -378,7 +378,7 @@ class OrderTaxListReportPDF(Report):
         tdata = [
             [
                 _('Order code'), _('Order date'), _('Status'), _('Payment date'), _('Order total'),
-            ] + sum(([str(t) + ' %', ''] for t in tax_rates), []),
+            ] + sum(([localize(t) + ' %', ''] for t in tax_rates), []),
             [
                 '', '', '', '', ''
             ] + sum(([_('Gross'), _('Tax')] for t in tax_rates), []),
@@ -423,34 +423,40 @@ class OrderTaxListReportPDF(Report):
                         date_format(op['order__datetime'].astimezone(tz), "SHORT_DATE_FORMAT"),
                         status_labels[op['order__status']],
                         date_format(op['payment_date'], "SHORT_DATE_FORMAT") if op['payment_date'] else '',
-                        localize(round_decimal(op['order__total'], self.event.currency))
+                        op['order__total']
                     ] + sum((['', ''] for t in tax_rates), []),
                 )
                 last_order_code = op['order__code']
                 for i, rate in enumerate(tax_rates):
                     odata = fee_sum_cache.get((op['order__id'], rate))
                     if odata:
-                        tdata[-1][5 + 2 * i] = str(odata['grosssum'] or 0)
-                        tdata[-1][6 + 2 * i] = str(odata['taxsum'] or 0)
-                        tax_sums[rate] += odata['taxsum'] or 0
-                        price_sums[rate] += odata['grosssum'] or 0
+                        tdata[-1][5 + 2 * i] = odata['grosssum'] or Decimal('0.00')
+                        tdata[-1][6 + 2 * i] = odata['taxsum'] or Decimal('0.00')
+                        tax_sums[rate] += odata['taxsum'] or Decimal('0.00')
+                        price_sums[rate] += odata['grosssum'] or Decimal('0.00')
 
-                i = tax_rates.index(op['tax_rate'])
-                tdata[-1][5 + 2 * i] = localize(
-                    round_decimal(Decimal(tdata[-1][5 + 2 * i] or '0') + op['prices'], self.event.currency))
-                tdata[-1][6 + 2 * i] = localize(
-                    round_decimal(Decimal(tdata[-1][6 + 2 * i] or '0') + op['tax_values'], self.event.currency))
-                tax_sums[op['tax_rate']] += op['tax_values']
-                price_sums[op['tax_rate']] += op['prices']
+            i = tax_rates.index(op['tax_rate'])
+            tdata[-1][5 + 2 * i] = (tdata[-1][5 + 2 * i] or Decimal('0.00')) + op['prices']
+            tdata[-1][6 + 2 * i] = (tdata[-1][6 + 2 * i] or Decimal('0.00')) + op['tax_values']
+            tax_sums[op['tax_rate']] += op['tax_values']
+            price_sums[op['tax_rate']] += op['prices']
 
         tdata.append(
             [
                 _('Total'), '', '', '', ''
             ] + sum(([
-                localize(round_decimal(price_sums.get(t) or Decimal('0.00'), self.event.currency)),
-                localize(round_decimal(tax_sums.get(t) or Decimal('0.00'), self.event.currency))
+                price_sums.get(t) or Decimal('0.00'),
+                tax_sums.get(t) or Decimal('0.00')
             ] for t in tax_rates), []),
         )
+        tdata = [
+            [
+                localize(round_decimal(c, self.event.currency))
+                if isinstance(c, (Decimal, int, float))
+                else c
+                for c in row
+            ] for row in tdata
+        ]
 
         table = Table(tdata, colWidths=colwidths, repeatRows=2)
         table.setStyle(TableStyle(tstyledata))
@@ -460,7 +466,7 @@ class OrderTaxListReportPDF(Report):
 
 class OrderTaxListReport(ListExporter):
     identifier = 'ordertaxeslist'
-    verbose_name = _('List of orders with taxes')
+    verbose_name = ugettext_lazy('List of orders with taxes')
 
     @property
     def export_form_fields(self):
@@ -480,8 +486,8 @@ class OrderTaxListReport(ListExporter):
                      label=_('Sort by'),
                      initial='datetime',
                      choices=(
-                         ('datetime', _('Order date')),
-                         ('payment_date', _('Payment date')),
+                         ('datetime', ugettext_lazy('Order date')),
+                         ('payment_date', ugettext_lazy('Payment date')),
                      ),
                      widget=forms.RadioSelect,
                      required=False
@@ -542,8 +548,12 @@ class OrderTaxListReport(ListExporter):
         tax_sums = defaultdict(Decimal)
         price_sums = defaultdict(Decimal)
         status_labels = dict(Order.STATUS_CHOICE)
+        row = None
         for op in qs:
             if op['order__code'] != last_order_code:
+                if row:
+                    yield row
+                    row = None
                 row = [
                     op['order__code'],
                     date_format(op['order__datetime'].astimezone(tz), "SHORT_DATE_FORMAT"),
@@ -560,16 +570,17 @@ class OrderTaxListReport(ListExporter):
                         tax_sums[rate] += odata['taxsum'] or 0
                         price_sums[rate] += odata['grosssum'] or 0
 
-                i = tax_rates.index(op['tax_rate'])
-                row[5 + 2 * i] = round_decimal(row[5 + 2 * i] + op['prices'], self.event.currency)
-                row[6 + 2 * i] = round_decimal(row[6 + 2 * i] + op['tax_values'], self.event.currency)
-                tax_sums[op['tax_rate']] += op['tax_values']
-                price_sums[op['tax_rate']] += op['prices']
-                yield row
+            i = tax_rates.index(op['tax_rate'])
+            row[5 + 2 * i] = round_decimal(row[5 + 2 * i] + op['prices'], self.event.currency)
+            row[6 + 2 * i] = round_decimal(row[6 + 2 * i] + op['tax_values'], self.event.currency)
+            tax_sums[op['tax_rate']] += op['tax_values']
+            price_sums[op['tax_rate']] += op['prices']
 
+        if row:
+            yield row
         yield [
             _('Total'), '', '', '', ''
         ] + sum(([
-            localize(round_decimal(price_sums.get(t) or Decimal('0.00'), self.event.currency)),
-            localize(round_decimal(tax_sums.get(t) or Decimal('0.00'), self.event.currency))
+            round_decimal(price_sums.get(t) or Decimal('0.00'), self.event.currency),
+            round_decimal(tax_sums.get(t) or Decimal('0.00'), self.event.currency)
         ] for t in tax_rates), [])

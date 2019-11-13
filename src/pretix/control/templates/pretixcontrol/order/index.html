@@ -255,7 +255,11 @@
                                 {% endif %}
                                 {% if line.checkins.all %}
                                     {% for c in line.checkins.all %}
-                                        <span class="fa fa-fw fa-check" data-toggle="tooltip_html" title="{{ c.list.name }}<br>{% blocktrans trimmed with date=c.datetime|date:'SHORT_DATETIME_FORMAT' %}First scanned: {{ date }}{% endblocktrans %}"></span>
+                                        {% if c.auto_checked_in %}
+                                            <span class="fa fa-fw fa-magic" data-toggle="tooltip_html" title="{{ c.list.name }}<br>{% blocktrans trimmed with date=c.datetime|date:'SHORT_DATETIME_FORMAT' %}Automatically checked in: {{ date }}{% endblocktrans %}"></span>
+                                        {% else %}
+                                            <span class="fa fa-fw fa-check" data-toggle="tooltip_html" title="{{ c.list.name }}<br>{% blocktrans trimmed with date=c.datetime|date:'SHORT_DATETIME_FORMAT' %}First scanned: {{ date }}{% endblocktrans %}"></span>
+                                        {% endif %}
                                     {% endfor %}
                                 {% endif %}
                                 {% if line.seat %}
@@ -294,8 +298,15 @@
                                         {% endif %}
                                         <button type="submit" data-toggle="qrcode" data-qrcode="{{ line.secret }}"
                                                 class="btn btn-xs btn-default">
-                                            <span class="fa fa-qrcode"></span> {% trans "Show ticket code" %}
+                                            <span class="fa fa-qrcode"></span> {% trans "Ticket code" %}
                                         </button>
+                                        {% if not line.addon_to %}
+                                            <a href="{% eventurl request.event "presale:event.order.position" order=order.code secret=line.web_secret position=line.positionid %}"
+                                                    class="btn btn-xs btn-default" target="_blank">
+                                                <span class="fa fa-eye"></span>
+                                                {% trans "Ticket page" %}
+                                            </a>
+                                        {% endif %}
                                         {% eventsignal event "pretix.control.signals.order_position_buttons" order=order position=line request=request %}
                                     </div>
                                 {% endif %}
@@ -308,8 +319,22 @@
                                         {% endif %}
                                         {% if line.item.admission and event.settings.attendee_emails_asked %}
                                             <dt>{% trans "Attendee email" %}</dt>
-                                            <dd>{% if line.attendee_email %}{{ line.attendee_email }}{% else %}
-                                                <em>{% trans "not answered" %}</em>{% endif %}</dd>
+                                            <dd>
+                                                {% if line.attendee_email %}
+                                                    {{ line.attendee_email }}
+                                                    {% if not line.addon_to %}
+                                                        <form class="form-inline helper-display-inline" method="post"
+                                                                action="{% url "control:event.order.resendlink" event=request.event.slug organizer=request.event.organizer.slug code=order.code position=line.pk %}">
+                                                            {% csrf_token %}
+                                                            <button class="btn btn-default btn-xs">
+                                                                {% trans "Resend link" %}
+                                                            </button>
+                                                        </form>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <em>{% trans "not answered" %}</em>
+                                                {% endif %}
+                                            </dd>
                                         {% endif %}
                                         {% for q in line.questions %}
                                             <dt>
