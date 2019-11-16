@@ -1,0 +1,91 @@
+{% extends "pretixpresale/base.html" %}
+{% load bootstrap3 %}
+{% load i18n %}
+{% load static %}
+{% block page %}
+<div class="row justify-content-center">
+    <div class="main-search">
+
+        <!-- Actual search box -->
+        <div class="form-group has-feedback has-search">
+            <span class="glyphicon glyphicon-search form-control-feedback"></span>
+            <input type="text" class="search-form-control" placeholder="Search">
+        </div>
+
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12 col-sm-12">
+        <div class="section-title">
+            <h2>Populära evenemang</h2>
+
+        </div>
+    </div>
+    <div class="col-md-12 col-sm-12">
+        <div class="owl-carousel owl-theme owl-loaded owl-drag">
+            <a href="/msb/testar/" class="item event-item">
+                <div class="event-wrapper">
+                        <img src="{% static "tobtic/uploads/upcoming-event-2.jpg" %}" class="img-responsive" alt="speakers">
+                
+                     <div class="card-body">
+                        <h5 class="card-title">AW med Syster Sören & storband </h5>
+                        <p class="card-text">Välkommen på after work med Mölnlycke Storband och Syster Sören! ...
+                        </p>
+
+                    </div>
+                    <div class="card-footer">
+                        <small class="text-muted">28 februari 2020, Råda Rum, Mölnlycke</small>
+                    </div>
+                </div>
+            </a>
+
+            <a href="https://www.tickster.com/sv/events/5mxymx8b2pzn2e1/2019-12-02/jazzklubb-vauxhall-gjo-jazz-ar-jul" class="item  event-item">
+                <div class="event-wrapper">
+                    <img src="{% static "tobtic/uploads/jazzjul.png" %}" class="img-responsive" alt="speakers">
+                    <div class="card-body">
+                        <h5 class="card-title">Jazzklubb Vauxhall: GJO - Jazz är Jul!</h5>
+                        <p class="card-text">GJO med hemlig gäst "Jazz är kul, jazz är jul"...
+                        </p>
+
+                    </div>
+                    <div class="card-footer">
+                        <small class="text-muted">2 dec 2019, Tredje Långgatan 16, Göteborg</small>
+                    </div>
+                </div>
+            </a>
+
+            
+        </div>
+
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12 col-sm-12">
+        <div class="section-title">
+            <h2>Arrangörer</h2>
+
+        </div>
+    </div>
+    <div class="col-md-12 col-sm-12">
+        <div class="owl-carousel owl-theme owl-loaded owl-drag">
+            <a href="/msb/" class="item event-item">
+                <div class="event-wrapper">
+                        <img src="{% static "tobtic/uploads/msb.png"  %}" class="organizer" alt="Mölnlycke Storband">
+
+                </div>
+            </a>
+        </div>
+
+    </div>
+</div>
+
+
+{% endblock %}
+
+{% block tobticjs %}
+<script type="text/javascript" src="{% static "tobtic/js/owl.carousel.min.js" %}"></script>
+<script type="text/javascript" src="{% static "tobtic/js/app.js" %}"></script>
+<script type="text/javascript" src="{% static "tobtic/js/svg4everybody.min.js" %}"></script>
+{% endblock %}

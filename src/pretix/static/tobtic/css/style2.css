@@ -6,14 +6,95 @@ body {
   font-weight: 400;
 }
 
-.tt-top {
-  padding:50px;
+* {
+  box-sizing: border-box;
+ }
+ *:before,
+ *:after {
+  box-sizing: border-box;
+ }
+
+ html{
+  height: 100%;
+  position: relative;
+ }
+
+
+.main-container {
+  min-height: 100vh; /* will cover the 100% of viewport */
+  overflow: hidden;
+  display: block;
+  position: relative;
+  padding-bottom: 120px; /* height of your footer */
 }
 
-#page-container {
-  position: relative;
-  min-height: 100vh;
+.tt-top {
+  padding:50px 0 10px 0;
 }
+
+.main-search 
+{
+  width: 50%;
+  margin: 50px auto;
+}
+
+.img-responsive {
+    width: 100%;
+    border-top-left-radius: calc(.5rem - 1px);
+    border-top-right-radius: calc(.5rem - 1px)
+}
+
+.organizer {
+  width: 100%;
+  border-radius: calc(.5rem - 1px);
+}
+/* Bootstrap 3 text input with search icon */
+
+.has-search .form-control-feedback {
+  right: initial;
+  left: 0;
+  color: #ccc;
+}
+
+.has-search .search-form-control {
+  padding-right: 12px;
+  padding-left: 54px;
+  font-size: 1.5em;
+}
+
+.search-form-control {
+  background: transparent;
+  border: 1px solid #cccccc;
+  border-radius: 5px;color: #000000;
+  margin-bottom: 16px;
+  height: 60px;
+  font-family: inherit;
+  width: 100%;
+}
+
+
+.main-search  .glyphicon.glyphicon-search {
+  font-size: 30px;
+  margin: 13px;
+}
+
+.event-wrapper {
+  background-clip: border-box;
+  border: 1px solid rgba(0,0,0,.125);
+  border-radius: .5rem;
+}
+
+.card-body {
+  padding: 0.25rem 1.25rem;
+}
+
+.card-footer {
+  padding: .75rem 1.25rem;
+    background-color: rgba(0,0,0,.03);
+    border-top: 1px solid rgba(0,0,0,.125);
+}
+
+
 
 #content-wrap {
   padding-bottom: 7.5rem;    /* Footer height */
@@ -26,41 +107,40 @@ body {
 }
 
 .footer {
+  background-attachment: fixed;
+  background-color: #4c6072;
+  margin-top: auto!important;
   position: absolute;
   bottom: 0;
   width: 100%;
-  height: 5.5rem;            /* Footer height */
-  background-color: #fff;
+  height: 10rem;
   color: #000;
   border-top: solid 1px #cccccc;
-  margin-top: 2rem;
-}
+  }
+  
+  
+  .footer h6 {
+    color: #fff
+  }
+  
+  .footer p {
+    font-size: 1em;
+    color: #fff;
+  }
+  
+  a.footer-link,
+  a.footer-link:hover {
+    color: inherit;
+  }
+  
+  a.footer-link-rounded-border {
+    color: inherit;
+    border-radius: 5px;
+    border: 1px solid #ffffff;
+    padding: 5px;
+    font-size: 0.8em;
+  }
 
-.footer a {
-  color: #000;
-}
-
-.footer h6 {
-  color: #000
-}
-
-.footer p {
-  font-size: 0.8em;
-  color: #000;
-}
-
-a.footer-link,
-a.footer-link:hover {
-  color: inherit;
-}
-
-a.footer-link-rounded-border {
-  color: inherit;
-  border-radius: 5px;
-  border: 1px solid #ffffff;
-  padding: 5px;
-  font-size: 0.8em;
-}
 
 .pretix-bold {
   font-weight: 900;
@@ -76,8 +156,10 @@ a.footer-link-rounded-border {
 /*---------------------------------------
   Typorgraphy              
 -----------------------------------------*/
-h1,h2,h3,h4,h5,h6 {
-font-weight: 600;
+.footer h1,h2,h3,h4,h5,h6 {
+  font-weight: 600;
+  margin-top: 5px;
+  margin-bottom: 5px;
 }
 
 h3,h5 {
@@ -90,8 +172,7 @@ h1 {
 }
 
 h2 {
-font-size: 30px;
-text-transform: uppercase;
+font-size: 25px;
 }
 
 h3 {
@@ -106,7 +187,7 @@ h5 {
 p {
   color: #707070;
   font-size: 14px;
-  line-height: 24px;
+  line-height: 16px;
 }
 
 a {

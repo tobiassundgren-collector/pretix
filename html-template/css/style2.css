@@ -6,9 +6,86 @@ body {
   font-weight: 400;
 }
 
-.tt-top {
-  padding:100px;
+* {
+  box-sizing: border-box;
+ }
+ *:before,
+ *:after {
+  box-sizing: border-box;
+ }
+
+ html{
+  height: 100%;
+  position: relative;
+ }
+
+
+.main-container {
+  min-height: 100vh; /* will cover the 100% of viewport */
+  overflow: hidden;
+  display: block;
+  position: relative;
+  padding-bottom: 120px; /* height of your footer */
 }
+
+.tt-top {
+  padding:50px 0 10px 0;
+}
+
+.main-search 
+{
+  width: 50%;
+  margin: 50px auto;
+}
+
+.img-responsive {
+    width: 100%;
+    border-top-left-radius: calc(.5rem - 1px);
+    border-top-right-radius: calc(.5rem - 1px)
+}
+
+.organizer {
+  width: 100%;
+  border-radius: calc(.5rem - 1px);
+}
+/* Bootstrap 3 text input with search icon */
+
+.has-search .form-control-feedback {
+  right: initial;
+  left: 0;
+  color: #ccc;
+}
+
+.has-search .form-control {
+  padding-right: 12px;
+  padding-left: 54px;
+  font-size: 1.5em;
+}
+
+
+.main-search  .glyphicon.glyphicon-search {
+  font-size: 30px;
+  margin: 13px;
+}
+
+.event-wrapper {
+  background-clip: border-box;
+  border: 1px solid rgba(0,0,0,.125);
+  border-radius: .5rem;
+}
+
+.card-body {
+  padding: 0.25rem 1.25rem;
+}
+
+.card-footer {
+  padding: .75rem 1.25rem;
+    background-color: rgba(0,0,0,.03);
+    border-top: 1px solid rgba(0,0,0,.125);
+}
+
+
+
 
 /*---------------------------------------
   Typorgraphy              
@@ -27,8 +104,7 @@ h1 {
 }
 
 h2 {
-font-size: 30px;
-text-transform: uppercase;
+font-size: 25px;
 }
 
 h3 {
@@ -43,7 +119,6 @@ h5 {
 p {
   color: #707070;
   font-size: 14px;
-  line-height: 24px;
 }
 
 a {
@@ -548,10 +623,16 @@ background: #f2545f;
 /*---------------------------------------
  Footer section              
 -----------------------------------------*/
-footer {
+.footer {
 background-attachment: fixed;
 background-color: #4c6072;
 margin-top: auto!important;
+position: absolute;
+bottom: 0;
+width: 100%;
+height: 10rem;
+color: #000;
+border-top: solid 1px #cccccc;
 }
 
 

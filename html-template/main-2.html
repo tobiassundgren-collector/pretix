@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <title>Biljetter till evenemang över hela Sverige - TobTic</title>
     <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/OwlCarousel2/2.3.4/assets/owl.carousel.min.css">
+    <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/OwlCarousel2/2.3.4/assets/owl.theme.default.min.css">
     <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css"
         integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU" crossorigin="anonymous" />
     <link rel="stylesheet" href="css/style2.css" as="style" />
@@ -14,6 +17,7 @@
 </head>
 
 <body data-spy="scroll" data-offset="50" data-target=".navbar-collapse">
+<div class="main-container"> 
     <div class="navbar navbar-fixed-top custom-navbar top-nav-collapse" role="navigation">
         <div class="container">
 
@@ -45,133 +49,165 @@
     </div>
 
 
-    <div class="container tt-top">
-        <div class="row">
+    <div class="container ">
+        <div class="row justify-content-center tt-top">
+            <div class="main-search">
 
-        </div>
-    </div>
-
-    <div class="container">
-        <div class="row  ">
-
-        </div>
-
-        <div class="row justify-content-center">
-            <form>
-
-                <div class="col-md-3 col-sm-3 col-xs-3"></div>
-                <div class="col-md-5 col-sm-5 col-xs-5">
-
-
-
-                    <input class="form-control form-control-lg form-control-borderless" type="search"
-                        placeholder="Sök efter evenemang">
+                <!-- Actual search box -->
+                <div class="form-group has-feedback has-search">
+                    <span class="glyphicon glyphicon-search form-control-feedback"></span>
+                    <input type="text" class="form-control" placeholder="Search">
                 </div>
-                <div class="col-md-4 col-sm-4 col-xs-4">
-                    <!--end of col-->
-                    <a href="#" class="btn btn-danger">Sök</a>
-                    <button class="btn btn-success" type="submit">Sök</button>
-                </div>
-                <!--end of col-->
 
-            </form>
+            </div>
         </div>
 
-
-        <!--end of col-->
-        <!--/row-->
-    </div>
-
-
-    <div class="container">
         <div class="row">
-
-            <div class="col-md-12 col-sm-12 wow bounceIn">
+            <div class="col-md-12 col-sm-12">
                 <div class="section-title">
-                    <h2>Populära events</h2>
+                    <h2>Populära evenemang</h2>
 
                 </div>
             </div>
+            <div class="col-md-12 col-sm-12">
+                <div class="owl-carousel owl-theme owl-loaded owl-drag">
+                    <a href="#" class="item event-item">
+                        <div class="event-wrapper">
+                            <img src="img/upcoming-event-2.jpg" class="img-responsive" alt="speakers">
+                            <div class="card-body">
+                                <h5 class="card-title">Göteborg Jazz Orchestra med Alexander Lövmark</h5>
+                                <p class="card-text">Göteborg Jazz Orchestra ångar vidare på konceptet "Jazz är Kul!"...
+                                </p>
 
-            <div class="item wow fadeInUp col-md-3 col-sm-3" data-wow-delay="0.9s">
-                <div class="speakers-wrapper">
-                    <img src="img/upcoming-event-2.jpg" class="img-responsive" alt="speakers">
-                    <div class="speakers-thumb">
-                        <h3>Jenny Green</h3>
-                        <h6>UI Designer</h6>
+                            </div>
+                            <div class="card-footer">
+                                <small class="text-muted">8 maj 2019, Solvalla, Stockholm</small>
+                            </div>
+                        </div>
+                    </a>
+
+                    <a href="#" class="item  event-item">
+                        <div class="event-wrapper">
+                            <img src="img/04876e4db79a8e90584aa26da6477e897d6cfb.png" class="img-responsive"
+                                alt="speakers">
+                            <div class="card-body">
+                                <h5 class="card-title">Göteborg Jazz Orchestra med Alexander Lövmark</h5>
+                                <p class="card-text">Göteborg Jazz Orchestra ångar vidare på konceptet "Jazz är Kul!"...
+                                </p>
+
+                            </div>
+                            <div class="card-footer">
+                                <small class="text-muted">8 maj 2019, Solvalla, Stockholm</small>
+                            </div>
+                        </div>
+                    </a>
+
+                    <div class="item  event-item">
+                        <div class="event-wrapper">
+                            <img src="img/7b13ff3f8c9fdf910bbaa3c31f64947793bd67.png" class="img-responsive"
+                                alt="speakers">
+                            <div class="card-body">
+                                <h5 class="card-title">Göteborg Jazz Orchestra med Alexander Lövmark</h5>
+                                <p class="card-text">Göteborg Jazz Orchestra ångar vidare på konceptet "Jazz är Kul!"...
+                                </p>
+
+                            </div>
+                            <div class="card-footer">
+                                <small class="text-muted">8 maj 2019, Solvalla, Stockholm</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="item event-item">
+                        <div class="event-wrapper">
+                            <img src="img/upcoming-event.jpg" class="img-responsive" alt="speakers">
+                            <div class="card-body">
+                                <h5 class="card-title">Göteborg Jazz Orchestra med Alexander Lövmark</h5>
+                                <p class="card-text">Göteborg Jazz Orchestra ångar vidare på konceptet "Jazz är Kul!"...
+                                </p>
+
+                            </div>
+                            <div class="card-footer">
+                                <small class="text-muted">8 maj 2019, Solvalla, Stockholm</small>
+                            </div>
+                        </div>
                     </div>
                 </div>
+
             </div>
-
-            <div class="item wow fadeInUp col-md-3 col-sm-3" data-wow-delay="0.6s">
-                <div class="speakers-wrapper">
-                    <img src="img/04876e4db79a8e90584aa26da6477e897d6cfb.png" class="img-responsive" alt="speakers">
-                    <div class="speakers-thumb">
-                        <h3>David Yoon</h3>
-                        <h6>Creative Director</h6>
-                    </div>
-                </div>
-            </div>
-
-            <div class="item wow fadeInUp col-md-3 col-sm-3" data-wow-delay="0.9s">
-                <div class="speakers-wrapper">
-                    <img src="img/7b13ff3f8c9fdf910bbaa3c31f64947793bd67.png" class="img-responsive" alt="speakers">
-                    <div class="speakers-thumb">
-                        <h3>Je Mary Lee</h3>
-                        <h6>Web Specialist</h6>
-                    </div>
-                </div>
-            </div>
-
-            <div class="item wow fadeInUp col-md-3 col-sm-3" data-wow-delay="0.6s">
-                <div class="speakers-wrapper">
-                    <img src="img/upcoming-event.jpg" class="img-responsive" alt="speakers">
-                    <div class="speakers-thumb">
-                        <h3>Johnathan Doe</h3>
-                        <h6>Frontend Dev</h6>
-                    </div>
-                </div>
-            </div>
-
-
-
         </div>
-    </div>
-    </div>
+        
+        <div class="row">
+            <div class="col-md-12 col-sm-12">
+                <div class="section-title">
+                    <h2>Arrangörer</h2>
 
-    <footer>
+                </div>
+            </div>
+            <div class="col-md-12 col-sm-12">
+                <div class="owl-carousel owl-theme owl-loaded owl-drag">
+                    <a href="eventpage.html"  class="item event-item">
+                        <div class="event-wrapper">
+                            <img src="img/msb.png" class="organizer" alt="Mölnlycke Storband">
+                            
+                        </div>
+                    </a>
+
+                    <a href="eventpage.html" class="item  event-item">
+                        <div class="event-wrapper">
+                            <img src="img/04876e4db79a8e90584aa26da6477e897d6cfb.png" class="organizer"
+                                >
+                            
+                        </div>
+                    </a>
+
+                  
+
+                   
+                </div>
+
+            </div>
+        </div>
+        
+    </div>
+    <footer class="footer">
 
         <div class="container">
             <div class="row">
-                <div class="col-md-4 col-sm-6 col-xs-6 ">
-                    <h6>
-                        Kundservice
-                    </h6>
-                    <p>Bara kontakt via epost</p>
-                </div>
-                <div class="col-md-4 col-sm-6 col-xs-6 ">
-                    <h6>
-                        Om TobTic
-                    </h6>
-                    <p>
-                        Orgnr: 1234123-1231<br />
-                        Epost: test@tobtic.com
-                    </p>
-
-                </div>
+                    <div class="col-md-4 col-sm-6 col-xs-6 ">
+                            <h6>
+                                Om TobTic
+                            </h6>
+                            <p>
+                                Orgnr: 1234123-1231<br />
+        
+                            </p>
+        
+                        </div>
+                
                 <div class="col-md-4 col-sm-6 col-xs-6 ">
                     <p>
-                        <a href="https://www.pretix.com" class="footer-link-rounded-border">Event ticketing powered by
-                            <span class="pretix-bold">pretix</span></a><br /><br />
+                        <a href="https://www.pretix.com" class="footer-link-rounded-border">Event ticketing powered
+                            by
+                            <span class="pretix-bold">pretix</span></a></p>
+                    <p>
                         <a href="https://www.stripe.com"><img src="img/powered_by_stripe.png" /></a>
                     </p>
 
                 </div>
+                <div class="col-md-4 col-sm-6 col-xs-6 ">
+                        <h6>
+                            Kontakt
+                        </h6>
+                        <p>Epost: test@tobtic.com</p>
+                    </div>
+               
+                
             </div>
         </div>
 
     </footer>
-
+</div>
     <!--container-->
     <script src="https://code.jquery.com/jquery-1.12.4.min.js"
         integrity="sha256-ZosEbRLbNQzLpnKIkEdrPv7lOy9C27hHQ+Xp8a4MxAQ=" crossorigin="anonymous"></script>
@@ -179,8 +215,11 @@
         integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1"
         crossorigin="anonymous"></script>
     <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/OwlCarousel2/2.3.4/owl.carousel.min.js"></script>
     <script src="js/main.js"></script>
     <script src="js/svg4everybody.min.js"></script>
+
 </body>
 
 </html>
