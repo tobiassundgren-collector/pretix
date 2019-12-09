@@ -122,9 +122,6 @@ class ItemSerializer(I18nAwareModelSerializer):
                   'show_quota_left', 'hidden_if_available', 'allow_waitinglist', 'issue_giftcard')
         read_only_fields = ('has_variations', 'picture')
 
-    def get_serializer_context(self):
-        return {"has_variations": self.kwargs['has_variations']}
-
     def validate(self, data):
         data = super().validate(data)
         if self.instance and ('addons' in data or 'variations' in data or 'bundles' in data):
@@ -269,6 +266,9 @@ class QuestionSerializer(I18nAwareModelSerializer):
                     raise ValidationError(_('Circular dependency between questions detected.'))
                 seen_ids.add(dep.pk)
                 dep = dep.dependency_question
+
+        if full_data.get('ask_during_checkin') and full_data.get('type') in Question.ASK_DURING_CHECKIN_UNSUPPORTED:
+            raise ValidationError(_('This type of question cannot be asked during check-in.'))
 
         Question.clean_items(event, full_data.get('items'))
         return data

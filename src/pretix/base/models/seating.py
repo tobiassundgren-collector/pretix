@@ -5,6 +5,7 @@ import jsonschema
 from django.contrib.staticfiles import finders
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import F, Q
 from django.utils.deconstruct import deconstructible
 from django.utils.timezone import now
 from django.utils.translation import gettext, ugettext_lazy as _
@@ -39,7 +40,7 @@ class SeatingPlan(LoggedModel):
     layout = models.TextField(validators=[SeatingPlanLayoutValidator()])
 
     Category = namedtuple('Categrory', 'name')
-    RawSeat = namedtuple('Seat', 'name guid number row category zone')
+    RawSeat = namedtuple('Seat', 'name guid number row category zone sorting_rank')
 
     def __str__(self):
         return self.name
@@ -59,16 +60,36 @@ class SeatingPlan(LoggedModel):
         ]
 
     def iter_all_seats(self):
-        for z in self.layout_data['zones']:
-            for r in z['rows']:
-                for s in r['seats']:
+        # This returns all seats in a plan and assignes each of them a rank. The rank is used for sorting lists of
+        # seats later. The rank does not say anything about the *quality* of a seat, and is only meant as a heuristic
+        # to make it easier for humas to process lists of seats. The current algorithm assumes that there are less
+        # than 10'000 zones, less than 10'000 rows in every zone and less than 10'000 seats in every row.
+        # Respectively, no row/seat numbers may be numeric with a value of 10'000 or more. The resulting ranks
+        # *will* have gaps. We chose this way over just sorting the seats and continuously enumerating them as an
+        # optimization, because this way we do not need to update the rank of very seat if we change a plan a little.
+        for zi, z in enumerate(self.layout_data['zones']):
+            for ri, r in enumerate(z['rows']):
+                try:
+                    row_rank = int(r['row_number'])
+                except ValueError:
+                    row_rank = ri
+                for si, s in enumerate(r['seats']):
+                    try:
+                        seat_rank = int(s['seat_number'])
+                    except ValueError:
+                        seat_rank = si
+                    rank = (
+                        10000 * 10000 * zi + 10000 * row_rank + seat_rank
+                    )
+
                     yield self.RawSeat(
                         number=s['seat_number'],
                         guid=s['seat_guid'],
                         name='{} {}'.format(r['row_number'], s['seat_number']),  # TODO: Zone? Variable scheme?
                         row=r['row_number'],
                         zone=z['name'],
-                        category=s['category']
+                        category=s['category'],
+                        sorting_rank=rank
                     )
 
 
@@ -97,6 +118,10 @@ class Seat(models.Model):
     seat_guid = models.CharField(max_length=190, db_index=True)
     product = models.ForeignKey('Item', null=True, blank=True, related_name='seats', on_delete=models.CASCADE)
     blocked = models.BooleanField(default=False)
+    sorting_rank = models.BigIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sorting_rank', 'seat_guid']
 
     def __str__(self):
         parts = []
@@ -110,15 +135,21 @@ class Seat(models.Model):
             return self.name
         return ', '.join(parts)
 
-    def is_available(self, ignore_cart=None, ignore_orderpos=None):
+    def is_available(self, ignore_cart=None, ignore_orderpos=None, ignore_voucher_id=None):
         from .orders import Order
 
         if self.blocked:
             return False
         opqs = self.orderposition_set.filter(order__status__in=[Order.STATUS_PENDING, Order.STATUS_PAID])
         cpqs = self.cartposition_set.filter(expires__gte=now())
-        if ignore_cart:
+        vqs = self.vouchers.filter(
+            Q(Q(valid_until__isnull=True) | Q(valid_until__gte=now())) &
+            Q(redeemed__lt=F('max_usages'))
+        )
+        if ignore_cart and ignore_cart is not True:
             cpqs = cpqs.exclude(pk=ignore_cart.pk)
         if ignore_orderpos:
             opqs = opqs.exclude(pk=ignore_orderpos.pk)
-        return not opqs.exists() and not cpqs.exists()
+        if ignore_voucher_id:
+            vqs = vqs.exclude(pk=ignore_voucher_id)
+        return not opqs.exists() and (ignore_cart is True or not cpqs.exists()) and not vqs.exists()

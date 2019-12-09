@@ -16,8 +16,28 @@ from pretix.base.models import (
     CartPosition, InvoiceAddress, OrderPosition, QuestionAnswer,
 )
 from pretix.base.services.cart import get_fees
+from pretix.helpers.cookies import set_cookie_without_samesite
 from pretix.multidomain.urlreverse import eventreverse
 from pretix.presale.signals import question_form_fields
+
+
+def cached_invoice_address(request):
+    from .cart import cart_session
+
+    if not hasattr(request, '_checkout_flow_invoice_address'):
+        cs = cart_session(request)
+        iapk = cs.get('invoice_address')
+        if not iapk:
+            request._checkout_flow_invoice_address = InvoiceAddress()
+        else:
+            try:
+                with scopes_disabled():
+                    request._checkout_flow_invoice_address = InvoiceAddress.objects.get(
+                        pk=iapk, order__isnull=True
+                    )
+            except InvoiceAddress.DoesNotExist:
+                request._checkout_flow_invoice_address = InvoiceAddress()
+    return request._checkout_flow_invoice_address
 
 
 class CartMixin:
@@ -35,19 +55,7 @@ class CartMixin:
 
     @cached_property
     def invoice_address(self):
-        if not hasattr(self.request, '_checkout_flow_invoice_address'):
-            iapk = self.cart_session.get('invoice_address')
-            if not iapk:
-                self.request._checkout_flow_invoice_address = InvoiceAddress()
-            else:
-                try:
-                    with scopes_disabled():
-                        self.request._checkout_flow_invoice_address = InvoiceAddress.objects.get(
-                            pk=iapk, order__isnull=True
-                        )
-                except InvoiceAddress.DoesNotExist:
-                    self.request._checkout_flow_invoice_address = InvoiceAddress()
-        return self.request._checkout_flow_invoice_address
+        return cached_invoice_address(self.request)
 
     def get_cart(self, answers=False, queryset=None, order=None, downloads=False):
         if queryset is not None:
@@ -165,6 +173,7 @@ class CartMixin:
             'minutes_left': minutes_left,
             'seconds_left': seconds_left,
             'first_expiry': first_expiry,
+            'itemcount': sum(c.count for c in positions if not c.addon_to)
         }
 
 
@@ -298,9 +307,15 @@ def iframe_entry_view_wrapper(view_func):
             with language(locale):
                 resp = view_func(request, *args, **kwargs)
             max_age = 10 * 365 * 24 * 60 * 60
-            resp.set_cookie(settings.LANGUAGE_COOKIE_NAME, locale, max_age=max_age,
-                            expires=(datetime.utcnow() + timedelta(seconds=max_age)).strftime('%a, %d-%b-%Y %H:%M:%S GMT'),
-                            domain=settings.SESSION_COOKIE_DOMAIN)
+            set_cookie_without_samesite(
+                request,
+                resp,
+                settings.LANGUAGE_COOKIE_NAME,
+                locale,
+                max_age=max_age,
+                expires=(datetime.utcnow() + timedelta(seconds=max_age)).strftime('%a, %d-%b-%Y %H:%M:%S GMT'),
+                domain=settings.SESSION_COOKIE_DOMAIN
+            )
             return resp
 
         resp = view_func(request, *args, **kwargs)

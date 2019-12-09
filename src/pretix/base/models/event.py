@@ -3,6 +3,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, time, timedelta
 from operator import attrgetter
+from urllib.parse import urljoin
 
 import pytz
 from django.conf import settings
@@ -11,7 +12,7 @@ from django.core.files.storage import default_storage
 from django.core.mail import get_connection
 from django.core.validators import RegexValidator
 from django.db import models
-from django.db.models import Exists, OuterRef, Prefetch, Q, Subquery
+from django.db.models import Exists, F, OuterRef, Prefetch, Q, Subquery
 from django.template.defaultfilters import date as _date
 from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
@@ -26,6 +27,7 @@ from pretix.base.validators import EventSlugBanlistValidator
 from pretix.helpers.database import GroupConcat
 from pretix.helpers.daterange import daterange
 from pretix.helpers.json import safe_string
+from pretix.helpers.thumb import get_thumbnail
 
 from ..settings import settings_hierarkey
 from .organizer import Organizer, Team
@@ -145,10 +147,13 @@ class EventMixin:
             "@context": "http://schema.org",
             "@type": "Event", "location": {
                 "@type": "Place",
-                "address": str(self.location)
+                "address": str(self.location),
             },
-            "name": str(self.name)
+            "name": str(self.name),
         }
+        img = getattr(self, 'event', self).social_image
+        if img:
+            eventdict['image'] = img
 
         if self.settings.show_times:
             eventdict["startDate"] = self.date_from.isoformat()
@@ -359,8 +364,31 @@ class Event(EventMixin, LoggedModel):
         return str(self.name)
 
     @property
-    def free_seats(self):
+    def social_image(self):
+        from pretix.multidomain.urlreverse import build_absolute_uri
+
+        img = None
+        logo_file = self.settings.get('logo_image', as_type=str, default='')[7:]
+        og_file = self.settings.get('og_image', as_type=str, default='')[7:]
+        if og_file:
+            img = get_thumbnail(og_file, '1200').thumb.url
+        elif logo_file:
+            img = get_thumbnail(logo_file, '5000x120').thumb.url
+        if img:
+            return urljoin(build_absolute_uri(self, 'presale:event.index'), img)
+
+    def free_seats(self, ignore_voucher=None):
         from .orders import CartPosition, Order, OrderPosition
+        from .vouchers import Voucher
+        vqs = Voucher.objects.filter(
+            event=self,
+            seat_id=OuterRef('pk'),
+            redeemed__lt=F('max_usages'),
+        ).filter(
+            Q(valid_until__isnull=True) | Q(valid_until__gte=now())
+        )
+        if ignore_voucher:
+            vqs = vqs.exclude(pk=ignore_voucher.pk)
         return self.seats.annotate(
             has_order=Exists(
                 OrderPosition.objects.filter(
@@ -375,8 +403,11 @@ class Event(EventMixin, LoggedModel):
                     seat_id=OuterRef('pk'),
                     expires__gte=now()
                 )
+            ),
+            has_voucher=Exists(
+                vqs
             )
-        ).filter(has_order=False, has_cart=False, blocked=False)
+        ).filter(has_order=False, has_cart=False, has_voucher=False, blocked=False)
 
     @property
     def presale_has_ended(self):
@@ -632,7 +663,9 @@ class Event(EventMixin, LoggedModel):
                     pp = p(self)
                     providers[pp.identifier] = pp
 
-            self._cached_payment_providers = OrderedDict(sorted(providers.items(), key=lambda v: str(v[1].verbose_name)))
+            self._cached_payment_providers = OrderedDict(sorted(
+                providers.items(), key=lambda v: (-v[1].priority, str(v[1].verbose_name))
+            ))
         return self._cached_payment_providers
 
     def get_html_mail_renderer(self):
@@ -965,9 +998,19 @@ class SubEvent(EventMixin, LoggedModel):
     def __str__(self):
         return '{} - {}'.format(self.name, self.get_date_range_display())
 
-    @property
-    def free_seats(self):
+    def free_seats(self, ignore_voucher=None):
         from .orders import CartPosition, Order, OrderPosition
+        from .vouchers import Voucher
+        vqs = Voucher.objects.filter(
+            event_id=self.event_id,
+            subevent=self,
+            seat_id=OuterRef('pk'),
+            redeemed__lt=F('max_usages'),
+        ).filter(
+            Q(valid_until__isnull=True) | Q(valid_until__gte=now())
+        )
+        if ignore_voucher:
+            vqs = vqs.exclude(pk=ignore_voucher.pk)
         return self.seats.annotate(
             has_order=Exists(
                 OrderPosition.objects.filter(
@@ -984,8 +1027,11 @@ class SubEvent(EventMixin, LoggedModel):
                     seat_id=OuterRef('pk'),
                     expires__gte=now()
                 )
+            ),
+            has_voucher=Exists(
+                vqs
             )
-        ).filter(has_order=False, has_cart=False, blocked=False)
+        ).filter(has_order=False, has_cart=False, blocked=False, has_voucher=False)
 
     @cached_property
     def settings(self):

@@ -20,6 +20,7 @@ from django_countries import Countries
 from i18nfield.forms import I18nFormField, I18nTextarea, I18nTextInput
 from i18nfield.strings import LazyI18nString
 
+from pretix.base.channels import get_all_sales_channels
 from pretix.base.forms import PlaceholderValidator
 from pretix.base.models import (
     CartPosition, Event, GiftCard, InvoiceAddress, Order, OrderPayment,
@@ -62,12 +63,11 @@ class BasePaymentProvider:
     def __str__(self):
         return self.identifier
 
-    @property
-    def is_implicit(self) -> bool:
+    def is_implicit(self, request: HttpRequest) -> bool:
         """
         Returns whether or whether not this payment provider is an "implicit" payment provider that will
         *always* and unconditionally be used if is_allowed() returns True and does not require any input.
-        This is  intended to be used by the FreePaymentProvider, which skips the payment choice page.
+        This is  intended to be used by the FreeOrderProvider, which skips the payment choice page.
         By default, this returns ``False``. Please do not set this if you don't know exactly what you are doing.
         """
         return False
@@ -82,6 +82,14 @@ class BasePaymentProvider:
         By default, this returns ``False``.
         """
         return False
+
+    @property
+    def priority(self) -> int:
+        """
+        Returns a priority that is used for sorting payment providers. Higher priority means higher up in the list.
+        Default to 100. Providers with same priority are sorted alphabetically.
+        """
+        return 100
 
     @property
     def is_enabled(self) -> bool:
@@ -278,8 +286,21 @@ class BasePaymentProvider:
                  required=False,
                  disabled=not self.event.settings.invoice_address_required
              )),
+            ('_restrict_to_sales_channels',
+             forms.MultipleChoiceField(
+                 label=_('Restrict to specific sales channels'),
+                 choices=(
+                     (c.identifier, c.verbose_name) for c in get_all_sales_channels().values()
+                     if c.payment_restrictions_supported
+                 ),
+                 initial=['web'],
+                 widget=forms.CheckboxSelectMultiple,
+                 help_text=_(
+                     'Only allow the usage of this payment provider in the following sales channels'),
+             ))
         ])
         d['_restricted_countries']._as_type = list
+        d['_restrict_to_sales_channels']._as_type = list
         return d
 
     def settings_form_clean(self, cleaned_data):
@@ -391,7 +412,7 @@ class BasePaymentProvider:
 
         The default implementation checks for the _availability_date setting to be either unset or in the future
         and for the _total_max and _total_min requirements to be met. It also checks the ``_restrict_countries``
-        setting.
+        and ``_restrict_to_sales_channels`` setting.
 
         :param total: The total value without the payment method fee, after taxes.
 
@@ -431,6 +452,10 @@ class BasePaymentProvider:
                 ia = get_invoice_address()
                 if str(ia.country) not in restricted_countries:
                     return False
+
+        if hasattr(request, 'sales_channel') and request.sales_channel.identifier not in \
+                self.settings.get('_restrict_to_sales_channels', as_type=list, default=['web']):
+            return False
 
         return timing and pricing
 
@@ -587,6 +612,9 @@ class BasePaymentProvider:
                 if str(ia.country) not in restricted_countries:
                     return False
 
+        if order.sales_channel not in self.settings.get('_restrict_to_sales_channels', as_type=list, default=['web']):
+            return False
+
         return self._is_still_available(order=order)
 
     def payment_prepare(self, request: HttpRequest, payment: OrderPayment) -> Union[bool, str]:
@@ -623,6 +651,19 @@ class BasePaymentProvider:
         """
         return ''
 
+    def refund_control_render(self, request: HttpRequest, refund: OrderRefund) -> str:
+        """
+        Will be called if the *event administrator* views the details of a refund.
+
+        It should return HTML code containing information regarding the current refund
+        status and, if applicable, next steps.
+
+        The default implementation returns an empty string.
+
+        :param order: The order object
+        """
+        return ''
+
     def payment_refund_supported(self, payment: OrderPayment) -> bool:
         """
         Will be called to check if the provider supports automatic refunding for this
@@ -636,6 +677,17 @@ class BasePaymentProvider:
         payment.
         """
         return False
+
+    def cancel_payment(self, payment: OrderPayment):
+        """
+        Will be called to cancel a payment. The default implementation just sets the payment state to canceled,
+        but in some cases you might want to notify an external provider.
+
+        On success, you should set ``payment.state = OrderPayment.PAYMENT_STATE_CANCELED`` (or call the super method).
+        On failure, you should raise a PaymentException.
+        """
+        payment.state = OrderPayment.PAYMENT_STATE_CANCELED
+        payment.save()
 
     def execute_refund(self, refund: OrderRefund):
         """
@@ -765,8 +817,7 @@ class ManualPayment(BasePaymentProvider):
         return _('In test mode, you can just manually mark this order as paid in the backend after it has been '
                  'created.')
 
-    @property
-    def is_implicit(self):
+    def is_implicit(self, request: HttpRequest):
         return 'pretix.plugins.manualpayment' not in self.event.plugins
 
     def is_allowed(self, request: HttpRequest, total: Decimal=None):
@@ -871,7 +922,10 @@ class OffsettingProvider(BasePaymentProvider):
             provider='offsetting',
             info=json.dumps({'orders': [refund.order.code]})
         )
-        p.confirm(ignore_date=True)
+        try:
+            p.confirm(ignore_date=True)
+        except Quota.QuotaExceededException:
+            pass
 
     @property
     def settings_form_fields(self) -> dict:
@@ -895,6 +949,7 @@ class OffsettingProvider(BasePaymentProvider):
 class GiftCardPayment(BasePaymentProvider):
     identifier = "giftcard"
     verbose_name = _("Gift card")
+    priority = 10
 
     @property
     def settings_form_fields(self):
@@ -922,6 +977,20 @@ class GiftCardPayment(BasePaymentProvider):
 
     def checkout_confirm_render(self, request) -> str:
         return get_template('pretixcontrol/giftcards/checkout_confirm.html').render({})
+
+    def refund_control_render(self, request, refund) -> str:
+        from .models import GiftCard
+
+        if 'gift_card' in refund.info_data:
+            gc = GiftCard.objects.get(pk=refund.info_data.get('gift_card'))
+            template = get_template('pretixcontrol/giftcards/payment.html')
+
+            ctx = {
+                'request': request,
+                'event': self.event,
+                'gc': gc,
+            }
+            return template.render(ctx)
 
     def payment_control_render(self, request, payment) -> str:
         from .models import GiftCard
@@ -1080,7 +1149,7 @@ class GiftCardPayment(BasePaymentProvider):
     @transaction.atomic()
     def execute_refund(self, refund: OrderRefund):
         from .models import GiftCard
-        gc = GiftCard.objects.get(pk=refund.payment.info_data.get('gift_card'))
+        gc = GiftCard.objects.get(pk=refund.info_data.get('gift_card') or refund.payment.info_data.get('gift_card'))
         trans = gc.transactions.create(
             value=refund.amount,
             order=refund.order,

@@ -18,6 +18,7 @@ from pretix.base.models import (
 )
 from pretix.base.signals import register_payment_providers
 from pretix.control.forms.widgets import Select2
+from pretix.control.signals import order_search_filter_q
 from pretix.helpers.database import FixedOrderBy, rolledback_transaction
 from pretix.helpers.i18n import i18ncomp
 
@@ -139,7 +140,7 @@ class OrderFilterForm(FilterForm):
                 )
             ).values('id')
 
-            qs = qs.annotate(has_pos=Exists(matching_positions)).filter(
+            mainq = (
                 code
                 | Q(email__icontains=u)
                 | Q(invoice_address__name_cached__icontains=u)
@@ -147,6 +148,11 @@ class OrderFilterForm(FilterForm):
                 | Q(pk__in=matching_invoices)
                 | Q(comment__icontains=u)
                 | Q(has_pos=True)
+            )
+            for recv, q in order_search_filter_q.send(sender=getattr(self, 'event', None), query=u):
+                mainq = mainq | q
+            qs = qs.annotate(has_pos=Exists(matching_positions)).filter(
+                mainq
             )
 
         if fdata.get('status'):
@@ -289,7 +295,7 @@ class EventOrderFilterForm(OrderFilterForm):
                 answers = QuestionAnswer.objects.filter(
                     question_id=q.pk,
                     orderposition__order_id=OuterRef('pk'),
-                    answer__iexact=fdata.get('answer')
+                    answer__exact=fdata.get('answer')
                 )
                 qs = qs.annotate(has_answer=Exists(answers)).filter(has_answer=True)
 
@@ -705,6 +711,8 @@ class CheckInFilterForm(FilterForm):
         '-timestamp': (FixedOrderBy(F('last_checked_in'), nulls_last=True, descending=True), '-order__code'),
         'item': ('item__name', 'variation__value', 'order__code'),
         '-item': ('-item__name', '-variation__value', '-order__code'),
+        'seat': ('seat__sorting_rank', 'seat__guid'),
+        '-seat': ('-seat__sorting_rank', '-seat__guid'),
         'name': {'_order': F('display_name').asc(nulls_first=True),
                  'display_name': Coalesce('attendee_name_cached', 'addon_to__attendee_name_cached')},
         '-name': {'_order': F('display_name').desc(nulls_last=True),
@@ -843,6 +851,32 @@ class UserFilterForm(FilterForm):
 
 class VoucherFilterForm(FilterForm):
     orders = {
+        'code': 'code',
+        '-code': '-code',
+        'redeemed': 'redeemed',
+        '-redeemed': '-redeemed',
+        'valid_until': 'valid_until',
+        '-valid_until': '-valid_until',
+        'tag': 'tag',
+        '-tag': '-tag',
+        'item': (
+            'seat__sorting_rank',
+            'item__category__position',
+            'item__category',
+            'item__position',
+            'item__variation__position',
+            'quota__name',
+        ),
+        'subevent': 'subevent__date_from',
+        '-subevent': '-subevent__date_from',
+        '-item': (
+            '-seat__sorting_rank',
+            '-item__category__position',
+            '-item__category',
+            '-item__position',
+            '-item__variation__position',
+            '-quota__name',
+        )
     }
     status = forms.ChoiceField(
         label=_('Status'),
@@ -979,7 +1013,15 @@ class VoucherFilterForm(FilterForm):
             qs = qs.filter(subevent_id=fdata.get('subevent').pk)
 
         if fdata.get('ordering'):
-            qs = qs.order_by(self.get_order_by())
+            ob = self.orders[fdata.get('ordering')]
+            if isinstance(ob, dict):
+                ob = dict(ob)
+                o = ob.pop('_order')
+                qs = qs.annotate(**ob).order_by(o)
+            elif isinstance(ob, (list, tuple)):
+                qs = qs.order_by(*ob)
+            else:
+                qs = qs.order_by(ob)
 
         return qs
 

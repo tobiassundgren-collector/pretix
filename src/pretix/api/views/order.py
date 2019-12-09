@@ -48,7 +48,7 @@ from pretix.base.services.orders import (
 from pretix.base.services.pricing import get_price
 from pretix.base.services.tickets import generate
 from pretix.base.signals import (
-    order_modified, order_placed, register_ticket_outputs,
+    order_modified, order_paid, order_placed, register_ticket_outputs,
 )
 from pretix.base.templatetags.money import money_filter
 
@@ -173,9 +173,26 @@ class OrderViewSet(viewsets.ModelViewSet):
                     amount=ps
                 )
             except OrderPayment.DoesNotExist:
-                order.payments.filter(state__in=(OrderPayment.PAYMENT_STATE_PENDING,
-                                                 OrderPayment.PAYMENT_STATE_CREATED)) \
-                    .update(state=OrderPayment.PAYMENT_STATE_CANCELED)
+                for p in order.payments.filter(state__in=(OrderPayment.PAYMENT_STATE_PENDING,
+                                                          OrderPayment.PAYMENT_STATE_CREATED)):
+                    try:
+                        with transaction.atomic():
+                            p.payment_provider.cancel_payment(p)
+                            order.log_action('pretix.event.order.payment.canceled', {
+                                'local_id': p.local_id,
+                                'provider': p.provider,
+                            }, user=self.request.user if self.request.user.is_authenticated else None, auth=self.request.auth)
+                    except PaymentException as e:
+                        order.log_action(
+                            'pretix.event.order.payment.canceled.failed',
+                            {
+                                'local_id': p.local_id,
+                                'provider': p.provider,
+                                'error': str(e)
+                            },
+                            user=self.request.user if self.request.user.is_authenticated else None,
+                            auth=self.request.auth
+                        )
                 p = order.payments.create(
                     state=OrderPayment.PAYMENT_STATE_CREATED,
                     provider='manual',
@@ -448,6 +465,8 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         with language(order.locale):
             order_placed.send(self.request.event, order=order)
+            if order.status == Order.STATUS_PAID:
+                order_paid.send(self.request.event, order=order)
 
             gen_invoice = invoice_qualified(order) and (
                 (order.event.settings.get('invoice_generate') == 'True') or
@@ -896,13 +915,16 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
         if payment.state not in (OrderPayment.PAYMENT_STATE_PENDING, OrderPayment.PAYMENT_STATE_CREATED):
             return Response({'detail': 'Invalid state of payment'}, status=status.HTTP_400_BAD_REQUEST)
 
-        with transaction.atomic():
-            payment.state = OrderPayment.PAYMENT_STATE_CANCELED
-            payment.save()
-            payment.order.log_action('pretix.event.order.payment.canceled', {
-                'local_id': payment.local_id,
-                'provider': payment.provider,
-            }, user=self.request.user if self.request.user.is_authenticated else None, auth=self.request.auth)
+        try:
+            with transaction.atomic():
+                payment.payment_provider.cancel_payment(payment)
+                payment.order.log_action('pretix.event.order.payment.canceled', {
+                    'local_id': payment.local_id,
+                    'provider': payment.provider,
+                }, user=self.request.user if self.request.user.is_authenticated else None, auth=self.request.auth)
+        except PaymentException as e:
+            return Response({'detail': 'External error: {}'.format(str(e))},
+                            status=status.HTTP_400_BAD_REQUEST)
         return self.retrieve(request, [], **kwargs)
 
 

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django import forms
 from django.core.exceptions import ValidationError
 from django.db.models import Max
@@ -75,6 +77,14 @@ class QuestionForm(I18nModelForm):
                     raise ValidationError(_('Circular dependency between questions detected.'))
                 seen_ids.add(dep.pk)
                 dep = dep.dependency_question
+        return val
+
+    def clean_ask_during_checkin(self):
+        val = self.cleaned_data.get('ask_during_checkin')
+
+        if val and self.cleaned_data.get('type') in Question.ASK_DURING_CHECKIN_UNSUPPORTED:
+            raise ValidationError(_('This type of question cannot be asked during check-in.'))
+
         return val
 
     def clean(self):
@@ -415,7 +425,7 @@ class ItemUpdateForm(I18nModelForm):
                     'event': self.event.slug,
                     'organizer': self.event.organizer.slug,
                 }),
-                'data-placeholder': _('Quota')
+                'data-placeholder': _('Shown independently of other products')
             }
         )
         self.fields['hidden_if_available'].widget.choices = self.fields['hidden_if_available'].choices
@@ -679,6 +689,10 @@ class ItemBundleForm(I18nModelForm):
 
     def clean(self):
         d = super().clean()
+        if not self.cleaned_data['designated_price']:
+            d['designated_price'] = Decimal('0.00')
+            self.instance.designated_price = Decimal('0.00')
+
         if 'itemvar' in self.cleaned_data:
             if '-' in self.cleaned_data['itemvar']:
                 itemid, varid = self.cleaned_data['itemvar'].split('-')

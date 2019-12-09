@@ -292,6 +292,7 @@ INSTALLED_APPS = [
     'hijack',
     'compat',
     'oauth2_provider',
+    'phonenumber_field'
 ]
 
 try:
@@ -409,6 +410,8 @@ ALL_LANGUAGES = [
     ('tr', _('Turkish')),
     ('pl', _('Polish')),
     ('it', _('Italian')),
+    ('ru', _('Russian')),
+    ('lv', _('Latvian')),
     ('zh-hans', _('Chinese (simplified)')),
     ('el', _('Greek')),
     ('sv', _('Swedish'))
@@ -447,6 +450,12 @@ EXTRA_LANG_INFO = {
         'code': 'fr',
         'name': 'French',
         'name_local': 'Français'
+    },
+    'lv': {
+        'bidi': False,
+        'code': 'lv',
+        'name': 'Latvian',
+        'name_local': 'Latviešu'
     },
 }
 

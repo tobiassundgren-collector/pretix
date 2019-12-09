@@ -17,11 +17,13 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import TemplateView
 
+from pretix.base.channels import get_all_sales_channels
 from pretix.base.models import ItemVariation, Quota, SeatCategoryMapping
 from pretix.base.models.event import SubEvent
 from pretix.base.models.items import ItemBundle
 from pretix.multidomain.urlreverse import eventreverse
 from pretix.presale.ical import get_ical
+from pretix.presale.signals import item_description
 from pretix.presale.views.organizer import (
     EventListMixin, add_subevents_for_days, filter_qs_by_attr,
     weeks_for_template,
@@ -118,13 +120,21 @@ def get_grouped_items(event, subevent=None, voucher=None, channel='web', require
             item.available_variations = [v for v in item.available_variations
                                          if v.pk == voucher.variation_id]
 
-        max_per_order = item.max_per_order or int(event.settings.max_items_per_order)
+        if get_all_sales_channels()[channel].unlimited_items_per_order:
+            max_per_order = sys.maxsize
+        else:
+            max_per_order = item.max_per_order or int(event.settings.max_items_per_order)
 
         if item.hidden_if_available:
             q = item.hidden_if_available.availability(_cache=quota_cache)
             if q[0] == Quota.AVAILABILITY_OK:
                 item._remove = True
                 continue
+
+        item.description = str(item.description)
+        for recv, resp in item_description.send(sender=event, item=item, variation=None):
+            if resp:
+                item.description += ("<br/>" if item.description else "") + resp
 
         if not item.has_variations:
             item._remove = False
@@ -171,6 +181,11 @@ def get_grouped_items(event, subevent=None, voucher=None, channel='web', require
             display_add_to_cart = display_add_to_cart or item.order_max > 0
         else:
             for var in item.available_variations:
+                var.description = str(var.description)
+                for recv, resp in item_description.send(sender=event, item=item, variation=var):
+                    if resp:
+                        var.description += ("<br/>" if var.description else "") + resp
+
                 if voucher and (voucher.allow_ignore_quota or voucher.block_quota):
                     var.cached_availability = (
                         Quota.AVAILABILITY_OK, voucher.max_usages - voucher.redeemed
@@ -351,12 +366,6 @@ class EventIndex(EventViewMixin, EventListMixin, CartMixin, TemplateView):
         context['show_cart'] = (
             context['cart']['positions'] and (
                 self.request.event.has_subevents or self.request.event.presale_is_running
-            )
-        )
-        context['show_dates'] = (
-            self.request.event.has_subevents and (
-                'cart_namespace' not in self.kwargs
-                or not self.subevent
             )
         )
         if self.request.event.settings.redirect_to_checkout_directly:

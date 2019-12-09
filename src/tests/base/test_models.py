@@ -718,6 +718,14 @@ class VoucherTestCase(BaseQuotaTestCase):
         self.assertFalse(v.applies_to(self.var1.item, self.var2))
 
     @classscope(attr='o')
+    def test_voucher_applicability_all(self):
+        v = Voucher.objects.create(event=self.event)
+        self.assertTrue(v.applies_to(self.item1))
+        self.assertTrue(v.applies_to(self.var1.item))
+        self.assertTrue(v.applies_to(self.var1.item, self.var1))
+        self.assertTrue(v.applies_to(self.var1.item, self.var2))
+
+    @classscope(attr='o')
     def test_voucher_applicability_variation_through_quota(self):
         self.quota.variations.add(self.var1)
         self.quota.items.add(self.var1.item)
@@ -2020,7 +2028,7 @@ class SeatingTestCase(TestCase):
 
     @classscope(attr='organizer')
     def test_free(self):
-        assert set(self.event.free_seats) == {self.seat_a1, self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a1, self.seat_a2}
         assert self.seat_a1.is_available()
         assert self.seat_a2.is_available()
 
@@ -2028,7 +2036,7 @@ class SeatingTestCase(TestCase):
     def test_blocked(self):
         self.seat_a1.blocked = True
         self.seat_a1.save()
-        assert set(self.event.free_seats) == {self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a2}
         assert not self.seat_a1.is_available()
         assert self.seat_a2.is_available()
 
@@ -2043,7 +2051,7 @@ class SeatingTestCase(TestCase):
             order=o, item=self.ticket, variation=None, price=Decimal("12"),
             seat=self.seat_a1
         )
-        assert set(self.event.free_seats) == {self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a2}
         assert not self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2057,7 +2065,7 @@ class SeatingTestCase(TestCase):
             order=o, item=self.ticket, variation=None, price=Decimal("12"),
             seat=self.seat_a1
         )
-        assert set(self.event.free_seats) == {self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a2}
         assert not self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2071,7 +2079,7 @@ class SeatingTestCase(TestCase):
             order=o, item=self.ticket, variation=None, price=Decimal("12"),
             seat=self.seat_a1
         )
-        assert set(self.event.free_seats) == {self.seat_a1, self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a1, self.seat_a2}
         assert self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2080,7 +2088,7 @@ class SeatingTestCase(TestCase):
             event=self.event, cart_id='a', item=self.ticket, seat=self.seat_a1,
             price=23, expires=now() + timedelta(minutes=10)
         )
-        assert set(self.event.free_seats) == {self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a2}
         assert not self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2089,7 +2097,7 @@ class SeatingTestCase(TestCase):
             event=self.event, cart_id='a', item=self.ticket, seat=self.seat_a1,
             price=23, expires=now() - timedelta(minutes=10)
         )
-        assert set(self.event.free_seats) == {self.seat_a1, self.seat_a2}
+        assert set(self.event.free_seats()) == {self.seat_a1, self.seat_a2}
         assert self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2106,7 +2114,7 @@ class SeatingTestCase(TestCase):
             order=o, item=self.ticket, variation=None, price=Decimal("12"),
             seat=self.seat_a1, subevent=se1
         )
-        assert set(se1.free_seats) == set()
+        assert set(se1.free_seats()) == set()
         assert not self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2123,7 +2131,7 @@ class SeatingTestCase(TestCase):
             order=o, item=self.ticket, variation=None, price=Decimal("12"),
             seat=self.seat_a1, subevent=se1
         )
-        assert set(se1.free_seats) == {self.seat_a1}
+        assert set(se1.free_seats()) == {self.seat_a1}
         assert self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2135,7 +2143,7 @@ class SeatingTestCase(TestCase):
             event=self.event, cart_id='a', item=self.ticket, seat=self.seat_a1,
             price=23, expires=now() + timedelta(minutes=10), subevent=se1
         )
-        assert set(se1.free_seats) == set()
+        assert set(se1.free_seats()) == set()
         assert not self.seat_a1.is_available()
 
     @classscope(attr='organizer')
@@ -2147,7 +2155,25 @@ class SeatingTestCase(TestCase):
             event=self.event, cart_id='a', item=self.ticket, seat=self.seat_a1,
             price=23, expires=now() - timedelta(minutes=10), subevent=se1
         )
-        assert set(se1.free_seats) == {self.seat_a1}
+        assert set(se1.free_seats()) == {self.seat_a1}
+        assert self.seat_a1.is_available()
+
+    @classscope(attr='organizer')
+    def test_voucher_active(self):
+        Voucher.objects.create(
+            event=self.event, code='a', item=self.ticket, seat=self.seat_a1,
+            valid_until=now() + timedelta(minutes=10)
+        )
+        assert set(self.event.free_seats()) == {self.seat_a2}
+        assert not self.seat_a1.is_available()
+
+    @classscope(attr='organizer')
+    def test_voucher_expired(self):
+        Voucher.objects.create(
+            event=self.event, code='a', item=self.ticket, seat=self.seat_a1,
+            valid_until=now() - timedelta(minutes=10)
+        )
+        assert set(self.event.free_seats()) == {self.seat_a2, self.seat_a1}
         assert self.seat_a1.is_available()
 
 

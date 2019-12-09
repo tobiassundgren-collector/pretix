@@ -62,6 +62,8 @@ The provider class
 
    .. autoattribute:: is_enabled
 
+   .. autoattribute:: priority
+
    .. autoattribute:: settings_form_fields
 
    .. automethod:: settings_form_clean
@@ -108,9 +110,13 @@ The provider class
 
    .. automethod:: execute_refund
 
+   .. automethod:: refund_control_render
+
    .. automethod:: api_payment_details
 
    .. automethod:: shred_payment_info
+
+   .. automethod:: cancel_payment
 
    .. autoattribute:: is_implicit
 

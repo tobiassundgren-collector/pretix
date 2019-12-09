@@ -30,6 +30,8 @@ from django_countries.fields import Country, CountryField
 from django_scopes import ScopedManager, scopes_disabled
 from i18nfield.strings import LazyI18nString
 from jsonfallback.fields import FallbackJSONField
+from phonenumber_field.phonenumber import PhoneNumber
+from phonenumbers import NumberParseException
 
 from pretix.base.banlist import banned
 from pretix.base.decimal import round_decimal
@@ -922,6 +924,11 @@ class QuestionAnswer(models.Model):
                 return self.answer
         elif self.question.type == Question.TYPE_COUNTRYCODE and self.answer:
             return Country(self.answer).name or self.answer
+        elif self.question.type == Question.TYPE_PHONENUMBER and self.answer:
+            try:
+                return PhoneNumber.from_string(self.answer).as_international
+            except NumberParseException:
+                return self.answer
         else:
             return self.answer
 
@@ -1213,6 +1220,7 @@ class OrderPayment(models.Model):
         """
         return self.order.event.get_payment_providers(cached=True).get(self.provider)
 
+    @transaction.atomic()
     def _mark_paid(self, force, count_waitinglist, user, auth, ignore_date=False, overpaid=False):
         from pretix.base.signals import order_paid
         can_be_paid = self.order._can_be_paid(count_waitinglist=count_waitinglist, ignore_date=ignore_date, force=force)
@@ -1281,7 +1289,7 @@ class OrderPayment(models.Model):
             'provider': self.provider,
         }, user=user, auth=auth)
 
-        if self.order.status == Order.STATUS_PAID:
+        if self.order.status in (Order.STATUS_PAID, Order.STATUS_CANCELED):
             return
 
         payment_sum = self.order.payments.filter(

@@ -12,6 +12,7 @@ from django.utils.timezone import make_aware, now
 from django.utils.translation import pgettext_lazy, ugettext as _
 from django_scopes import scopes_disabled
 
+from pretix.base.channels import get_all_sales_channels
 from pretix.base.i18n import language
 from pretix.base.models import (
     CartPosition, Event, InvoiceAddress, Item, ItemBundle, ItemVariation, Seat,
@@ -80,6 +81,7 @@ error_messages = {
                         'cart if you want to use it for a different product.'),
     'voucher_expired': _('This voucher is expired.'),
     'voucher_invalid_item': _('This voucher is not valid for this product.'),
+    'voucher_invalid_seat': _('This voucher is not valid for this seat.'),
     'voucher_item_not_available': _(
         'Your voucher is valid for a product that is currently not for sale.'),
     'voucher_invalid_subevent': pgettext_lazy('subevent', 'This voucher is not valid for this event date.'),
@@ -217,13 +219,14 @@ class CartManager:
         })
 
     def _check_max_cart_size(self):
-        cartsize = self.positions.filter(addon_to__isnull=True).count()
-        cartsize += sum([op.count for op in self._operations if isinstance(op, self.AddOperation) and not op.addon_to])
-        cartsize -= len([1 for op in self._operations if isinstance(op, self.RemoveOperation) if
-                         not op.position.addon_to_id])
-        if cartsize > int(self.event.settings.max_items_per_order):
-            # TODO: i18n plurals
-            raise CartError(_(error_messages['max_items']) % (self.event.settings.max_items_per_order,))
+        if not get_all_sales_channels()[self._sales_channel].unlimited_items_per_order:
+            cartsize = self.positions.filter(addon_to__isnull=True).count()
+            cartsize += sum([op.count for op in self._operations if isinstance(op, self.AddOperation) and not op.addon_to])
+            cartsize -= len([1 for op in self._operations if isinstance(op, self.RemoveOperation) if
+                             not op.position.addon_to_id])
+            if cartsize > int(self.event.settings.max_items_per_order):
+                # TODO: i18n plurals
+                raise CartError(_(error_messages['max_items']) % (self.event.settings.max_items_per_order,))
 
     def _check_item_constraints(self, op):
         if isinstance(op, self.AddOperation) or isinstance(op, self.ExtendOperation):
@@ -251,6 +254,9 @@ class CartManager:
 
             if op.voucher and not op.voucher.applies_to(op.item, op.variation):
                 raise CartError(error_messages['voucher_invalid_item'])
+
+            if op.voucher and op.voucher.seat and op.voucher.seat != op.seat:
+                raise CartError(error_messages['voucher_invalid_seat'])
 
             if op.voucher and op.voucher.subevent_id and op.voucher.subevent_id != op.subevent.pk:
                 raise CartError(error_messages['voucher_invalid_subevent'])
@@ -824,7 +830,7 @@ class CartManager:
                     available_count = 0
 
                 if isinstance(op, self.AddOperation):
-                    if op.seat and not op.seat.is_available():
+                    if op.seat and not op.seat.is_available(ignore_voucher_id=op.voucher.id if op.voucher else None):
                         available_count = 0
                         err = err or error_messages['seat_unavailable']
 
@@ -872,7 +878,8 @@ class CartManager:
 
                         new_cart_positions.append(cp)
                 elif isinstance(op, self.ExtendOperation):
-                    if op.seat and not op.seat.is_available(ignore_cart=op.position):
+                    if op.seat and not op.seat.is_available(ignore_cart=op.position,
+                                                            ignore_voucher_id=op.position.voucher_id):
                         err = err or error_messages['seat_unavailable']
                         op.position.addons.all().delete()
                         op.position.delete()

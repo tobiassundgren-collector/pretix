@@ -11,7 +11,7 @@ from django.utils.translation import pgettext_lazy, ugettext_lazy as _
 from django_scopes import ScopedManager, scopes_disabled
 
 from pretix.base.banlist import banned
-from pretix.base.models import SeatCategoryMapping
+from pretix.base.models import Seat, SeatCategoryMapping
 
 from ..decimal import round_decimal
 from .base import LoggedModel
@@ -171,6 +171,12 @@ class Voucher(LoggedModel):
             "If enabled, the voucher is valid for any product affected by this quota."
         )
     )
+    seat = models.ForeignKey(
+        Seat, related_name='vouchers',
+        null=True, blank=True,
+        on_delete=models.PROTECT,
+        verbose_name=_("Specific seat"),
+    )
     tag = models.CharField(
         max_length=255,
         verbose_name=_("Tag"),
@@ -211,11 +217,12 @@ class Voucher(LoggedModel):
             self.event,
             self.quota,
             self.item,
-            self.variation
+            self.variation,
+            seats_given=bool(self.seat)
         )
 
     @staticmethod
-    def clean_item_properties(data, event, quota, item, variation):
+    def clean_item_properties(data, event, quota, item, variation, block_quota=False, seats_given=False):
         if quota:
             if quota.event != event:
                 raise ValidationError(_('You cannot select a quota that belongs to a different event.'))
@@ -234,8 +241,12 @@ class Voucher(LoggedModel):
                                         'Otherwise it might be unclear which quotas to block.'))
             if item.category and item.category.is_addon:
                 raise ValidationError(_('It is currently not possible to create vouchers for add-on products.'))
-        else:
-            raise ValidationError(_('You need to specify either a quota or a product.'))
+        elif block_quota:
+            raise ValidationError(_('You need to select a specific product or quota if this voucher should reserve '
+                                    'tickets.'))
+        elif variation:
+            raise ValidationError(_('You cannot select a variation without having selected a product that provides '
+                                    'variations.'))
 
     @staticmethod
     def clean_max_usages(data, redeemed):
@@ -324,7 +335,8 @@ class Voucher(LoggedModel):
         elif item and not item.has_variations:
             avail = item.check_quotas(ignored_quotas=old_quotas, subevent=data.get('subevent'))
         else:
-            raise ValidationError(_('You need to specify either a quota or a product.'))
+            raise ValidationError(_('You need to select a specific product or quota if this voucher should reserve '
+                                    'tickets.'))
 
         if avail[0] != Quota.AVAILABILITY_OK or (avail[1] is not None and avail[1] < cnt):
             raise ValidationError(_('You cannot create a voucher that blocks quota as the selected product or '
@@ -334,6 +346,42 @@ class Voucher(LoggedModel):
     def clean_voucher_code(data, event, pk):
         if 'code' in data and Voucher.objects.filter(Q(code__iexact=data['code']) & Q(event=event) & ~Q(pk=pk)).exists():
             raise ValidationError(_('A voucher with this code already exists.'))
+
+    @staticmethod
+    def clean_seat_id(data, item, quota, event, pk):
+        try:
+            if event.has_subevents:
+                if not data.get('subevent'):
+                    raise ValidationError(_('You need to choose a date if you select a seat.'))
+                seat = event.seats.select_related('product').get(
+                    seat_guid=data.get('seat'), subevent=data.get('subevent')
+                )
+            else:
+                seat = event.seats.select_related('product').get(
+                    seat_guid=data.get('seat')
+                )
+        except Seat.DoesNotExist:
+            raise ValidationError(_('The specified seat ID "{id}" does not exist for this event.').format(
+                id=data.get('seat')))
+
+        if not seat.is_available(ignore_voucher_id=pk, ignore_cart=True):
+            raise ValidationError(_('The seat "{id}" is currently unavailable (blocked, already sold or a '
+                                    'different voucher).').format(
+                id=seat.seat_guid))
+
+        if quota:
+            raise ValidationError(_('You need to choose a specific product if you select a seat.'))
+
+        if data.get('max_usages', 1) > 1:
+            raise ValidationError(_('Seat-specific vouchers can only be used once.'))
+
+        if item and seat.product != item:
+            raise ValidationError(_('You need to choose the product "{prod}" for this seat.').format(prod=seat.product))
+
+        if not seat.is_available(ignore_voucher_id=pk):
+            raise ValidationError(_('The seat "{id}" is already sold or currently blocked.').format(id=seat.seat_guid))
+
+        return seat
 
     def save(self, *args, **kwargs):
         self.code = self.code.upper()
@@ -367,7 +415,9 @@ class Voucher(LoggedModel):
             return item.quotas.filter(pk=self.quota_id).exists()
         if self.item_id and not self.variation_id:
             return self.item_id == item.pk
-        return (self.item_id == item.pk) and (variation and self.variation_id == variation.pk)
+        if self.item_id:
+            return (self.item_id == item.pk) and (variation and self.variation_id == variation.pk)
+        return True
 
     def is_active(self):
         """

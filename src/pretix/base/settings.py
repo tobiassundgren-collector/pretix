@@ -137,6 +137,10 @@ DEFAULTS = {
         'default': 'True',
         'type': bool
     },
+    'payment_resellers__restrict_to_sales_channels': {
+        'default': ['resellers'],
+        'type': list
+    },
     'payment_term_accept_late': {
         'default': 'True',
         'type': bool
@@ -652,6 +656,10 @@ Your {event} team"""))
         'default': None,
         'type': File
     },
+    'og_image': {
+        'default': None,
+        'type': File
+    },
     'invoice_logo_image': {
         'default': None,
         'type': File
@@ -664,9 +672,20 @@ Your {event} team"""))
         'default': '',
         'type': LazyI18nString
     },
+    'checkout_email_helptext': {
+        'default': LazyI18nString.from_gettext(ugettext_noop(
+            'Make sure to enter a valid email address. We will send you an order '
+            'confirmation including a link that you need to access your order later.'
+        )),
+        'type': LazyI18nString
+    },
     'organizer_info_text': {
         'default': '',
         'type': LazyI18nString
+    },
+    'event_team_provisioning': {
+        'default': 'True',
+        'type': bool
     },
     'update_check_ack': {
         'default': 'False',

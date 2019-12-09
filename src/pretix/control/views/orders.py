@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime, time, timedelta
 from decimal import Decimal, DecimalException
+from urllib.parse import urlencode
 
 import vat_moss.id
 from django.conf import settings
@@ -203,6 +204,9 @@ class OrderDetail(OrderView):
         for p in ctx['payments']:
             if p.payment_provider:
                 p.html_info = (p.payment_provider.payment_control_render(self.request, p) or "").strip()
+        for r in ctx['refunds']:
+            if r.payment_provider:
+                r.html_info = (r.payment_provider.refund_control_render(self.request, r) or "").strip()
         ctx['invoices'] = list(self.order.invoices.all().select_related('event'))
         ctx['comment_form'] = CommentForm(initial={
             'comment': self.order.comment,
@@ -480,14 +484,26 @@ class OrderPaymentCancel(OrderView):
 
     def post(self, *args, **kwargs):
         if self.payment.state in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING):
-            with transaction.atomic():
-                self.payment.state = OrderPayment.PAYMENT_STATE_CANCELED
-                self.payment.save()
-                self.order.log_action('pretix.event.order.payment.canceled', {
-                    'local_id': self.payment.local_id,
-                    'provider': self.payment.provider,
-                }, user=self.request.user)
-            messages.success(self.request, _('This payment has been canceled.'))
+            try:
+                with transaction.atomic():
+                    self.payment.payment_provider.cancel_payment(self.payment)
+                    self.order.log_action('pretix.event.order.payment.canceled', {
+                        'local_id': self.payment.local_id,
+                        'provider': self.payment.provider,
+                    }, user=self.request.user if self.request.user.is_authenticated else None)
+            except PaymentException as e:
+                self.order.log_action(
+                    'pretix.event.order.payment.canceled.failed',
+                    {
+                        'local_id': self.payment.local_id,
+                        'provider': self.payment.provider,
+                        'error': str(e)
+                    },
+                    user=self.request.user if self.request.user.is_authenticated else None,
+                )
+                messages.error(self.request, str(e))
+            else:
+                messages.success(self.request, _('This payment has been canceled.'))
         else:
             messages.error(self.request, _('This payment can not be canceled at the moment.'))
         return redirect(self.get_order_url())
@@ -539,7 +555,7 @@ class OrderRefundProcess(OrderView):
         if self.refund.state == OrderRefund.REFUND_STATE_EXTERNAL:
             self.refund.done(user=self.request.user)
 
-            if self.request.POST.get("action") == "r":
+            if self.request.POST.get("action") == "r" and self.order.status != Order.STATUS_CANCELED:
                 mark_order_refunded(self.order, user=self.request.user)
             elif not (self.order.status == Order.STATUS_PAID and self.order.pending_sum <= 0):
                 self.order.status = Order.STATUS_PENDING
@@ -694,6 +710,33 @@ class OrderRefundView(OrderView):
                         provider='manual'
                     ))
 
+            giftcard_value = self.request.POST.get('refund-new-giftcard', '0') or '0'
+            giftcard_value = formats.sanitize_separators(giftcard_value)
+            try:
+                giftcard_value = Decimal(giftcard_value)
+            except (DecimalException, TypeError):
+                messages.error(self.request, _('You entered an invalid number.'))
+                is_valid = False
+            else:
+                if giftcard_value:
+                    refund_selected += giftcard_value
+                    giftcard = self.request.organizer.issued_gift_cards.create(
+                        currency=self.request.event.currency,
+                        testmode=self.order.testmode
+                    )
+                    refunds.append(OrderRefund(
+                        order=self.order,
+                        payment=None,
+                        source=OrderRefund.REFUND_SOURCE_ADMIN,
+                        state=OrderRefund.REFUND_STATE_CREATED,
+                        execution_date=now(),
+                        amount=giftcard_value,
+                        provider='giftcard',
+                        info=json.dumps({
+                            'gift_card': giftcard.pk
+                        })
+                    ))
+
             offsetting_value = self.request.POST.get('refund-offsetting', '0') or '0'
             offsetting_value = formats.sanitize_separators(offsetting_value)
             try:
@@ -764,10 +807,10 @@ class OrderRefundView(OrderView):
                         'local_id': r.local_id,
                         'provider': r.provider,
                     }, user=self.request.user)
-                    if r.payment or r.provider == "offsetting":
+                    if r.payment or r.provider == "offsetting" or r.provider == "giftcard":
                         try:
                             r.payment_provider.execute_refund(r)
-                        except (PaymentException, Quota.QuotaExceededException) as e:
+                        except PaymentException as e:
                             r.state = OrderRefund.REFUND_STATE_FAILED
                             r.save()
                             messages.error(self.request, _('One of the refunds failed to be processed. You should '
@@ -801,6 +844,23 @@ class OrderRefundView(OrderView):
                             )
                             self.order.save(update_fields=['status', 'expires'])
 
+                    if giftcard_value and self.order.email:
+                        messages.success(self.request, _('A new gift card was created. You can now send the user their '
+                                                         'gift card code.'))
+                        return redirect(reverse('control:event.order.sendmail', kwargs={
+                            'event': self.request.event.slug,
+                            'organizer': self.request.event.organizer.slug,
+                            'code': self.order.code
+                        }) + '?' + urlencode({
+                            'subject': _('Your gift card code'),
+                            'message': _('Hello,\n\nwe have refunded you {amount} for your order.\n\nYou can use the gift '
+                                         'card code {giftcard} to pay for future ticket purchases in our shop.\n\n'
+                                         'Your {event} team').format(
+                                event="{event}",
+                                amount=money_filter(giftcard_value, self.request.event.currency),
+                                giftcard=giftcard.secret,
+                            )
+                        }))
                 return redirect(self.get_order_url())
             else:
                 messages.error(self.request, _('The refunds you selected do not match the selected total refund '
@@ -859,9 +919,25 @@ class OrderTransition(OrderView):
                     amount=ps
                 )
             except OrderPayment.DoesNotExist:
-                self.order.payments.filter(state__in=(OrderPayment.PAYMENT_STATE_PENDING,
-                                                      OrderPayment.PAYMENT_STATE_CREATED)) \
-                    .update(state=OrderPayment.PAYMENT_STATE_CANCELED)
+                for p in self.order.payments.filter(state__in=(OrderPayment.PAYMENT_STATE_PENDING,
+                                                               OrderPayment.PAYMENT_STATE_CREATED)):
+                    try:
+                        with transaction.atomic():
+                            p.payment_provider.cancel_payment(p)
+                            self.order.log_action('pretix.event.order.payment.canceled', {
+                                'local_id': p.local_id,
+                                'provider': p.provider,
+                            }, user=self.request.user if self.request.user.is_authenticated else None)
+                    except PaymentException as e:
+                        self.order.log_action(
+                            'pretix.event.order.payment.canceled.failed',
+                            {
+                                'local_id': p.local_id,
+                                'provider': p.provider,
+                                'error': str(e)
+                            },
+                            user=self.request.user if self.request.user.is_authenticated else None,
+                        )
                 p = self.order.payments.create(
                     state=OrderPayment.PAYMENT_STATE_CREATED,
                     provider='manual',
@@ -1532,6 +1608,11 @@ class OrderSendMail(EventPermissionRequiredMixin, OrderViewMixin, FormView):
             event=self.request.event,
             code=self.kwargs['code'].upper()
         )
+        kwargs['initial'] = {}
+        if self.request.GET.get('subject'):
+            kwargs['initial']['subject'] = self.request.GET.get('subject')
+        if self.request.GET.get('message'):
+            kwargs['initial']['message'] = self.request.GET.get('message')
         return kwargs
 
     def form_invalid(self, form):

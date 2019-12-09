@@ -20,11 +20,13 @@ from django_scopes import scope, scopes_disabled
 from i18nfield.strings import LazyI18nString
 
 from pretix.base.i18n import language
-from pretix.base.models import Invoice, InvoiceAddress, InvoiceLine, Order
+from pretix.base.models import (
+    Invoice, InvoiceAddress, InvoiceLine, Order, OrderFee,
+)
 from pretix.base.models.tax import EU_CURRENCIES
 from pretix.base.services.tasks import TransactionAwareTask
 from pretix.base.settings import GlobalSettingsObject
-from pretix.base.signals import periodic_task
+from pretix.base.signals import invoice_line_text, periodic_task
 from pretix.celery_app import app
 from pretix.helpers.database import rolledback_transaction
 from pretix.helpers.models import modelcopy
@@ -139,6 +141,9 @@ def build_invoice(invoice: Invoice) -> Invoice:
                 desc = "  + " + desc
             if invoice.event.settings.invoice_attendee_name and p.attendee_name:
                 desc += "<br />" + pgettext("invoice", "Attendee: {name}").format(name=p.attendee_name)
+            for recv, resp in invoice_line_text.send(sender=invoice.event, position=p):
+                if resp:
+                    desc += "<br/>" + resp
 
             for answ in p.answers.all():
                 if not answ.question.print_on_invoice:
@@ -174,9 +179,12 @@ def build_invoice(invoice: Invoice) -> Invoice:
 
         offset = len(positions)
         for i, fee in enumerate(invoice.order.fees.all()):
-            fee_title = _(fee.get_fee_type_display())
-            if fee.description:
-                fee_title += " - " + fee.description
+            if fee.fee_type == OrderFee.FEE_TYPE_OTHER and fee.description:
+                fee_title = fee.description
+            else:
+                fee_title = _(fee.get_fee_type_display())
+                if fee.description:
+                    fee_title += " - " + fee.description
             InvoiceLine.objects.create(
                 position=i + offset,
                 invoice=invoice,
@@ -203,7 +211,7 @@ def build_cancellation(invoice: Invoice):
 
 
 def generate_cancellation(invoice: Invoice, trigger_pdf=True):
-    if invoice.refered.exists():
+    if invoice.canceled:
         raise ValueError("Invoice should not be canceled twice.")
     cancellation = modelcopy(invoice)
     cancellation.pk = None

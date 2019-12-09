@@ -8,10 +8,14 @@
 {% block title %}{% endblock %}{% if url_name != "event.index" %} :: {% endif %}{{ event.name }}
 {% endblock %}
 {% block custom_header %}
-{% if event.settings.meta_noindex %}
-<meta name="robots" content="noindex, nofollow">
-{% endif %}
-{{ block.super }}
+    {% if event.settings.meta_noindex %}
+        <meta name="robots" content="noindex, nofollow">
+    {% endif %}
+    <meta property="og:type" content="website" />
+    {% if social_image %}
+        <meta property="og:image" content="{{ social_image }}" />
+    {% endif %}
+    {{ block.super }}
 {% endblock %}
 {% block above %}
 <script type="text/javascript" src="{% static "pretixpresale/js/ui/iframe.js" %}"></script>

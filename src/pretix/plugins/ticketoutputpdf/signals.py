@@ -8,8 +8,9 @@ from django.utils.translation import ugettext_lazy as _
 
 from pretix.base.channels import get_all_sales_channels
 from pretix.base.signals import (  # NOQA: legacy import
-    event_copy_data, item_copy_data, layout_text_variables, logentry_display,
-    logentry_object_link, register_data_exporters, register_ticket_outputs,
+    EventPluginSignal, event_copy_data, item_copy_data, layout_text_variables,
+    logentry_display, logentry_object_link, register_data_exporters,
+    register_ticket_outputs,
 )
 from pretix.control.signals import item_forms
 from pretix.plugins.ticketoutputpdf.forms import TicketLayoutItemForm
@@ -122,3 +123,20 @@ def pdf_logentry_object_link(sender, logentry, **kwargs):
     }
     a_map['val'] = '<a href="{href}">{val}</a>'.format_map(a_map)
     return a_text.format_map(a_map)
+
+
+override_layout = EventPluginSignal(
+    providing_args=["layout", "orderposition"]
+)
+"""
+This signal allows you to forcefully override the ticket layout that is being used to create the ticket PDF. Use with
+care, as this will render any specifically by the organizer selected templates useless.
+
+The ``layout`` keyword argument will contain the layout which has been originally selected by the system, the
+``orderposition`` keyword argument will contain the ``OrderPosition`` which is being generated.
+
+If you implement this signal and do not want to override the layout, make sure to return the ``layout`` keyword argument
+which you have been passed.
+
+As with all plugin signals, the ``sender`` keyword will contain the event.
+"""

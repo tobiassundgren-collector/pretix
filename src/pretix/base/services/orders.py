@@ -7,9 +7,10 @@ from typing import List, Optional
 
 from celery.exceptions import MaxRetriesExceededError
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Exists, F, Max, OuterRef, Q, Sum
-from django.db.models.functions import Greatest
+from django.db.models import Exists, F, Max, Min, OuterRef, Q, Sum
+from django.db.models.functions import Coalesce, Greatest
 from django.dispatch import receiver
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
@@ -289,7 +290,7 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
 
         if not order.cancel_allowed():
             raise OrderError(_('You cannot cancel this order.'))
-        i = order.invoices.filter(is_cancellation=False).last()
+        i = order.invoices.filter(is_cancellation=False, refered__isnull=True).last()
         if i:
             generate_cancellation(i)
 
@@ -358,6 +359,31 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
                     )
                 except SendMailException:
                     logger.exception('Order canceled email could not be sent')
+
+    for p in order.payments.filter(state__in=(OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING)):
+        try:
+            with transaction.atomic():
+                p.payment_provider.cancel_payment(p)
+                order.log_action(
+                    'pretix.event.order.payment.canceled',
+                    {
+                        'local_id': p.local_id,
+                        'provider': p.provider,
+                    },
+                    user=user,
+                    auth=api_token or oauth_application or device
+                )
+        except PaymentException as e:
+            order.log_action(
+                'pretix.event.order.payment.canceled.failed',
+                {
+                    'local_id': p.local_id,
+                    'provider': p.provider,
+                    'error': str(e)
+                },
+                user=user,
+                auth=api_token or oauth_application or device
+            )
 
     order_canceled.send(order.event, order=order)
     return order.pk
@@ -484,9 +510,9 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
             break
 
         if cp.seat:
-            # Unlike quotas (which we blindly trust as long as the position is not expired), we check seats every time, since we absolutely
-            # can not overbook a seat.
-            if not cp.seat.is_available(ignore_cart=cp) or cp.seat.blocked:
+            # Unlike quotas (which we blindly trust as long as the position is not expired), we check seats every
+            # time, since we absolutely can not overbook a seat.
+            if not cp.seat.is_available(ignore_cart=cp, ignore_voucher_id=cp.voucher_id) or cp.seat.blocked:
                 err = err or error_messages['seat_unavailable']
                 cp.delete()
                 continue
@@ -832,14 +858,14 @@ def _perform_order(event: Event, payment_provider: str, position_ids: List[str],
 @receiver(signal=periodic_task)
 @scopes_disabled()
 def expire_orders(sender, **kwargs):
-    eventcache = {}
+    event_id = None
+    expire = None
 
     for o in Order.objects.filter(expires__lt=now(), status=Order.STATUS_PENDING,
-                                  require_approval=False).select_related('event'):
-        expire = eventcache.get(o.event.pk, None)
-        if expire is None:
+                                  require_approval=False).select_related('event').order_by('event_id'):
+        if o.event_id != event_id:
             expire = o.event.settings.get('payment_term_expire_automatically', as_type=bool)
-            eventcache[o.event.pk] = expire
+            event_id = o.event_id
         if expire:
             mark_order_expired(o)
 
@@ -847,31 +873,35 @@ def expire_orders(sender, **kwargs):
 @receiver(signal=periodic_task)
 @scopes_disabled()
 def send_expiry_warnings(sender, **kwargs):
-    eventcache = {}
     today = now().replace(hour=0, minute=0, second=0)
+    days = None
+    settings = None
+    event_id = None
 
     for o in Order.objects.filter(
         expires__gte=today, expiry_reminder_sent=False, status=Order.STATUS_PENDING,
         datetime__lte=now() - timedelta(hours=2), require_approval=False
-    ).only('pk'):
-        with transaction.atomic():
-            o = Order.objects.select_related('event').select_for_update().get(pk=o.pk)
-            if o.status != Order.STATUS_PENDING or o.expiry_reminder_sent:
-                # Race condition
-                continue
-            eventsettings = eventcache.get(o.event.pk, None)
-            if eventsettings is None:
-                eventsettings = o.event.settings
-                eventcache[o.event.pk] = eventsettings
+    ).only('pk', 'event_id', 'expires').order_by('event_id'):
+        if event_id != o.event_id:
+            settings = o.event.settings
+            days = cache.get_or_set('{}:{}:setting_mail_days_order_expire_warning'.format('event', o.event_id),
+                                    default=lambda: settings.get('mail_days_order_expire_warning', as_type=int),
+                                    timeout=3600)
+            event_id = o.event_id
 
-            days = eventsettings.get('mail_days_order_expire_warning', as_type=int)
-            if days and (o.expires - today).days <= days:
+        if days and (o.expires - today).days <= days:
+            with transaction.atomic():
+                o = Order.objects.select_related('event').select_for_update().get(pk=o.pk)
+                if o.status != Order.STATUS_PENDING or o.expiry_reminder_sent:
+                    # Race condition
+                    continue
+
                 with language(o.locale):
                     o.expiry_reminder_sent = True
                     o.save(update_fields=['expiry_reminder_sent'])
-                    email_template = eventsettings.mail_text_order_expire_warning
+                    email_template = settings.mail_text_order_expire_warning
                     email_context = get_email_context(event=o.event, order=o)
-                    if eventsettings.payment_term_expire_automatically:
+                    if settings.payment_term_expire_automatically:
                         email_subject = _('Your order is about to expire: %(code)s') % {'code': o.code}
                     else:
                         email_subject = _('Your order is pending payment: %(code)s') % {'code': o.code}
@@ -889,54 +919,76 @@ def send_expiry_warnings(sender, **kwargs):
 @scopes_disabled()
 def send_download_reminders(sender, **kwargs):
     today = now().replace(hour=0, minute=0, second=0, microsecond=0)
+    qs = Order.objects.annotate(
+        first_date=Coalesce(
+            Min('all_positions__subevent__date_from'),
+            F('event__date_from')
+        )
+    ).filter(
+        status=Order.STATUS_PAID,
+        download_reminder_sent=False,
+        datetime__lte=now() - timedelta(hours=2),
+        first_date__gte=today,
+    ).only('pk', 'event_id').order_by('event_id')
+    event_id = None
+    days = None
+    event = None
 
-    for e in Event.objects.filter(date_from__gte=today):
+    for o in qs:
+        if o.event_id != event_id:
+            days = o.event.settings.get('mail_days_download_reminder', as_type=int)
+            event = o.event
+            event_id = o.event_id
 
-        days = e.settings.get('mail_days_download_reminder', as_type=int)
         if days is None:
             continue
 
-        reminder_date = (e.date_from - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
-
+        reminder_date = (o.first_date - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
         if now() < reminder_date:
             continue
-        for o in e.orders.filter(status=Order.STATUS_PAID, download_reminder_sent=False, datetime__lte=now() - timedelta(hours=2)).only('pk'):
-            with transaction.atomic():
-                o = Order.objects.select_related('event').select_for_update().get(pk=o.pk)
-                if o.download_reminder_sent:
-                    # Race condition
-                    continue
-                if not all([r for rr, r in allow_ticket_download.send(e, order=o)]):
-                    continue
 
-                with language(o.locale):
-                    o.download_reminder_sent = True
-                    o.save(update_fields=['download_reminder_sent'])
-                    email_template = e.settings.mail_text_download_reminder
-                    email_context = get_email_context(event=e, order=o)
-                    email_subject = _('Your ticket is ready for download: %(code)s') % {'code': o.code}
-                    try:
-                        o.send_mail(
-                            email_subject, email_template, email_context,
-                            'pretix.event.order.email.download_reminder_sent',
-                            attach_tickets=True
-                        )
-                    except SendMailException:
-                        logger.exception('Reminder email could not be sent')
+        with transaction.atomic():
+            o = Order.objects.select_for_update().get(pk=o.pk)
+            if o.download_reminder_sent:
+                # Race condition
+                continue
+            if not all([r for rr, r in allow_ticket_download.send(event, order=o)]):
+                continue
 
-                    if e.settings.mail_send_download_reminder_attendee:
-                        for p in o.positions.all():
-                            if p.addon_to_id is None and p.attendee_email and p.attendee_email != o.email:
-                                email_template = e.settings.mail_text_download_reminder_attendee
-                                email_context = get_email_context(event=e, order=o, position=p)
-                                try:
-                                    o.send_mail(
-                                        email_subject, email_template, email_context,
-                                        'pretix.event.order.email.download_reminder_sent',
-                                        attach_tickets=True, position=p
-                                    )
-                                except SendMailException:
-                                    logger.exception('Reminder email could not be sent to attendee')
+            with language(o.locale):
+                o.download_reminder_sent = True
+                o.save(update_fields=['download_reminder_sent'])
+                email_template = event.settings.mail_text_download_reminder
+                email_context = get_email_context(event=event, order=o)
+                email_subject = _('Your ticket is ready for download: %(code)s') % {'code': o.code}
+                try:
+                    o.send_mail(
+                        email_subject, email_template, email_context,
+                        'pretix.event.order.email.download_reminder_sent',
+                        attach_tickets=True
+                    )
+                except SendMailException:
+                    logger.exception('Reminder email could not be sent')
+
+                if event.settings.mail_send_download_reminder_attendee:
+                    for p in o.positions.all():
+                        if p.subevent_id:
+                            reminder_date = (p.subevent.date_from - timedelta(days=days)).replace(
+                                hour=0, minute=0, second=0, microsecond=0
+                            )
+                            if now() < reminder_date:
+                                continue
+                        if p.addon_to_id is None and p.attendee_email and p.attendee_email != o.email:
+                            email_template = event.settings.mail_text_download_reminder_attendee
+                            email_context = get_email_context(event=event, order=o, position=p)
+                            try:
+                                o.send_mail(
+                                    email_subject, email_template, email_context,
+                                    'pretix.event.order.email.download_reminder_sent',
+                                    attach_tickets=True, position=p
+                                )
+                            except SendMailException:
+                                logger.exception('Reminder email could not be sent to attendee')
 
 
 def notify_user_changed_order(order, user=None, auth=None):
@@ -1183,20 +1235,49 @@ class OrderChangeManager:
                 self.order.status = Order.STATUS_PAID
                 self.order.save()
             elif self.open_payment:
-                self.open_payment.state = OrderPayment.PAYMENT_STATE_CANCELED
-                self.open_payment.save()
-                self.order.log_action('pretix.event.order.payment.canceled', {
-                    'local_id': self.open_payment.local_id,
-                    'provider': self.open_payment.provider,
-                }, user=self.user, auth=self.auth)
+                try:
+                    with transaction.atomic():
+                        self.open_payment.payment_provider.cancel_payment(self.open_payment)
+                        self.order.log_action(
+                            'pretix.event.order.payment.canceled',
+                            {
+                                'local_id': self.open_payment.local_id,
+                                'provider': self.open_payment.provider,
+                            },
+                            user=self.user,
+                            auth=self.auth
+                        )
+                except PaymentException as e:
+                    self.order.log_action(
+                        'pretix.event.order.payment.canceled.failed',
+                        {
+                            'local_id': self.open_payment.local_id,
+                            'provider': self.open_payment.provider,
+                            'error': str(e)
+                        },
+                        user=self.user,
+                        auth=self.auth
+                    )
         elif self.order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED) and self._totaldiff > 0:
             if self.open_payment:
-                self.open_payment.state = OrderPayment.PAYMENT_STATE_CANCELED
-                self.open_payment.save()
-                self.order.log_action('pretix.event.order.payment.canceled', {
-                    'local_id': self.open_payment.local_id,
-                    'provider': self.open_payment.provider,
-                }, user=self.user, auth=self.auth)
+                try:
+                    with transaction.atomic():
+                        self.open_payment.payment_provider.cancel_payment(self.open_payment)
+                        self.order.log_action('pretix.event.order.payment.canceled', {
+                            'local_id': self.open_payment.local_id,
+                            'provider': self.open_payment.provider,
+                        }, user=self.user, auth=self.auth)
+                except PaymentException as e:
+                    self.order.log_action(
+                        'pretix.event.order.payment.canceled.failed',
+                        {
+                            'local_id': self.open_payment.local_id,
+                            'provider': self.open_payment.provider,
+                            'error': str(e)
+                        },
+                        user=self.user,
+                        auth=self.auth,
+                    )
 
     def _check_paid_to_free(self):
         if self.order.total == 0 and (self._totaldiff < 0 or (self.split_order and self.split_order.total > 0)) and not self.order.require_approval:
@@ -1726,8 +1807,22 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
 
     if open_payment and open_payment.state in (OrderPayment.PAYMENT_STATE_PENDING,
                                                OrderPayment.PAYMENT_STATE_CREATED):
-        open_payment.state = OrderPayment.PAYMENT_STATE_CANCELED
-        open_payment.save(update_fields=['state'])
+        try:
+            with transaction.atomic():
+                open_payment.payment_provider.cancel_payment(open_payment)
+                order.log_action('pretix.event.order.payment.canceled', {
+                    'local_id': open_payment.local_id,
+                    'provider': open_payment.provider,
+                })
+        except PaymentException as e:
+            order.log_action(
+                'pretix.event.order.payment.canceled.failed',
+                {
+                    'local_id': open_payment.local_id,
+                    'provider': open_payment.provider,
+                    'error': str(e)
+                },
+            )
 
     order.total = (order.positions.aggregate(sum=Sum('price'))['sum'] or 0) + (order.fees.aggregate(sum=Sum('value'))['sum'] or 0)
     order.save(update_fields=['total'])
@@ -1753,7 +1848,7 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
 
     if recreate_invoices:
         i = order.invoices.filter(is_cancellation=False).last()
-        if i and order.total != oldtotal:
+        if i and order.total != oldtotal and not i.canceled:
             generate_cancellation(i)
             generate_invoice(order)
 

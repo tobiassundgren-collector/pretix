@@ -838,6 +838,7 @@ TEST_INVOICE_RES = {
     "foreign_currency_rate_date": None,
     "lines": [
         {
+            "position": 1,
             "description": "Budget Ticket<br />Attendee: Peter",
             "gross_value": "23.00",
             "tax_value": "0.00",
@@ -845,6 +846,7 @@ TEST_INVOICE_RES = {
             "tax_rate": "0.00"
         },
         {
+            "position": 2,
             "description": "Payment fee",
             "gross_value": "0.25",
             "tax_value": "0.05",
@@ -1821,6 +1823,50 @@ def test_order_create_fee_type_validation(token_client, organizer, event, item, 
     )
     assert resp.status_code == 400
     assert resp.data == {'fees': [{'fee_type': ['"unknown" is not a valid choice.']}]}
+
+
+@pytest.mark.django_db
+def test_order_create_fee_as_percentage(token_client, organizer, event, item, quota, question):
+    res = copy.deepcopy(ORDER_CREATE_PAYLOAD)
+    res['fees'][0]['_treat_value_as_percentage'] = True
+    res['fees'][0]['value'] = '10.00'
+    res['positions'][0]['item'] = item.pk
+    res['positions'][0]['answers'][0]['question'] = question.pk
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/orders/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 201
+    with scopes_disabled():
+        o = Order.objects.get(code=resp.data['code'])
+        fee = o.fees.first()
+        assert fee.value == Decimal('2.30')
+        assert o.total == Decimal('25.30')
+
+
+@pytest.mark.django_db
+def test_order_create_fee_with_auto_tax(token_client, organizer, event, item, quota, question, taxrule):
+    res = copy.deepcopy(ORDER_CREATE_PAYLOAD)
+    res['fees'][0]['_split_taxes_like_products'] = True
+    res['fees'][0]['_treat_value_as_percentage'] = True
+    res['fees'][0]['value'] = '10.00'
+    res['positions'][0]['item'] = item.pk
+    res['positions'][0]['answers'][0]['question'] = question.pk
+    item.tax_rule = taxrule
+    item.save()
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/orders/'.format(
+            organizer.slug, event.slug
+        ), format='json', data=res
+    )
+    assert resp.status_code == 201
+    with scopes_disabled():
+        o = Order.objects.get(code=resp.data['code'])
+        fee = o.fees.first()
+        assert fee.value == Decimal('2.30')
+        assert fee.tax_rate == Decimal('19.00')
+        assert o.total == Decimal('25.30')
 
 
 @pytest.mark.django_db
@@ -3674,6 +3720,7 @@ def test_order_create_invoice(token_client, organizer, event, order):
         'footer_text': '',
         'lines': [
             {
+                'position': 1,
                 'description': 'Budget Ticket<br />Attendee: Peter',
                 'gross_value': '23.00',
                 'tax_value': '0.00',
@@ -3681,6 +3728,7 @@ def test_order_create_invoice(token_client, organizer, event, order):
                 'tax_name': ''
             },
             {
+                'position': 2,
                 'description': 'Payment fee',
                 'gross_value': '0.25',
                 'tax_value': '0.05',

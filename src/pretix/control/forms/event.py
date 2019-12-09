@@ -22,7 +22,7 @@ from pytz import common_timezones, timezone
 from pretix.base.channels import get_all_sales_channels
 from pretix.base.email import get_available_placeholders
 from pretix.base.forms import I18nModelForm, PlaceholderValidator, SettingsForm
-from pretix.base.models import Event, Organizer, TaxRule
+from pretix.base.models import Event, Organizer, TaxRule, Team
 from pretix.base.models.event import EventMetaValue, SubEvent
 from pretix.base.reldate import RelativeDateField, RelativeDateTimeField
 from pretix.base.settings import PERSON_NAME_SCHEMES, PERSON_NAME_TITLE_GROUPS
@@ -101,6 +101,16 @@ class EventWizardBasicsForm(I18nModelForm):
         required=False
     )
 
+    team = forms.ModelChoiceField(
+        label=_("Grant access to team"),
+        help_text=_("You are allowed to create events under this organizer, however you do not have permission "
+                    "to edit all events under this organizer. Please select one of your existing teams that will"
+                    " be granted access to this event."),
+        queryset=Team.objects.none(),
+        required=False,
+        empty_label=_('Create a new team for this event with me as the only member')
+    )
+
     class Meta:
         model = Event
         fields = [
@@ -133,7 +143,7 @@ class EventWizardBasicsForm(I18nModelForm):
         self.organizer = kwargs.pop('organizer')
         self.locales = kwargs.get('locales')
         self.has_subevents = kwargs.pop('has_subevents')
-        kwargs.pop('user')
+        self.user = kwargs.pop('user')
         kwargs.pop('session')
         super().__init__(*args, **kwargs)
         self.initial['timezone'] = get_current_timezone_name()
@@ -146,6 +156,15 @@ class EventWizardBasicsForm(I18nModelForm):
         if self.has_subevents:
             del self.fields['presale_start']
             del self.fields['presale_end']
+
+        if self.has_control_rights(self.user, self.organizer):
+            del self.fields['team']
+        else:
+            self.fields['team'].queryset = self.user.teams.filter(organizer=self.organizer)
+            if not self.organizer.settings.get("event_team_provisioning", True, as_type=bool):
+                self.fields['team'].required = True
+                self.fields['team'].empty_label = None
+                self.fields['team'].initial = 0
 
     def clean(self):
         data = super().clean()
@@ -178,6 +197,13 @@ class EventWizardBasicsForm(I18nModelForm):
                 code='duplicate_slug'
             )
         return slug
+
+    @staticmethod
+    def has_control_rights(user, organizer):
+        return user.teams.filter(
+            organizer=organizer, all_events=True, can_change_event_settings=True, can_change_items=True,
+            can_change_orders=True, can_change_vouchers=True
+        ).exists()
 
 
 class EventChoiceMixin:
@@ -488,9 +514,24 @@ class EventSettingsForm(SettingsForm):
         help_text=_('If you provide a logo image, we will by default not show your events name and date '
                     'in the page header. We will show your logo with a maximal height of 120 pixels.')
     )
+    og_image = ExtFileField(
+        label=_('Social media image'),
+        ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
+        required=False,
+        help_text=_('This picture will be used as a preview if you post links to your ticket shop on social media. '
+                    'Facebook advises to use a picture size of 1200 x 630 pixels, however some platforms like '
+                    'WhatsApp and Reddit only show a square preview, so we recommend to make sure it still looks good '
+                    'only the center square is shown. If you do not fill this, we will use the logo given above.')
+    )
     frontpage_text = I18nFormField(
         label=_("Frontpage text"),
         required=False,
+        widget=I18nTextarea
+    )
+    checkout_email_helptext = I18nFormField(
+        label=_("Help text of the email field"),
+        required=False,
+        widget_kwargs={'attrs': {'rows': '2'}},
         widget=I18nTextarea
     )
     presale_has_ended_text = I18nFormField(
@@ -719,7 +760,7 @@ class ProviderForm(SettingsForm):
                 v.set_event(self.obj)
 
             if hasattr(v, '_as_type'):
-                self.initial[k] = self.obj.settings.get(k, as_type=v._as_type)
+                self.initial[k] = self.obj.settings.get(k, as_type=v._as_type, default=v.initial)
 
     def clean(self):
         cleaned_data = super().clean()

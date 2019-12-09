@@ -32,8 +32,6 @@ var strings = {
     'cart_exists': django.pgettext('widget', 'You currently have an active cart for this event. If you select more' +
         ' products, they will be added to your existing cart.'),
     'resume_checkout': django.pgettext('widget', 'Resume checkout'),
-    'poweredby': django.pgettext('widget', '<a href="https://pretix.eu" target="_blank" rel="noopener">event' +
-        ' ticketing powered by pretix</a>'),
     'redeem_voucher': django.pgettext('widget', 'Redeem a voucher'),
     'redeem': django.pgettext('widget', 'Redeem'),
     'voucher_code': django.pgettext('widget', 'Voucher code'),
@@ -220,9 +218,9 @@ Vue.component('availbox', {
         },
         waiting_list_url: function () {
             if (this.item.has_variations) {
-                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&var=' + this.variation.id;
+                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&var=' + this.variation.id + '&widget_data=' + escape(this.$root.widget_data_json);
             } else {
-                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id;
+                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&widget_data=' + escape(this.$root.widget_data_json);
             }
         }
     }
@@ -581,26 +579,6 @@ var shared_methods = {
             window.open(redirect_url);
         }
     },
-    startseating: function () {
-        var redirect_url = this.$root.target_url + 'w/' + widget_id;
-        if (this.$root.subevent){
-            redirect_url += '/' + this.$root.subevent;
-        }
-        redirect_url += '/seatingframe/?iframe=1&locale=' + lang;
-        if (this.$root.cart_id) {
-            redirect_url += '&take_cart_id=' + this.$root.cart_id;
-        }
-        if (this.$root.widget_data) {
-            redirect_url += '&widget_data=' + escape(this.$root.widget_data_json);
-        }
-        if (this.$root.useIframe) {
-            var iframe = this.$root.overlay.$children[0].$refs['frame-container'].children[0];
-            this.$root.overlay.frame_loading = true;
-            iframe.src = redirect_url;
-        } else {
-            window.open(redirect_url);
-        }
-    },
     handleResize: function () {
         this.mobile = this.$refs.wrapper.clientWidth <= 800;
     }
@@ -685,6 +663,7 @@ Vue.component('pretix-overlay', {
         },
         close: function () {
             this.$root.frame_shown = false;
+            this.$root.parent.frame_dismissed = true;
             this.$root.parent.reload();
         },
         iframeLoaded: function () {
@@ -723,7 +702,7 @@ Vue.component('pretix-widget-event-form', {
         + '<div class="pretix-widget-clear"></div>'
         + '</div>'
         + '<div class="pretix-widget-seating-link-wrapper" v-if="this.$root.has_seating_plan">'
-        + '<button class="pretix-widget-seating-link" @click.prevent="$parent.startseating">'
+        + '<button class="pretix-widget-seating-link" @click.prevent="$root.startseating">'
         + strings['show_seating']
         + '</button>'
         + '</div>'
@@ -1032,8 +1011,7 @@ Vue.component('pretix-widget', {
         + '<pretix-widget-event-list v-if="$root.view === \'events\'"></pretix-widget-event-list>'
         + '<pretix-widget-event-calendar v-if="$root.view === \'weeks\'"></pretix-widget-event-calendar>'
         + '<div class="pretix-widget-clear"></div>'
-        + '<div class="pretix-widget-attribution">'
-        + strings.poweredby
+        + '<div class="pretix-widget-attribution" v-if="$root.poweredby" v-html="$root.poweredby">'
         + '</div>'
         + '</div>'
         + '</div>'
@@ -1159,9 +1137,15 @@ var shared_root_methods = {
                 root.has_seating_plan = data.has_seating_plan;
                 root.itemnum = data.itemnum;
             }
+            root.poweredby = data.poweredby;
             if (root.loading > 0) {
                 root.loading--;
                 root.trigger_load_callback();
+            }
+            if (root.parent_stack.length > 0 && root.has_seating_plan && root.categories.length === 0 && !root.frame_dismissed && root.useIframe) {
+                // If we're on desktop and someone selects a seating-only event in a calendar, let's open it right away,
+                // but only if the person didn't close it before.
+                root.startseating()
             }
         }, function (error) {
             root.categories = [];
@@ -1172,6 +1156,26 @@ var shared_root_methods = {
                 root.trigger_load_callback();
             }
         });
+    },
+    startseating: function () {
+        var redirect_url = this.$root.target_url + 'w/' + widget_id;
+        if (this.$root.subevent){
+            redirect_url += '/' + this.$root.subevent;
+        }
+        redirect_url += '/seatingframe/?iframe=1&locale=' + lang;
+        if (this.$root.cart_id) {
+            redirect_url += '&take_cart_id=' + this.$root.cart_id;
+        }
+        if (this.$root.widget_data) {
+            redirect_url += '&widget_data=' + escape(this.$root.widget_data_json);
+        }
+        if (this.$root.useIframe) {
+            var iframe = this.$root.overlay.$children[0].$refs['frame-container'].children[0];
+            this.$root.overlay.frame_loading = true;
+            iframe.src = redirect_url;
+        } else {
+            window.open(redirect_url);
+        }
     },
     choose_event: function (event) {
         root.target_url = event.event_url;
@@ -1316,6 +1320,7 @@ var create_widget = function (element) {
                 error: null,
                 weeks: null,
                 date: null,
+                frame_dismissed: false,
                 events: null,
                 view: null,
                 display_add_to_cart: false,
@@ -1327,6 +1332,7 @@ var create_widget = function (element) {
                 cart_exists: false,
                 itemcount: 0,
                 overlay: null,
+                poweredby: "",
                 has_seating_plan: false
             }
         },
@@ -1383,6 +1389,7 @@ var create_button = function (element) {
                 items: items,
                 error: null,
                 filter: null,
+                frame_dismissed: false,
                 widget_data: widget_data,
                 widget_id: 'pretix-widget-' + widget_id,
                 button_text: button_text

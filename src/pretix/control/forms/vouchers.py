@@ -38,7 +38,7 @@ class VoucherForm(I18nModelForm):
         localized_fields = '__all__'
         fields = [
             'code', 'valid_until', 'block_quota', 'allow_ignore_quota', 'value', 'tag',
-            'comment', 'max_usages', 'price_mode', 'subevent', 'show_hidden_items'
+            'comment', 'max_usages', 'price_mode', 'subevent', 'show_hidden_items',
         ]
         field_classes = {
             'valid_until': SplitDateTimeField,
@@ -109,16 +109,26 @@ class VoucherForm(I18nModelForm):
                     'event': instance.event.slug,
                     'organizer': instance.event.organizer.slug,
                 }),
-                'data-placeholder': ''
+                'data-placeholder': _('All products')
             }
         )
+        self.fields['itemvar'].required = False
         self.fields['itemvar'].widget.choices = self.fields['itemvar'].choices
-        self.fields['itemvar'].required = True
+
+        if self.instance.event.seating_plan or self.instance.event.subevents.filter(seating_plan__isnull=False).exists():
+            self.fields['seat'] = forms.CharField(
+                label=_("Specific seat ID"),
+                max_length=255,
+                required=False,
+                widget=forms.TextInput(attrs={'data-seat-guid-field': '1'}),
+                initial=self.instance.seat.seat_guid if self.instance.seat else '',
+                help_text=str(self.instance.seat) if self.instance.seat else '',
+            )
 
     def clean(self):
         data = super().clean()
 
-        if not self._errors:
+        if not self._errors and self.data.get('itemvar'):
             try:
                 itemid = quotaid = None
                 iv = self.data.get('itemvar', '')
@@ -152,7 +162,9 @@ class VoucherForm(I18nModelForm):
 
         Voucher.clean_item_properties(
             data, self.instance.event,
-            self.instance.quota, self.instance.item, self.instance.variation
+            self.instance.quota, self.instance.item, self.instance.variation,
+            seats_given=data.get('seat') or data.get('seats'),
+            block_quota=data.get('block_quota')
         )
         if not self.instance.show_hidden_items and (
             (self.instance.quota and all(i.hide_without_voucher for i in self.instance.quota.items.all()))
@@ -179,6 +191,11 @@ class VoucherForm(I18nModelForm):
                 self.instance.quota, self.instance.item, self.instance.variation
             )
         Voucher.clean_voucher_code(data, self.instance.event, self.instance.pk)
+        if 'seat' in self.fields and data.get('seat'):
+            self.instance.seat = Voucher.clean_seat_id(
+                data, self.instance.item, self.instance.quota, self.instance.event, self.instance.pk
+            )
+            self.instance.item = self.instance.seat.product
 
         voucher_form_validation.send(sender=self.instance.event, form=self, data=data)
 
@@ -271,6 +288,13 @@ class VoucherBulkForm(VoucherForm):
         super().__init__(*args, **kwargs)
         self._set_field_placeholders('send_subject', ['event', 'name'])
         self._set_field_placeholders('send_message', ['event', 'voucher_list', 'name'])
+        if 'seat' in self.fields:
+            self.fields['seats'] = forms.CharField(
+                label=_("Specific seat IDs"),
+                required=False,
+                widget=forms.Textarea(attrs={'data-seat-guid-field': '1'}),
+                initial=self.instance.seat.seat_guid if self.instance.seat else '',
+            )
 
     def clean_send_recipients(self):
         raw = self.cleaned_data['send_recipients']
@@ -296,7 +320,7 @@ class VoucherBulkForm(VoucherForm):
                 try:
                     res.append(self.Recipient(
                         name=row.get('name', ''),
-                        email=row['email'],
+                        email=row['email'].strip(),
                         number=int(row.get('number', 1)),
                         tag=row.get('tag', None)
                     ))
@@ -309,7 +333,7 @@ class VoucherBulkForm(VoucherForm):
                 except ValidationError as err:
                     raise ValidationError(_('{value} is not a valid email address.').format(value=e.strip())) from err
                 else:
-                    res.append(self.Recipient(email=e, number=1, tag=None, name=''))
+                    res.append(self.Recipient(email=e.strip(), number=1, tag=None, name=''))
         return res
 
     def clean(self):
@@ -331,6 +355,20 @@ class VoucherBulkForm(VoucherForm):
             if code_len != recp_len:
                 raise ValidationError(_('You generated {codes} vouchers, but entered recipients for {recp} vouchers.').format(codes=code_len, recp=recp_len))
 
+        if data.get('seats'):
+            seatids = [s.strip() for s in data.get('seats').strip().split("\n") if s]
+            if len(seatids) != len(data.get('codes')):
+                raise ValidationError(_('You need to specify as many seats as voucher codes.'))
+            data['seats'] = []
+            for s in seatids:
+                data['seat'] = s
+                data['seats'].append(Voucher.clean_seat_id(
+                    data, self.instance.item, self.instance.quota, self.instance.event, None
+                ))
+            self.instance.seat = data['seats'][0]  # Trick model-level validation
+        else:
+            data['seats'] = []
+
         return data
 
     def save(self, event, *args, **kwargs):
@@ -339,6 +377,11 @@ class VoucherBulkForm(VoucherForm):
             obj = modelcopy(self.instance)
             obj.event = event
             obj.code = code
+            try:
+                obj.seat = self.cleaned_data['seats'].pop()
+                obj.item = obj.seat.product
+            except IndexError:
+                pass
             data = dict(self.cleaned_data)
             data['code'] = code
             data['bulk'] = True

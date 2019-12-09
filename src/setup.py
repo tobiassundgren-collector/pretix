@@ -98,8 +98,8 @@ setup(
         'django-hierarkey==1.0.*,>=1.0.2',
         'django-filter==2.1.*',
         'django-scopes==1.1.*',
-        'reportlab==3.5.*',
-        'Pillow==5.*',
+        'reportlab>=3.5.18',
+        'Pillow==6.*',
         'PyPDF2==1.26.*',
         'django-libsass',
         'libsass',
@@ -146,6 +146,8 @@ setup(
         'django-oauth-toolkit==1.2.*',
         'oauthlib==2.1.*',
         'urllib3==1.24.*',  # required by current requests
+        'django-phonenumber-field==3.0.*',
+        'phonenumberslite==8.10.*',
     ],
     extras_require={
         'dev': [

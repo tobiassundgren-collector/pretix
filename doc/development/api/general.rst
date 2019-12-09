@@ -20,13 +20,13 @@ Order events
 There are multiple signals that will be sent out in the ordering cycle:
 
 .. automodule:: pretix.base.signals
-   :members: validate_cart, validate_cart_addons, validate_order, order_fee_calculation, order_paid, order_placed, order_canceled, order_expired, order_modified, order_changed, order_approved, order_denied, order_fee_type_name, allow_ticket_download, order_split, order_gracefully_delete
+   :members: validate_cart, validate_cart_addons, validate_order, order_fee_calculation, order_paid, order_placed, order_canceled, order_expired, order_modified, order_changed, order_approved, order_denied, order_fee_type_name, allow_ticket_download, order_split, order_gracefully_delete, invoice_line_text
 
 Frontend
 --------
 
 .. automodule:: pretix.presale.signals
-   :members: html_head, html_footer, footer_link, front_page_top, front_page_bottom, fee_calculation_for_cart, contact_form_fields, question_form_fields, checkout_confirm_messages, checkout_confirm_page_content, checkout_all_optional, html_page_header, sass_preamble, sass_postamble, render_seating_plan, checkout_flow_steps, position_info
+   :members: html_head, html_footer, footer_link, front_page_top, front_page_bottom, fee_calculation_for_cart, contact_form_fields, question_form_fields, checkout_confirm_messages, checkout_confirm_page_content, checkout_all_optional, html_page_header, sass_preamble, sass_postamble, render_seating_plan, checkout_flow_steps, position_info, item_description
 
 
 .. automodule:: pretix.presale.signals
@@ -49,8 +49,8 @@ Backend
 
 .. automodule:: pretix.control.signals
    :members: nav_event, html_head, html_page_start, quota_detail_html, nav_topbar, nav_global, nav_organizer, nav_event_settings,
-             order_info, event_settings_widget, oauth_application_registered, order_position_buttons, subevent_forms, item_formsets
-
+             order_info, event_settings_widget, oauth_application_registered, order_position_buttons, subevent_forms,
+             item_formsets, order_search_filter_q
 
 .. automodule:: pretix.base.signals
    :members: logentry_display, logentry_object_link, requiredaction_display, timeline_events
@@ -78,3 +78,6 @@ Ticket designs
 
 .. automodule:: pretix.base.signals
    :members: layout_text_variables
+
+.. automodule:: pretix.plugins.ticketoutputpdf.signals
+   :members: override_layout
