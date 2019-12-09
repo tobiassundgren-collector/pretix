@@ -1,14 +1,4 @@
     
-/* Mobile Navigation
-    -----------------------------------------------
-$(window).scroll(function() {
-    if ($(".navbar").offset().top > 50) {
-        $(".navbar-fixed-top").addClass("top-nav-collapse");
-    } else {
-        $(".navbar-fixed-top").removeClass("top-nav-collapse");
-    }
-});
-*/
 
 
 /* HTML document is loaded. DOM is ready. 
@@ -16,11 +6,6 @@ $(window).scroll(function() {
 $(document).ready(function() {
 
     svg4everybody(); 
-    /* Hide mobile menu after clicking on a link
-      -----------------------------------------------*/
-      $('.navbar-collapse a').click(function(){
-          $(".navbar-collapse").collapse('hide');
-      });
 
       $('.owl-carousel').owlCarousel({
         loop:true,
@@ -29,11 +14,13 @@ $(document).ready(function() {
         responsive:{
             0:{
                 items:1,
-                nav:true
+                nav:true,
+                loop:false
             },
             600:{
                 items:3,
-                nav:false
+                nav:false,
+                loop:false
             },
             1000:{
                 items:4,

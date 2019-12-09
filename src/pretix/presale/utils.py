@@ -46,6 +46,7 @@ def _detect_event(request, require_live=True, require_plugin=None):
             request.organizer = request.organizer
         else:
             # We are on our main domain
+
             if 'event' in url.kwargs and 'organizer' in url.kwargs:
                 request.event = Event.objects\
                     .select_related('organizer')\

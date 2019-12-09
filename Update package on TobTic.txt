@@ -30,3 +30,8 @@ python -m pretix rebuild
 python -m pretix updatestyles
 python manage.py runserver
 
+
+Modules
+python setup.py develop
+python setup.py develop --uninstall
+

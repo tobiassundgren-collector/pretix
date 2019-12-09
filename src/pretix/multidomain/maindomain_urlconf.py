@@ -13,13 +13,9 @@ from pretix.urls import common_patterns
 
 presale_patterns_main = [
     url(r'', include((locale_patterns + [
-        url(r'^pages/info', TemplateView.as_view(template_name='pretixpresale/tobtic_info.html'), name="index"),
-        url(r'^pages/arranger', TemplateView.as_view(template_name='pretixpresale/tobtic_arranger.html'), name="index"),
-        url(r'^pages/terms', TemplateView.as_view(template_name='pretixpresale/tobtic_terms.html'), name="index"),
         url(r'^(?P<organizer>[^/]+)/', include(organizer_patterns)),
         url(r'^(?P<organizer>[^/]+)/(?P<event>[^/]+)/', include(event_patterns)),
-         url(r'^$', TemplateView.as_view(template_name='pretixpresale/tobtic_index.html'), name="index")
-        
+        url(r'^$', TemplateView.as_view(template_name='pretixpresale/index.html'), name="index")
     ], 'presale')))
 ]
 
