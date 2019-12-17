@@ -31,7 +31,9 @@
 </div>
 {% endif %}
 {% endblock %}
+
 {% block page %}
+
 <div class="page-header">
     {% if request.event.settings.organizer_link_back %}
     <p>
@@ -42,6 +44,7 @@
         </a>
     </p>
     {% endif %}
+    {% if step is None %}
     {% if event_logo %}
     <div>
         <a href="{% eventurl event "presale:event.index" cart_namespace=cart_namespace|default_if_none:"" %}"
@@ -63,7 +66,8 @@
         </h1>
     </div>
     {% endif %}
-
+   
+ 
     {% if not cart_namespace %}
 <div class="event-info">
     <div class="event-date">
@@ -104,6 +108,7 @@
     {% endif %}
 
 </div>
+{% endif %}
 
 {% endif %}
 

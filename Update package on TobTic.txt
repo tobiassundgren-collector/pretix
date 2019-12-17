@@ -10,6 +10,7 @@ python -m pretix updatestyles
 exit
 systemctl restart pretix-web pretix-worker
 
+// Uppgradera tobtic-modulen
 
 pip3 install -U "git+https://github.com/tobiassundgren-collector/pretix-tobtic#egg=pretix-tobtic"
 
