@@ -160,6 +160,14 @@ arranger-img {
   border-radius: 6px;
 }
 
+.organizer-logo {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 2em;
+  border-radius: 6px;
+}
+
 .event-header {
   text-align: center;
   margin: 1em;

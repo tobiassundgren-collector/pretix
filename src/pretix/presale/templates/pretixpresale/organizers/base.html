@@ -8,16 +8,14 @@
 {% endblock %}
 {% block page %}
     <div class="page-header">
-        <div class="pull-left flip">
             {% if organizer_logo %}
                 <a href="{% eventurl organizer "presale:organizer.index" %}" title="{{ organizer.name }}">
-                    <img src="{{ organizer_logo|thumb:'5000x400' }}" alt="{{ organizer.name }}"
+                    <img src="{{ organizer_logo|thumb:'3000x300' }}" alt="{{ organizer.name }}"
                             class="organizer-logo" />
                 </a>
             {% else %}
                 <h1><a href="{% eventurl organizer "presale:organizer.index" %}">{{ organizer.name }}</a></h1>
             {% endif %}
-        </div>
         <div class="pull-right flip loginbox">
             {% if organizer.settings.locales|length > 1 %}
                 <div class="locales">
