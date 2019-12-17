@@ -85,12 +85,17 @@ body {
   overflow: hidden;
 }
 
+.card-title {
+  color: #557a95;
+}
+
 .card-text {
   -webkit-mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
   mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
-  height: 120px;
+  max-height: 120px;
   width: 100%;
   overflow-y: hidden;
+  
 }
 
 .card-image {
@@ -107,20 +112,24 @@ body {
   max-height: 100px;
 }
 
+.cover {
+  width: 260px;
+  object-fit: cover;
+}
+
+
 .arranger-text {
   color: #fff;
-  font-size: 20px;
-  line-height: 1.1em;
+  font-size: 1.3em;
+  line-height: 1.6em;
   text-shadow: 2px 2px 2px #000;
   text-align: center;
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 60%;
-  border-radius: 50%;
-  background-color: rgba(0, 0, 0, 0.2);
-  box-shadow: 0 0 5rem rgba(0, 0, 0.5);
+  width: 90%;
+  background-color: rgba(0, 0, 0, 0.5);
 }
 
 arranger-img {
@@ -147,6 +156,20 @@ arranger-img {
   display: block;
   margin-left: auto;
   margin-right: auto;
+  margin-bottom: 2em;
+  border-radius: 6px;
+}
+
+.event-header {
+  text-align: center;
+  margin: 1em;
+  font-weight: bold;
+  letter-spacing: normal;
+}
+
+.event-info {
+  text-align: center;
+  margin-top: 2em;
 }
 
 .footer {

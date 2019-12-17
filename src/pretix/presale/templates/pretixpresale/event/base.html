@@ -46,7 +46,10 @@
     <div>
         <a href="{% eventurl event "presale:event.index" cart_namespace=cart_namespace|default_if_none:"" %}"
             title="{{ event.name }}">
-            <img src="{{ event_logo|thumb:'5000x400' }}" alt="{{ event.name }}" class="event-logo" />
+            <img src="{{ event_logo|thumb:'3000x300' }}" alt="{{ event.name }}" class="event-logo" />
+            <h1 class="event-header">
+                {{ event.name }}
+            </h1>
         </a>
     </div>
     {% else %}
@@ -60,6 +63,50 @@
         </h1>
     </div>
     {% endif %}
+
+    {% if not cart_namespace %}
+<div class="event-info">
+    <div class="event-date">
+        <p>
+            {{ ev.get_date_range_display }}
+            {% if event.settings.show_times %}
+
+            {% blocktrans trimmed with time=ev.date_from|date:"TIME_FORMAT" %}
+            Begin: {{ time }}
+            {% endblocktrans %}
+            {% if event.settings.show_date_to and ev.date_to %}
+
+            {% blocktrans trimmed with time=ev.date_to|date:"TIME_FORMAT" %}
+            End: {{ time }}
+            {% endblocktrans %}
+            {% endif %}
+            {% endif %}
+            {% if ev.date_admission %}
+
+            {% if ev.date_admission|date:"SHORT_DATE_FORMAT" == ev.date_from|date:"SHORT_DATE_FORMAT" %}
+            {% blocktrans trimmed with time=ev.date_admission|date:"TIME_FORMAT" %}
+            Admission: {{ time }}
+            {% endblocktrans %}
+            {% else %}
+            {% blocktrans trimmed with datetime=ev.date_admission|date:"SHORT_DATETIME_FORMAT" %}
+            Admission: {{ datetime }}
+            {% endblocktrans %}
+            {% endif %}
+            {% endif %}
+        </p>
+    </div>
+    {% if ev.location %}
+    <div class="event-location">
+        <p>
+            {{ ev.location|linebreaksbr }}
+        </p>
+    </div>
+    {% endif %}
+
+</div>
+
+{% endif %}
+
 
     <div class="pull-right flip loginbox">
         {% if request.event.settings.locales|length > 1 %}

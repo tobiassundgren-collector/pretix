@@ -4,65 +4,68 @@
 {% safelink "https://pretix.eu" as pretixurl %}
 {% comment %}
 
-    Hey, you!
+Hey, you!
 
-    Yes, you found the place in which you can remove or change the link to pretix from the shop footer.
-    However, I want to politely ask you to re-consider and do not remove it.
+Yes, you found the place in which you can remove or change the link to pretix from the shop footer.
+However, I want to politely ask you to re-consider and do not remove it.
 
-    Creating pretix has been an huge effort that took many years and maintaining it is still a lot of
-    work for us. We don't just "maintain" it in case it breaks, we are constantly adding new functionality
-    every single month. However, even we need to eat something and pay our rent in some way. If we can't
-    do that, there won't be anyone around supporting this project in the long term. Since you are just
-    starting to rely on it do do your ticket sales -- that would be unfortunate, right?
+Creating pretix has been an huge effort that took many years and maintaining it is still a lot of
+work for us. We don't just "maintain" it in case it breaks, we are constantly adding new functionality
+every single month. However, even we need to eat something and pay our rent in some way. If we can't
+do that, there won't be anyone around supporting this project in the long term. Since you are just
+starting to rely on it do do your ticket sales -- that would be unfortunate, right?
 
-    With pretix, we only earn money when people buy our hosting services or buy support contracts from us.
-    Sure, you want to host it yourself for whatever reasons and you are free to do so. But others might see
-    your ticket shop and like how it works -- and those others might not have the technical qualification
-    or just the required free time to host it themselves and might turn to our services instead. Or, they
-    have the technical qualification and get pointed to the open source project and turn into contributors,
-    helping us to create a better ticketing software for everyone.
+With pretix, we only earn money when people buy our hosting services or buy support contracts from us.
+Sure, you want to host it yourself for whatever reasons and you are free to do so. But others might see
+your ticket shop and like how it works -- and those others might not have the technical qualification
+or just the required free time to host it themselves and might turn to our services instead. Or, they
+have the technical qualification and get pointed to the open source project and turn into contributors,
+helping us to create a better ticketing software for everyone.
 
-    Neither of that is possible, if you remove this link. If you really want, you can re-style the link,
-    re-word it, put another link next to it -- but I want to politely ask you that you leave the link intact
-    to enable us to create a bright future for pretix. Most likely, you will profit from that as well.
+Neither of that is possible, if you remove this link. If you really want, you can re-style the link,
+re-word it, put another link next to it -- but I want to politely ask you that you leave the link intact
+to enable us to create a bright future for pretix. Most likely, you will profit from that as well.
 
-    Yours truly,
-    Raphael
+Yours truly,
+Raphael
 
-    P.S.: In case you are interested in a support contract or one of our additional paid features, just get
-    in touch at sales@pretix.eu!
+P.S.: In case you are interested in a support contract or one of our additional paid features, just get
+in touch at sales@pretix.eu!
 
 {% endcomment %}
 
 <div class="container">
-        <div class="row">
-                <div class="col-md-4 col-sm-6 col-xs-6 ">
-                        <h6>
-                            <a href="/pages/info/" class="footer-link">Om TobTic</a>
-                        </h6>
-                        <p>
-                                <a href="/pages/terms" class="footer-link">Köp- och leveransvillkor</a><br />
-                            <a href="https://www.allabolag.se/760205MLNF/tobtic" target="_blank" class="footer-link">Innehar F-skatt</a>
-                        </p>
-    
-                    </div>
-            
-            <div class="col-md-4 col-sm-6 col-xs-6 ">
-                <p>
-                    <a href="https://www.pretix.com" target="_blank" rel="noopener" class="footer-link-rounded-border">
-                        Event ticketing powered
-                        by
-                        <span class="pretix-bold">pretix</span></a></p>
-                <p>
-                    <a href="https://www.stripe.com" target="_blank" rel="noopener"><img src="{% static "tobtic/img/powered_by_stripe.png" %}" /></a>
-                </p>
+    <div class="row">
+        <div class="col-md-4 col-sm-4 col-xs-6 ">
+            <h6>
+                <a href="/pages/info/" class="footer-link">Om TobTic</a>
+            </h6>
+            <p>
+                <a href="/pages/terms" class="footer-link">Köp- och leveransvillkor</a><br />
+                <a href="https://www.allabolag.se/760205MLNF/tobtic" target="_blank" class="footer-link">Innehar
+                    F-skatt</a>
+            </p>
 
-            </div>
-            <div class="col-md-4 col-sm-6 col-xs-6 ">
-                    <h6>
-                        Kontakt
-                    </h6>
-                    <p>Epost: <a href="mailto:info@tobtic.com" class="footer-link">info@tobtic.com</a></p>
-                </div> 
+        </div>
+
+
+        <div class="col-md-4 col-sm-4 col-xs-6 ">
+            <h6>
+                Kontakt
+            </h6>
+            <p>Epost: <a href="mailto:info@tobtic.com" class="footer-link">info@tobtic.com</a></p>
+        </div>
+        <div class="col-md-4 col-sm-4 col-xs-6 ">
+            <p>
+                <a href="https://www.pretix.com" target="_blank" rel="noopener" class="footer-link-rounded-border">
+                    Event ticketing powered
+                    by
+                    <span class="pretix-bold">pretix</span></a></p>
+            <p>
+                <a href="https://www.stripe.com" target="_blank" rel="noopener"><img
+                        src="{% static "tobtic/img/powered_by_stripe.png" %}" /></a>
+            </p>
+
         </div>
     </div>
+</div>
