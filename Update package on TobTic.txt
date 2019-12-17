@@ -6,9 +6,12 @@ pip3 install -U "git+https://github.com/tobiassundgren-collector/pretix.git#egg=
 python -m pretix migrate
 python -m pretix rebuild
 python -m pretix updatestyles
+
 exit
 systemctl restart pretix-web pretix-worker
 
+
+pip3 install -U "git+https://github.com/tobiassundgren-collector/pretix-tobtic#egg=pretix-tobtic"
 
 
 Lokalt
