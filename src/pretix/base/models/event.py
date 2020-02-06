@@ -363,6 +363,14 @@ class Event(EventMixin, LoggedModel):
     def __str__(self):
         return str(self.name)
 
+    def set_defaults(self):
+        """
+        This will be called after event creation, but only if the event was not created by copying an existing one.
+        This way, we can use this to introduce new default settings to pretix that do not affect existing events.
+        """
+        self.settings.invoice_renderer = 'modern1'
+        self.settings.invoice_include_expire_date = True
+
     @property
     def social_image(self):
         from pretix.multidomain.urlreverse import build_absolute_uri
@@ -377,7 +385,7 @@ class Event(EventMixin, LoggedModel):
         if img:
             return urljoin(build_absolute_uri(self, 'presale:event.index'), img)
 
-    def free_seats(self, ignore_voucher=None):
+    def free_seats(self, ignore_voucher=None, sales_channel='web'):
         from .orders import CartPosition, Order, OrderPosition
         from .vouchers import Voucher
         vqs = Voucher.objects.filter(
@@ -389,7 +397,7 @@ class Event(EventMixin, LoggedModel):
         )
         if ignore_voucher:
             vqs = vqs.exclude(pk=ignore_voucher.pk)
-        return self.seats.annotate(
+        qs = self.seats.annotate(
             has_order=Exists(
                 OrderPosition.objects.filter(
                     order__event=self,
@@ -407,7 +415,10 @@ class Event(EventMixin, LoggedModel):
             has_voucher=Exists(
                 vqs
             )
-        ).filter(has_order=False, has_cart=False, has_voucher=False, blocked=False)
+        ).filter(has_order=False, has_cart=False, has_voucher=False)
+        if sales_channel not in self.settings.seating_allow_blocked_seats_for_channel:
+            qs = qs.filter(blocked=False)
+        return qs
 
     @property
     def presale_has_ended(self):
@@ -511,6 +522,7 @@ class Event(EventMixin, LoggedModel):
         self.is_public = other.is_public
         self.testmode = other.testmode
         self.save()
+        self.log_action('pretix.object.cloned', data={'source': other.slug, 'source_id': other.pk})
 
         tax_map = {}
         for t in other.tax_rules.all():
@@ -518,6 +530,7 @@ class Event(EventMixin, LoggedModel):
             t.pk = None
             t.event = self
             t.save()
+            t.log_action('pretix.object.cloned')
 
         category_map = {}
         for c in ItemCategory.objects.filter(event=other):
@@ -525,6 +538,7 @@ class Event(EventMixin, LoggedModel):
             c.pk = None
             c.event = self
             c.save()
+            c.log_action('pretix.object.cloned')
 
         item_map = {}
         variation_map = {}
@@ -540,6 +554,7 @@ class Event(EventMixin, LoggedModel):
             if i.tax_rule_id:
                 i.tax_rule = tax_map[i.tax_rule_id]
             i.save()
+            i.log_action('pretix.object.cloned')
             for v in vars:
                 variation_map[v.pk] = v
                 v.pk = None
@@ -564,6 +579,7 @@ class Event(EventMixin, LoggedModel):
             q.cached_availability_time = None
             q.closed = False
             q.save()
+            q.log_action('pretix.object.cloned')
             for i in items:
                 if i.pk in item_map:
                     q.items.add(item_map[i.pk])
@@ -579,6 +595,7 @@ class Event(EventMixin, LoggedModel):
             q.pk = None
             q.event = self
             q.save()
+            q.log_action('pretix.object.cloned')
 
             for i in items:
                 q.items.add(item_map[i.pk])
@@ -596,6 +613,7 @@ class Event(EventMixin, LoggedModel):
             cl.pk = None
             cl.event = self
             cl.save()
+            cl.log_action('pretix.object.cloned')
             for i in items:
                 cl.limit_products.add(item_map[i.pk])
 
@@ -998,7 +1016,7 @@ class SubEvent(EventMixin, LoggedModel):
     def __str__(self):
         return '{} - {}'.format(self.name, self.get_date_range_display())
 
-    def free_seats(self, ignore_voucher=None):
+    def free_seats(self, ignore_voucher=None, sales_channel='web'):
         from .orders import CartPosition, Order, OrderPosition
         from .vouchers import Voucher
         vqs = Voucher.objects.filter(
@@ -1011,7 +1029,7 @@ class SubEvent(EventMixin, LoggedModel):
         )
         if ignore_voucher:
             vqs = vqs.exclude(pk=ignore_voucher.pk)
-        return self.seats.annotate(
+        qs = self.seats.annotate(
             has_order=Exists(
                 OrderPosition.objects.filter(
                     order__event_id=self.event_id,
@@ -1031,7 +1049,10 @@ class SubEvent(EventMixin, LoggedModel):
             has_voucher=Exists(
                 vqs
             )
-        ).filter(has_order=False, has_cart=False, blocked=False, has_voucher=False)
+        ).filter(has_order=False, has_cart=False, has_voucher=False)
+        if sales_channel not in self.settings.seating_allow_blocked_seats_for_channel:
+            qs = qs.filter(blocked=False)
+        return qs
 
     @cached_property
     def settings(self):

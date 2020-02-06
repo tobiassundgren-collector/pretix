@@ -687,10 +687,12 @@ class Order(LockModel, LoggedModel):
         error_messages = {
             'unavailable': _('The ordered product "{item}" is no longer available.'),
             'seat_unavailable': _('The seat "{seat}" is no longer available.'),
+            'voucher_budget': _('The voucher "{voucher}" no longer has sufficient budget.'),
         }
         now_dt = now_dt or now()
-        positions = self.positions.all().select_related('item', 'variation', 'seat')
+        positions = self.positions.all().select_related('item', 'variation', 'seat', 'voucher')
         quota_cache = {}
+        v_budget = {}
         try:
             for i, op in enumerate(positions):
                 if op.seat:
@@ -698,6 +700,16 @@ class Order(LockModel, LoggedModel):
                         raise Quota.QuotaExceededException(error_messages['seat_unavailable'].format(seat=op.seat))
                 if force:
                     continue
+
+                if op.voucher and op.voucher.budget is not None and op.price_before_voucher is not None:
+                    if op.voucher not in v_budget:
+                        v_budget[op.voucher] = op.voucher.budget - op.voucher.budget_used()
+                    disc = op.price_before_voucher - op.price
+                    if disc > v_budget[op.voucher]:
+                        raise Quota.QuotaExceededException(error_messages['voucher_budget'].format(
+                            voucher=op.voucher.code
+                        ))
+                    v_budget[op.voucher] -= disc
 
                 quotas = list(op.quotas)
                 if len(quotas) == 0:
@@ -990,6 +1002,9 @@ class AbstractPosition(models.Model):
         null=True, blank=True,
         verbose_name=_("Variation"),
         on_delete=models.PROTECT
+    )
+    price_before_voucher = models.DecimalField(
+        decimal_places=2, max_digits=10, null=True,
     )
     price = models.DecimalField(
         decimal_places=2, max_digits=10,
@@ -2033,7 +2048,7 @@ class InvoiceAddress(models.Model):
     internal_reference = models.TextField(
         verbose_name=_('Internal reference'),
         help_text=_('This reference will be printed on your invoice for your convenience.'),
-        blank=True
+        blank=True,
     )
     beneficiary = models.TextField(
         verbose_name=_('Beneficiary'),
@@ -2052,6 +2067,13 @@ class InvoiceAddress(models.Model):
             self.name_cached = ""
             self.name_parts = {}
         super().save(**kwargs)
+
+    @property
+    def is_empty(self):
+        return (
+            not self.name_cached and not self.company and not self.street and not self.zipcode and not self.city
+            and not self.internal_reference and not self.beneficiary
+        )
 
     @property
     def state_name(self):

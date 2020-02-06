@@ -6,6 +6,13 @@ from django.conf import settings
 def set_cookie_without_samesite(request, response, key, *args, **kwargs):
     assert 'samesite' not in kwargs
     response.set_cookie(key, *args, **kwargs)
+    is_secure = (
+        kwargs.get('secure', False) or request.scheme == 'https' or
+        settings.SITE_URL.startswith('https://')
+    )
+    if not is_secure:
+        # https://www.chromestatus.com/feature/5633521622188032
+        return
     if should_send_same_site_none(request.headers.get('User-Agent', '')):
         # Chromium is rolling out SameSite=Lax as a default
         # https://www.chromestatus.com/feature/5088147346030592
@@ -15,10 +22,7 @@ def set_cookie_without_samesite(request, response, key, *args, **kwargs):
         response.cookies[key]['samesite'] = 'None'
         # This will only work on secure cookies as well
         # https://www.chromestatus.com/feature/5633521622188032
-        response.cookies[key]['secure'] = (
-            kwargs.get('secure', False) or request.scheme == 'https' or
-            settings.SITE_URL.startswith('https://')
-        )
+        response.cookies[key]['secure'] = is_secure
 
 
 # Based on https://www.chromium.org/updates/same-site/incompatible-clients
@@ -48,7 +52,7 @@ def drops_unrecognized_same_site_cookies(useragent):
 
 # Regex parsing of User-Agent string. (See note above!)
 RE_CHROMIUM = re.compile(r"Chrom(e|ium)")
-RE_CHROMIUM_VERSION = re.compile(r"Chrom[^ /]+/([0-9]+)[.0-9]*")
+RE_CHROMIUM_VERSION = re.compile(r"Chrom[^ /]+[ /]([0-9]+)[.0-9]*")
 RE_UC_VERSION = re.compile(r"UCBrowser/([0-9]+)\.([0-9]+)\.([0-9]+)[.0-9]* ")
 RE_IOS_VERSION = re.compile(r"\(iP.+; CPU .*OS ([0-9]+)[_0-9]*.*\) AppleWebKit/")
 RE_MAC_VERSION = re.compile(r"\(Macintosh;.*Mac OS X ([0-9]+)_([0-9]+)[_0-9]*.*\) AppleWebKit/")
@@ -86,7 +90,10 @@ def is_chromium_based(useragent):
 
 def is_chromium_version_at_least(major, useragent):
     # Extract digits from first capturing group.
-    version = int(RE_CHROMIUM_VERSION.search(useragent).group(1))
+    match = RE_CHROMIUM_VERSION.search(useragent)
+    if not match:
+        return False
+    version = int(match.group(1))
     return version >= major
 
 

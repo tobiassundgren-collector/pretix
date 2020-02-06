@@ -10,6 +10,8 @@ from functools import partial
 from io import BytesIO
 
 import bleach
+from arabic_reshaper import ArabicReshaper
+from bidi.algorithm import get_display
 from django.conf import settings
 from django.contrib.staticfiles import finders
 from django.dispatch import receiver
@@ -32,6 +34,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import Paragraph
 
+from pretix.base.i18n import language
 from pretix.base.invoice import ThumbnailingImageReader
 from pretix.base.models import Order, OrderPosition
 from pretix.base.settings import PERSON_NAME_SCHEMES
@@ -197,6 +200,11 @@ DEFAULT_VARIABLES = OrderedDict((
         "label": _("Invoice address company"),
         "editor_sample": _("Sample company"),
         "evaluate": lambda op, order, ev: escape(order.invoice_address.company if getattr(order, 'invoice_address', None) else '')
+    }),
+    ("invoice_city", {
+        "label": _("Invoice address city"),
+        "editor_sample": _("Sample city"),
+        "evaluate": lambda op, order, ev: escape(order.invoice_address.city if getattr(order, 'invoice_address', None) else '')
     }),
     ("addons", {
         "label": _("List of Add-Ons"),
@@ -405,7 +413,11 @@ class Renderer:
     def _get_ev(self, op, order):
         return op.subevent or order.event
 
-    def _get_text_content(self, op: OrderPosition, order: Order, o: dict):
+    def _get_text_content(self, op: OrderPosition, order: Order, o: dict, inner=False):
+        if o.get('locale', None) and not inner:
+            with language(o['locale']):
+                return self._get_text_content(op, order, o, True)
+
         ev = self._get_ev(op, order)
         if not o['content']:
             return '(error)'
@@ -449,11 +461,32 @@ class Renderer:
                 tags=["br"], attributes={}, styles=[], strip=True
             )
         )
+
+        # reportlab does not support RTL, ligature-heavy scripts like Arabic. Therefore, we use ArabicReshaper
+        # to resolve all ligatures and python-bidi to switch RTL texts.
+        configuration = {
+            'delete_harakat': True,
+            'support_ligatures': False,
+        }
+        reshaper = ArabicReshaper(configuration=configuration)
+        text = "<br/>".join(get_display(reshaper.reshape(l)) for l in text.split("<br/>"))
+
         p = Paragraph(text, style=style)
-        p.wrapOn(canvas, float(o['width']) * mm, 1000 * mm)
+        w, h = p.wrapOn(canvas, float(o['width']) * mm, 1000 * mm)
         # p_size = p.wrap(float(o['width']) * mm, 1000 * mm)
         ad = getAscentDescent(font, float(o['fontsize']))
-        p.drawOn(canvas, float(o['left']) * mm, float(o['bottom']) * mm - ad[1])
+        canvas.saveState()
+        # The ascent/descent offsets here are not really proven to be correct, they're just empirical values to get
+        # reportlab render similarly to browser canvas.
+        if o.get('downward', False):
+            canvas.translate(float(o['left']) * mm, float(o['bottom']) * mm)
+            canvas.rotate(o.get('rotation', 0) * -1)
+            p.drawOn(canvas, 0, -h - ad[1] / 2)
+        else:
+            canvas.translate(float(o['left']) * mm, float(o['bottom']) * mm + h)
+            canvas.rotate(o.get('rotation', 0) * -1)
+            p.drawOn(canvas, 0, -h - ad[1])
+        canvas.restoreState()
 
     def draw_page(self, canvas: Canvas, order: Order, op: OrderPosition):
         for o in self.layout:

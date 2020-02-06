@@ -178,6 +178,7 @@ def _display_checkin(event, logentry):
 @receiver(signal=logentry_display, dispatch_uid="pretixcontrol_logentry_display")
 def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
     plains = {
+        'pretix.object.cloned': _('This object has been created by cloning.'),
         'pretix.event.comment': _('The event\'s internal comment has been updated.'),
         'pretix.event.order.modified': _('The order details have been changed.'),
         'pretix.event.order.unpaid': _('The order has been marked as unpaid.'),
@@ -324,6 +325,8 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.device.initialized': _('The device has been initialized.'),
         'pretix.device.keyroll': _('The access token of the device has been regenerated.'),
         'pretix.device.updated': _('The device has notified the server of an hardware or software update.'),
+        'pretix.giftcards.created': _('The gift card has been created.'),
+        'pretix.giftcards.transaction.manual': _('A manual transaction has been performed.'),
     }
 
     data = json.loads(logentry.data)

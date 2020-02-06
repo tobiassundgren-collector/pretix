@@ -70,6 +70,8 @@ error_messages = {
     'voucher_invalid': _('The voucher code used for one of the items in your cart is not known in our database.'),
     'voucher_redeemed': _('The voucher code used for one of the items in your cart has already been used the maximum '
                           'number of times allowed. We removed this item from your cart.'),
+    'voucher_budget_used': _('The voucher code used for one of the items in your cart has already been too often. We '
+                             'adjusted the price of the item in your cart.'),
     'voucher_expired': _('The voucher code used for one of the items in your cart is expired. We removed this item '
                          'from your cart.'),
     'voucher_invalid_item': _('The voucher code used for one of the items in your cart is not valid for this item. We '
@@ -418,13 +420,15 @@ def _check_date(event: Event, now_dt: datetime):
                 raise OrderError(error_messages['ended'])
 
 
-def _check_positions(event: Event, now_dt: datetime, positions: List[CartPosition], address: InvoiceAddress=None):
+def _check_positions(event: Event, now_dt: datetime, positions: List[CartPosition], address: InvoiceAddress=None,
+                     sales_channel='web'):
     err = None
     errargs = None
     _check_date(event, now_dt)
 
     products_seen = Counter()
     changed_prices = {}
+    v_budget = {}
     deleted_positions = set()
     seats_seen = set()
 
@@ -466,6 +470,20 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
                 err = err or error_messages['voucher_redeemed']
                 delete(cp)
                 continue
+
+            if cp.voucher.budget is not None:
+                if cp.voucher not in v_budget:
+                    v_budget[cp.voucher] = cp.voucher.budget - cp.voucher.budget_used()
+                disc = cp.price_before_voucher - cp.price
+                if disc > v_budget[cp.voucher]:
+                    new_disc = max(0, v_budget[cp.voucher])
+                    cp.price = cp.price + (disc - new_disc)
+                    cp.save()
+                    err = err or error_messages['voucher_budget_used']
+                    v_budget[cp.voucher] -= new_disc
+                    continue
+                else:
+                    v_budget[cp.voucher] -= disc
 
         if cp.subevent and cp.subevent.presale_start and now_dt < cp.subevent.presale_start:
             err = err or error_messages['some_subevent_not_started']
@@ -512,7 +530,7 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
         if cp.seat:
             # Unlike quotas (which we blindly trust as long as the position is not expired), we check seats every
             # time, since we absolutely can not overbook a seat.
-            if not cp.seat.is_available(ignore_cart=cp, ignore_voucher_id=cp.voucher_id) or cp.seat.blocked:
+            if not cp.seat.is_available(ignore_cart=cp, ignore_voucher_id=cp.voucher_id, sales_channel=sales_channel):
                 err = err or error_messages['seat_unavailable']
                 cp.delete()
                 continue
@@ -521,6 +539,11 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
             # Other checks are not necessary
             continue
 
+        max_discount = None
+        if cp.price_before_voucher is not None and cp.voucher in v_budget:
+            current_discount = cp.price_before_voucher - cp.price
+            max_discount = max(v_budget[cp.voucher] + current_discount, 0)
+
         if cp.is_bundled:
             try:
                 bundle = cp.addon_to.item.bundles.get(bundled_item=cp.item, bundled_variation=cp.variation)
@@ -528,7 +551,9 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
             except ItemBundle.DoesNotExist:
                 bprice = cp.price
             price = get_price(cp.item, cp.variation, cp.voucher, bprice, cp.subevent, custom_price_is_net=False,
-                              invoice_address=address, force_custom_price=True)
+                              invoice_address=address, force_custom_price=True, max_discount=max_discount)
+            pbv = get_price(cp.item, cp.variation, None, bprice, cp.subevent, custom_price_is_net=False,
+                            invoice_address=address, force_custom_price=True, max_discount=max_discount)
             changed_prices[cp.pk] = bprice
         else:
             bundled_sum = 0
@@ -538,7 +563,14 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
                         bundled_sum += changed_prices.get(bundledp.pk, bundledp.price)
 
             price = get_price(cp.item, cp.variation, cp.voucher, cp.price, cp.subevent, custom_price_is_net=False,
-                              addon_to=cp.addon_to, invoice_address=address, bundled_sum=bundled_sum)
+                              addon_to=cp.addon_to, invoice_address=address, bundled_sum=bundled_sum,
+                              max_discount=max_discount)
+            pbv = get_price(cp.item, cp.variation, None, cp.price, cp.subevent, custom_price_is_net=False,
+                            addon_to=cp.addon_to, invoice_address=address, bundled_sum=bundled_sum,
+                            max_discount=max_discount)
+
+        if max_discount is not None:
+            v_budget[cp.voucher] = v_budget[cp.voucher] + current_discount - (pbv.gross - price.gross)
 
         if price is False or len(quotas) == 0:
             err = err or error_messages['unavailable']
@@ -550,6 +582,11 @@ def _check_positions(event: Event, now_dt: datetime, positions: List[CartPositio
                 err = err or error_messages['voucher_expired']
                 delete(cp)
                 continue
+
+        if pbv is not None and pbv.gross != price.gross:
+            cp.price_before_voucher = pbv.gross
+        else:
+            cp.price_before_voucher = None
 
         if price.gross != cp.price and not (cp.item.free_price and cp.price > price.gross):
             cp.price = price.gross
@@ -801,12 +838,15 @@ def _perform_order(event: Event, payment_provider: str, position_ids: List[str],
         lockfn = event.lock
 
     with lockfn() as now_dt:
-        positions = list(positions.select_related('item', 'variation', 'subevent', 'seat', 'addon_to').prefetch_related('addons'))
+        positions = list(
+            positions.select_related('item', 'variation', 'subevent', 'seat', 'addon_to').prefetch_related('addons')
+        )
+        positions.sort(key=lambda k: position_ids.index(k.pk))
         if len(positions) == 0:
             raise OrderError(error_messages['empty'])
         if len(position_ids) != len(positions):
             raise OrderError(error_messages['internal'])
-        _check_positions(event, now_dt, positions, address=addr)
+        _check_positions(event, now_dt, positions, address=addr, sales_channel=sales_channel)
         order, payment = _create_order(event, email, positions, now_dt, pprov,
                                        locale=locale, address=addr, meta_info=meta_info, sales_channel=sales_channel,
                                        gift_cards=gift_cards, shown_total=shown_total)
@@ -944,7 +984,7 @@ def send_download_reminders(sender, **kwargs):
             continue
 
         reminder_date = (o.first_date - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
-        if now() < reminder_date:
+        if now() < reminder_date or o.datetime > reminder_date:
             continue
 
         with transaction.atomic():
@@ -1064,6 +1104,21 @@ class OrderChangeManager:
         self._operations.append(self.ItemOperation(position, item, variation))
 
     def change_seat(self, position: OrderPosition, seat: Seat):
+        if isinstance(seat, str):
+            subev = None
+            if self.event.has_subevents:
+                subev = position.subevent
+                for p in self._operations:
+                    if isinstance(p, self.SubeventOperation) and p.position == position:
+                        subev = p.subevent
+            try:
+                seat = Seat.objects.get(
+                    event=self.event,
+                    subevent=subev,
+                    seat_guid=seat
+                )
+            except Seat.DoesNotExist:
+                raise OrderError(error_messages['seat_invalid'])
         if position.seat:
             self._seatdiff.subtract([position.seat])
         if seat:
@@ -1147,6 +1202,19 @@ class OrderChangeManager:
 
     def add_position(self, item: Item, variation: ItemVariation, price: Decimal, addon_to: Order = None,
                      subevent: SubEvent = None, seat: Seat = None):
+        if isinstance(seat, str):
+            if not seat:
+                seat = None
+            else:
+                try:
+                    seat = Seat.objects.get(
+                        event=self.event,
+                        subevent=subevent,
+                        seat_guid=seat
+                    )
+                except Seat.DoesNotExist:
+                    raise OrderError(error_messages['seat_invalid'])
+
         if price is None:
             price = get_price(item, variation, subevent=subevent, invoice_address=self._invoice_address)
         else:
@@ -1170,7 +1238,7 @@ class OrderChangeManager:
             raise OrderError(self.error_messages['seat_required'])
         elif not seated and seat:
             raise OrderError(self.error_messages['seat_forbidden'])
-        if seat and subevent and seat.subevent_id != subevent:
+        if seat and subevent and seat.subevent_id != subevent.pk:
             raise OrderError(self.error_messages['seat_subevent_mismatch'].format(seat=seat.name))
 
         new_quotas = (variation.quotas.filter(subevent=subevent)
@@ -1197,7 +1265,7 @@ class OrderChangeManager:
         for seat, diff in self._seatdiff.items():
             if diff <= 0:
                 continue
-            if not seat.is_available() or diff > 1:
+            if not seat.is_available(sales_channel=self.order.sales_channel) or diff > 1:
                 raise OrderError(self.error_messages['seat_unavailable'].format(seat=seat.name))
 
         if self.event.has_subevents:
@@ -1333,6 +1401,16 @@ class OrderChangeManager:
                 op.position.item = op.item
                 op.position.variation = op.variation
                 op.position._calculate_tax()
+                if op.position.price_before_voucher is not None and op.position.voucher and not op.position.addon_to_id:
+                    op.position.price_before_voucher = max(
+                        op.position.price,
+                        get_price(
+                            op.position.item, op.position.variation,
+                            subevent=op.position.subevent,
+                            custom_price=op.position.price,
+                            invoice_address=self._invoice_address
+                        ).gross
+                    )
                 op.position.save()
             elif isinstance(op, self.SeatOperation):
                 self.order.log_action('pretix.event.order.changed.seat', user=self.user, auth=self.auth, data={
@@ -1356,6 +1434,16 @@ class OrderChangeManager:
                 })
                 op.position.subevent = op.subevent
                 op.position.save()
+                if op.position.price_before_voucher is not None and op.position.voucher and not op.position.addon_to_id:
+                    op.position.price_before_voucher = max(
+                        op.position.price,
+                        get_price(
+                            op.position.item, op.position.variation,
+                            subevent=op.position.subevent,
+                            custom_price=op.position.price,
+                            invoice_address=self._invoice_address
+                        ).gross
+                    )
             elif isinstance(op, self.FeeValueOperation):
                 self.order.log_action('pretix.event.order.changed.feevalue', user=self.user, auth=self.auth, data={
                     'fee': op.fee.pk,

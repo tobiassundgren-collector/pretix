@@ -23,7 +23,8 @@ from pretix.base.models import (
     CartPosition, InvoiceAddress, QuestionAnswer, SubEvent, Voucher,
 )
 from pretix.base.services.cart import (
-    CartError, add_items_to_cart, clear_cart, remove_cart_position,
+    CartError, add_items_to_cart, apply_voucher, clear_cart,
+    remove_cart_position,
 )
 from pretix.base.views.tasks import AsyncAction
 from pretix.multidomain.urlreverse import eventreverse
@@ -328,6 +329,27 @@ def cart_session(request):
 
 
 @method_decorator(allow_frame_if_namespaced, 'dispatch')
+class CartApplyVoucher(EventViewMixin, CartActionMixin, AsyncAction, View):
+    task = apply_voucher
+    known_errortypes = ['CartError']
+
+    def get_success_message(self, value):
+        return _('We applied the voucher to as many products in your cart as we could.')
+
+    def post(self, request, *args, **kwargs):
+        if 'voucher' in request.POST:
+            return self.do(self.request.event.id, request.POST.get('voucher'), get_or_create_cart_id(self.request),
+                           translation.get_language(), request.sales_channel.identifier)
+        else:
+            if 'ajax' in self.request.GET or 'ajax' in self.request.POST:
+                return JsonResponse({
+                    'redirect': self.get_error_url()
+                })
+            else:
+                return redirect(self.get_error_url())
+
+
+@method_decorator(allow_frame_if_namespaced, 'dispatch')
 class CartRemove(EventViewMixin, CartActionMixin, AsyncAction, View):
     task = remove_cart_position
     known_errortypes = ['CartError']
@@ -341,7 +363,8 @@ class CartRemove(EventViewMixin, CartActionMixin, AsyncAction, View):
 
     def post(self, request, *args, **kwargs):
         if 'id' in request.POST:
-            return self.do(self.request.event.id, request.POST.get('id'), get_or_create_cart_id(self.request), translation.get_language())
+            return self.do(self.request.event.id, request.POST.get('id'), get_or_create_cart_id(self.request),
+                           translation.get_language(), request.sales_channel.identifier)
         else:
             if 'ajax' in self.request.GET or 'ajax' in self.request.POST:
                 return JsonResponse({
@@ -361,7 +384,8 @@ class CartClear(EventViewMixin, CartActionMixin, AsyncAction, View):
         return _('Your cart is now empty.')
 
     def post(self, request, *args, **kwargs):
-        return self.do(self.request.event.id, get_or_create_cart_id(self.request), translation.get_language())
+        return self.do(self.request.event.id, get_or_create_cart_id(self.request), translation.get_language(),
+                       request.sales_channel.identifier)
 
 
 @method_decorator(allow_cors_if_namespaced, 'dispatch')
@@ -435,6 +459,7 @@ class RedeemView(NoSearchIndexViewMixin, EventViewMixin, TemplateView):
         context['items_by_category'] = item_group_by_category(items)
 
         context['subevent'] = self.subevent
+        context['seating_available'] = self.voucher.seating_available(self.subevent)
 
         context['new_tab'] = (
             'require_cookie' in self.request.GET and

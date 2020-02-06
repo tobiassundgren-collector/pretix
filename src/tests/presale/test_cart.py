@@ -843,6 +843,20 @@ class CartTest(CartTestMixin, TestCase):
         with scopes_disabled():
             self.assertEqual(CartPosition.objects.filter(cart_id=self.session_key, event=self.event).count(), 1)
 
+    def test_max_per_item_variations_failed(self):
+        self.shirt.max_per_order = 1
+        self.shirt.save()
+        response = self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
+            'variation_%d_%d' % (self.shirt.id, self.shirt_blue.id): '1',
+            'variation_%d_%d' % (self.shirt.id, self.shirt_red.id): '1',
+        }, follow=True)
+        self.assertRedirects(response, '/%s/%s/?require_cookie=true' % (self.orga.slug, self.event.slug),
+                             target_status_code=200)
+        doc = BeautifulSoup(response.rendered_content, "lxml")
+        self.assertIn('more than', doc.select('.alert-danger')[0].text)
+        with scopes_disabled():
+            self.assertEqual(CartPosition.objects.filter(cart_id=self.session_key, event=self.event).count(), 0)
+
     def test_max_per_item_failed(self):
         self.ticket.max_per_order = 2
         self.ticket.save()
@@ -1374,6 +1388,32 @@ class CartTest(CartTestMixin, TestCase):
         self.assertEqual(objs[0].item, self.ticket)
         self.assertIsNone(objs[0].variation)
         self.assertEqual(objs[0].price, Decimal('21.00'))
+        self.assertEqual(objs[0].price_before_voucher, Decimal('23.00'))
+
+    def test_voucher_free_price_before_voucher_cap(self):
+        with scopes_disabled():
+            v = Voucher.objects.create(item=self.ticket, value=Decimal('10.00'), price_mode='percent', event=self.event)
+        self.ticket.free_price = True
+        self.ticket.save()
+        response = self.client.post('/%s/%s/cart/add' % (self.orga.slug, self.event.slug), {
+            'item_%d' % self.ticket.id: '1',
+            'price_%d' % self.ticket.id: '41.00',
+            '_voucher_code': v.code,
+        }, follow=True)
+        self.assertRedirects(response, '/%s/%s/?require_cookie=true' % (self.orga.slug, self.event.slug),
+                             target_status_code=200)
+        doc = BeautifulSoup(response.rendered_content, "lxml")
+        self.assertIn('Early-bird', doc.select('.cart .cart-row')[0].select('strong')[0].text)
+        self.assertIn('1', doc.select('.cart .cart-row')[0].select('.count')[0].text)
+        self.assertIn('41', doc.select('.cart .cart-row')[0].select('.price')[0].text)
+        self.assertIn('41', doc.select('.cart .cart-row')[0].select('.price')[1].text)
+        with scopes_disabled():
+            objs = list(CartPosition.objects.filter(cart_id=self.session_key, event=self.event))
+        self.assertEqual(len(objs), 1)
+        self.assertEqual(objs[0].item, self.ticket)
+        self.assertIsNone(objs[0].variation)
+        self.assertEqual(objs[0].price, Decimal('41.00'))
+        self.assertEqual(objs[0].price_before_voucher, Decimal('41.00'))
 
     def test_voucher_free_price_lower_bound(self):
         with scopes_disabled():
@@ -1398,6 +1438,7 @@ class CartTest(CartTestMixin, TestCase):
         self.assertEqual(objs[0].item, self.ticket)
         self.assertIsNone(objs[0].variation)
         self.assertEqual(objs[0].price, Decimal('20.70'))
+        self.assertEqual(objs[0].price_before_voucher, Decimal('23.00'))
 
     def test_voucher_redemed(self):
         with scopes_disabled():
@@ -1724,6 +1765,180 @@ class CartTest(CartTestMixin, TestCase):
         with scopes_disabled():
             positions = CartPosition.objects.filter(cart_id=self.session_key, event=self.event)
             assert positions.count() == 1
+
+    def test_voucher_apply_matching(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=15, expires=now() + timedelta(minutes=10)
+            )
+            v = Voucher.objects.create(
+                event=self.event, item=self.ticket, price_mode='set', value=Decimal('4.00')
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-success' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher == v
+            assert cp1.price == Decimal('4.00')
+            assert cp2.voucher is None
+
+    def test_voucher_apply_partial_in_price_order(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=150, expires=now() + timedelta(minutes=10)
+            )
+            v = Voucher.objects.create(
+                event=self.event, price_mode='set', value=Decimal('4.00'), max_usages=100, redeemed=99
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-success' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher is None
+            assert cp1.price == Decimal('23.00')
+            assert cp2.voucher == v
+            assert cp2.price == Decimal('4.00')
+
+    def test_voucher_apply_multiple(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=150, expires=now() + timedelta(minutes=10)
+            )
+            v = Voucher.objects.create(
+                event=self.event, price_mode='set', quota=self.quota_all, value=Decimal('4.00'), max_usages=100
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-success' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher == v
+            assert cp1.price == Decimal('4.00')
+            assert cp2.voucher == v
+            assert cp2.price == Decimal('4.00')
+
+    def test_voucher_apply_only_one_per_line(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            v2 = Voucher.objects.create(
+                event=self.event, price_mode='set', quota=self.quota_all, value=Decimal('4.00'), max_usages=100
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=150, expires=now() + timedelta(minutes=10), voucher=v2
+            )
+            v = Voucher.objects.create(
+                event=self.event, price_mode='set', quota=self.quota_all, value=Decimal('4.00'), max_usages=100
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-success' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher == v
+            assert cp1.price == Decimal('4.00')
+            assert cp2.voucher == v2
+            assert cp2.price == Decimal('150.00')
+
+    """
+    def test_voucher_apply_only_positive(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=15, expires=now() + timedelta(minutes=10)
+            )
+            v = Voucher.objects.create(
+                event=self.event, price_mode='set', value=Decimal('40.00'), max_usages=100
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-danger' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher is None
+            assert cp2.voucher is None
+    """
+
+    def test_voucher_apply_expired(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=15, expires=now() + timedelta(minutes=10)
+            )
+            v = Voucher.objects.create(
+                event=self.event, price_mode='set', value=Decimal('40.00'), max_usages=100,
+                valid_until=now() - timedelta(days=1)
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-danger' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher is None
+            assert cp2.voucher is None
+
+    def test_voucher_apply_used(self):
+        with scopes_disabled():
+            cp1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+            cp2 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.shirt, variation=self.shirt_blue,
+                price=15, expires=now() + timedelta(minutes=10)
+            )
+            v = Voucher.objects.create(
+                event=self.event, price_mode='set', value=Decimal('40.00'), max_usages=100, redeemed=100
+            )
+        response = self.client.post('/%s/%s/cart/voucher' % (self.orga.slug, self.event.slug), {
+            'voucher': v.code,
+        }, follow=True)
+        assert 'alert-danger' in response.rendered_content
+        with scopes_disabled():
+            cp1.refresh_from_db()
+            cp2.refresh_from_db()
+            assert cp1.voucher is None
+            assert cp2.voucher is None
 
 
 class CartAddonTest(CartTestMixin, TestCase):
@@ -2250,6 +2465,20 @@ class CartAddonTest(CartTestMixin, TestCase):
         assert cp2.expires > now()
         assert cp2.addon_to_id == cp1.pk
 
+    @classscope(attr='orga')
+    def test_expand_expired_refresh_voucher(self):
+        v = Voucher.objects.create(item=self.ticket, value=Decimal('20.00'), event=self.event, price_mode='set',
+                                   valid_until=now() + timedelta(days=2), max_usages=999, redeemed=0)
+        cp1 = CartPosition.objects.create(
+            expires=now() - timedelta(minutes=10), item=self.ticket, price=Decimal('21.50'),
+            event=self.event, cart_id=self.session_key, voucher=v
+        )
+        self.cm.extend_expired_positions()
+        self.cm.commit()
+        cp1.refresh_from_db()
+        assert cp1.expires > now()
+        assert cp1.price_before_voucher == Decimal('23.00')
+
 
 class CartBundleTest(CartTestMixin, TestCase):
     @scopes_disabled()
@@ -2302,6 +2531,30 @@ class CartBundleTest(CartTestMixin, TestCase):
         assert cp.price == 23 - 1.5
         assert cp.addons.count() == 1
         assert cp.voucher == v
+        assert cp.price_before_voucher == 23 - 1.5
+        a = cp.addons.get()
+        assert a.item == self.trans
+        assert a.price == 1.5
+        assert not a.voucher
+
+    @classscope(attr='orga')
+    def test_discounted_voucher_on_base_product(self):
+        v = self.event.vouchers.create(code="foo", item=self.ticket, price_mode='subtract', value=Decimal('1.50'))
+        self.cm.add_new_items([
+            {
+                'item': self.ticket.pk,
+                'variation': None,
+                'voucher': v.code,
+                'count': 1
+            }
+        ])
+        self.cm.commit()
+        cp = CartPosition.objects.get(addon_to__isnull=True)
+        assert cp.item == self.ticket
+        assert cp.price == 23 - 1.5 - 1.5
+        assert cp.addons.count() == 1
+        assert cp.voucher == v
+        assert cp.price_before_voucher == 23 - 1.5
         a = cp.addons.get()
         assert a.item == self.trans
         assert a.price == 1.5
@@ -2684,6 +2937,48 @@ class CartBundleTest(CartTestMixin, TestCase):
         b.refresh_from_db()
         assert cp.price == 0
         assert b.price == 40
+
+    @classscope(attr='orga')
+    def test_voucher_apply_multiple(self):
+        cp = CartPosition.objects.create(
+            event=self.event, cart_id=self.session_key, item=self.ticket,
+            price=21.5, expires=now() + timedelta(minutes=10)
+        )
+        b = CartPosition.objects.create(
+            event=self.event, cart_id=self.session_key, item=self.trans, addon_to=cp,
+            price=1.5, expires=now() + timedelta(minutes=10), is_bundled=True
+        )
+        v = Voucher.objects.create(
+            event=self.event, price_mode='set', value=Decimal('4.00'), max_usages=100
+        )
+
+        self.cm.apply_voucher(v.code)
+        self.cm.commit()
+        cp.refresh_from_db()
+        b.refresh_from_db()
+        assert cp.price == Decimal('2.50')
+        assert b.price == Decimal('1.50')
+
+    @classscope(attr='orga')
+    def test_voucher_apply_multiple_reduce_beyond_designated_price(self):
+        cp = CartPosition.objects.create(
+            event=self.event, cart_id=self.session_key, item=self.ticket,
+            price=21.5, expires=now() + timedelta(minutes=10)
+        )
+        b = CartPosition.objects.create(
+            event=self.event, cart_id=self.session_key, item=self.trans, addon_to=cp,
+            price=1.5, expires=now() + timedelta(minutes=10), is_bundled=True
+        )
+        v = Voucher.objects.create(
+            event=self.event, price_mode='set', value=Decimal('0.00'), max_usages=100
+        )
+
+        self.cm.apply_voucher(v.code)
+        self.cm.commit()
+        cp.refresh_from_db()
+        b.refresh_from_db()
+        assert cp.price == Decimal('0.00')
+        assert b.price == Decimal('1.50')
 
     @classscope(attr='orga')
     def test_extend_base_price_changed(self):

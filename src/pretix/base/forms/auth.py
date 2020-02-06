@@ -32,7 +32,8 @@ class LoginForm(forms.Form):
         for k, f in backend.login_form_fields.items():
             self.fields[k] = f
 
-        if not settings.PRETIX_LONG_SESSIONS:
+        # Authentication backends which use urls cannot have long sessions.
+        if not settings.PRETIX_LONG_SESSIONS or backend.url:
             del self.fields['keep_logged_in']
         else:
             self.fields.move_to_end('keep_logged_in')
@@ -197,6 +198,7 @@ class ReauthForm(forms.Form):
         self.request = request
         self.user = user
         self.backend = backend
+        self.backend.url = backend.authentication_url(self.request)
         super().__init__(*args, **kwargs)
         for k, f in backend.login_form_fields.items():
             self.fields[k] = f

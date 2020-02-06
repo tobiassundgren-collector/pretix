@@ -42,6 +42,7 @@ except:
 class CustomBuild(build):
     def run(self):
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", "pretix.settings")
+        os.environ.setdefault("PRETIX_IGNORE_CONFLICTS", "True")
         import django
         django.setup()
         from django.conf import settings
@@ -142,12 +143,14 @@ setup(
         'django-localflavor',
         'jsonschema',
         'django-hijack>=2.1.10,<2.2.0',
-        'openpyxl',
+        'openpyxl==2.6.*',
         'django-oauth-toolkit==1.2.*',
-        'oauthlib==2.1.*',
+        'oauthlib==3.1.*',
         'urllib3==1.24.*',  # required by current requests
         'django-phonenumber-field==3.0.*',
         'phonenumberslite==8.10.*',
+        'python-bidi==0.4.*',  # Support for Arabic in reportlab
+        'arabic-reshaper==2.0.15',  # Support for Arabic in reportlab
     ],
     extras_require={
         'dev': [

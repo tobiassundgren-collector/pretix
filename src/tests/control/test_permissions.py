@@ -1,3 +1,4 @@
+import time
 from datetime import timedelta
 
 import pytest
@@ -115,6 +116,7 @@ event_urls = [
     "orders/ABC/delete",
     "orders/ABC/",
     "orders/",
+    "orders/import/",
     "checkinlists/",
     "checkinlists/1/",
     "checkinlists/1/change",
@@ -280,6 +282,8 @@ event_permission_urls = [
     ("can_change_orders", "orders/FOO/delete", 302),
     ("can_change_orders", "orders/FOO/comment", 405),
     ("can_change_orders", "orders/FOO/locale", 200),
+    ("can_change_orders", "orders/import/", 200),
+    ("can_change_orders", "orders/import/0ab7b081-92d3-4480-82de-2f8b056fd32f/", 404),
     ("can_view_orders", "orders/FOO/answer/5/", 404),
     ("can_change_vouchers", "vouchers/add", 200),
     ("can_change_orders", "requiredactions/", 200),
@@ -354,6 +358,9 @@ def test_correct_event_permission_all_events(perf_patch, client, env, perm, url,
     t.save()
     t.members.add(env[1])
     client.login(email='dummy@dummy.dummy', password='dummy')
+    session = client.session
+    session['pretix_auth_login_time'] = int(time.time())
+    session.save()
     response = client.get('/control/event/dummy/dummy/' + url)
     assert response.status_code == code
 
@@ -367,6 +374,9 @@ def test_correct_event_permission_limited(perf_patch, client, env, perm, url, co
     t.members.add(env[1])
     t.limit_events.add(env[0])
     client.login(email='dummy@dummy.dummy', password='dummy')
+    session = client.session
+    session['pretix_auth_login_time'] = int(time.time())
+    session.save()
     response = client.get('/control/event/dummy/dummy/' + url)
     assert response.status_code == code
 
@@ -419,5 +429,7 @@ def test_correct_organizer_permission(perf_patch, client, env, perm, url, code):
     t.save()
     t.members.add(env[1])
     client.login(email='dummy@dummy.dummy', password='dummy')
+    client.session['pretix_auth_login_time'] = int(time.time())
+    client.session.save()
     response = client.get('/control/' + url)
     assert response.status_code == code

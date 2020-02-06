@@ -85,6 +85,10 @@ DEFAULTS = {
         'default': 'True',
         'type': bool,
     },
+    'invoice_include_expire_date': {
+        'default': 'False',
+        'type': bool,
+    },
     'invoice_numbers_consecutive': {
         'default': 'True',
         'type': bool,
@@ -679,6 +683,10 @@ Your {event} team"""))
         )),
         'type': LazyI18nString
     },
+    'order_import_settings': {
+        'default': '{}',
+        'type': dict
+    },
     'organizer_info_text': {
         'default': '',
         'type': LazyI18nString
@@ -742,7 +750,15 @@ Your {event} team"""))
     'name_scheme': {
         'default': 'full',
         'type': str
-    }
+    },
+    'giftcard_length': {
+        'default': settings.ENTROPY['giftcard_secret'],
+        'type': int
+    },
+    'seating_allow_blocked_seats_for_channel': {
+        'default': [],
+        'type': list
+    },
 }
 PERSON_NAME_TITLE_GROUPS = OrderedDict([
     ('english_common', (_('Most common English titles'), (

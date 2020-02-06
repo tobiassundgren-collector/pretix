@@ -1,8 +1,11 @@
+from urllib.parse import urlencode
+
 from django import forms
 from django.conf import settings
-from django.contrib.auth.hashers import check_password
 from django.core.exceptions import ValidationError
-from django.core.validators import RegexValidator, validate_email
+from django.core.validators import (
+    MaxValueValidator, MinValueValidator, RegexValidator, validate_email,
+)
 from django.db.models import Q
 from django.forms import formset_factory
 from django.urls import reverse
@@ -146,7 +149,8 @@ class EventWizardBasicsForm(I18nModelForm):
         self.user = kwargs.pop('user')
         kwargs.pop('session')
         super().__init__(*args, **kwargs)
-        self.initial['timezone'] = get_current_timezone_name()
+        if 'timezone' not in self.initial:
+            self.initial['timezone'] = get_current_timezone_name()
         self.fields['locale'].choices = [(a, b) for a, b in settings.LANGUAGES if a in self.locales]
         self.fields['location'].widget.attrs['rows'] = '3'
         self.fields['location'].widget.attrs['placeholder'] = _(
@@ -270,12 +274,18 @@ class EventMetaValueForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['value'].required = False
         self.fields['value'].widget.attrs['placeholder'] = self.property.default
+        self.fields['value'].widget.attrs['data-typeahead-url'] = (
+            reverse('control:events.meta.typeahead') + '?' + urlencode({
+                'property': self.property.name,
+                'organizer': self.property.organizer.slug,
+            })
+        )
 
     class Meta:
         model = EventMetaValue
         fields = ['value']
         widgets = {
-            'value': forms.TextInput
+            'value': forms.TextInput()
         }
 
 
@@ -673,6 +683,9 @@ class PaymentSettingsForm(SettingsForm):
                     "you use slow payment methods like bank transfer, we recommend 14 days. If you only use real-time "
                     "payment methods, we recommend still setting two or three days to allow people to retry failed "
                     "payments."),
+        validators=[MinValueValidator(0),
+                    MaxValueValidator(1000000)]
+
     )
     payment_term_last = RelativeDateField(
         label=_('Last date of payments'),
@@ -837,7 +850,9 @@ class InvoiceSettingsForm(SettingsForm):
         help_text=_("This will be prepended to invoice numbers. If you leave this field empty, your event slug will "
                     "be used followed by a dash. Attention: If multiple events within the same organization use the "
                     "same value in this field, they will share their number range, i.e. every full number will be "
-                    "used at most once over all of your events. This setting only affects future invoices."),
+                    "used at most once over all of your events. This setting only affects future invoices. You can "
+                    "use %Y (with century) %y (without century) to insert the year of the invoice, or %m and %d for "
+                    "the day of month."),
         required=False,
     )
     invoice_numbers_prefix_cancellations = forms.CharField(
@@ -868,6 +883,11 @@ class InvoiceSettingsForm(SettingsForm):
     )
     invoice_attendee_name = forms.BooleanField(
         label=_("Show attendee names on invoices"),
+        required=False
+    )
+    invoice_include_expire_date = forms.BooleanField(
+        label=_("Show expiration date of order"),
+        help_text=_("The expiration date will not be shown if the invoice is generated after the order is paid."),
         required=False
     )
     invoice_email_attachment = forms.BooleanField(
@@ -1433,14 +1453,8 @@ class WidgetCodeForm(forms.Form):
 
 class EventDeleteForm(forms.Form):
     error_messages = {
-        'pw_current_wrong': _("The password you entered was not correct."),
         'slug_wrong': _("The slug you entered was not correct."),
     }
-    user_pw = forms.CharField(
-        max_length=255,
-        label=_("Your password"),
-        widget=forms.PasswordInput()
-    )
     slug = forms.CharField(
         max_length=255,
         label=_("Event slug"),
@@ -1448,18 +1462,7 @@ class EventDeleteForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         self.event = kwargs.pop('event')
-        self.user = kwargs.pop('user')
         super().__init__(*args, **kwargs)
-
-    def clean_user_pw(self):
-        user_pw = self.cleaned_data.get('user_pw')
-        if not check_password(user_pw, self.user.password):
-            raise forms.ValidationError(
-                self.error_messages['pw_current_wrong'],
-                code='pw_current_wrong',
-            )
-
-        return user_pw
 
     def clean_slug(self):
         slug = self.cleaned_data.get('slug')

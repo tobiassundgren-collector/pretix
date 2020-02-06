@@ -37,9 +37,11 @@ class VoucherList(PaginationMixin, EventPermissionRequiredMixin, ListView):
     permission = 'can_view_vouchers'
 
     def get_queryset(self):
-        qs = self.request.event.vouchers.filter(waitinglistentries__isnull=True).select_related(
+        qs = Voucher.annotate_budget_used_orders(self.request.event.vouchers.filter(
+            waitinglistentries__isnull=True
+        ).select_related(
             'item', 'variation', 'seat'
-        )
+        ))
         if self.filter_form.is_valid():
             qs = self.filter_form.filter_qs(qs)
 
@@ -65,7 +67,7 @@ class VoucherList(PaginationMixin, EventPermissionRequiredMixin, ListView):
 
         headers = [
             _('Voucher code'), _('Valid until'), _('Product'), _('Reserve quota'), _('Bypass quota'),
-            _('Price effect'), _('Value'), _('Tag'), _('Redeemed'), _('Maximum usages')
+            _('Price effect'), _('Value'), _('Tag'), _('Redeemed'), _('Maximum usages'), _('Seat')
         ]
         writer.writerow(headers)
 
@@ -77,6 +79,8 @@ class VoucherList(PaginationMixin, EventPermissionRequiredMixin, ListView):
                     prod = '%s' % str(v.item)
             elif v.quota:
                 prod = _('Any product in quota "{quota}"').format(quota=str(v.quota.name))
+            else:
+                prod = _('Any product')
             row = [
                 v.code,
                 v.valid_until.isoformat() if v.valid_until else "",
@@ -87,7 +91,8 @@ class VoucherList(PaginationMixin, EventPermissionRequiredMixin, ListView):
                 str(v.value) if v.value is not None else "",
                 v.tag,
                 str(v.redeemed),
-                str(v.max_usages)
+                str(v.max_usages),
+                str(v.seat) if v.seat else ""
             ]
             writer.writerow(row)
 
@@ -306,6 +311,7 @@ class VoucherBulkCreate(EventPermissionRequiredMixin, CreateView):
         if self.copy_from:
             i = modelcopy(self.copy_from)
             i.pk = None
+            i.redeemed = 0
             kwargs['instance'] = i
         else:
             kwargs['instance'] = Voucher(event=self.request.event)

@@ -134,6 +134,9 @@ CSRF_TRUSTED_ORIGINS = [urlparse(SITE_URL).hostname]
 
 TRUST_X_FORWARDED_FOR = config.get('pretix', 'trust_x_forwarded_for', fallback=False)
 
+if config.get('pretix', 'trust_x_forwarded_proto', fallback=False):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 PRETIX_PLUGINS_DEFAULT = config.get('pretix', 'plugins_default',
                                     fallback='pretix.plugins.sendmail,pretix.plugins.statistics,pretix.plugins.checkinlists,pretix.plugins.autocheckin')
 PRETIX_PLUGINS_EXCLUDE = config.get('pretix', 'plugins_exclude', fallback='').split(',')
@@ -401,20 +404,21 @@ ALL_LANGUAGES = [
     ('en', _('English')),
     ('de', _('German')),
     ('de-informal', _('German (informal)')),
+    ('ar', _('Arabic')),
+    ('zh-hans', _('Chinese (simplified)')),
+    ('da', _('Danish')),
     ('nl', _('Dutch')),
     ('nl-informal', _('Dutch (informal)')),
-    ('da', _('Danish')),
     ('fr', _('French')),
-    ('pt-br', _('Portuguese (Brazil)')),
-    ('es', _('Spanish')),
-    ('tr', _('Turkish')),
-    ('pl', _('Polish')),
-    ('it', _('Italian')),
-    ('ru', _('Russian')),
-    ('lv', _('Latvian')),
-    ('zh-hans', _('Chinese (simplified)')),
     ('el', _('Greek')),
+    ('it', _('Italian')),
+    ('lv', _('Latvian')),
+    ('pl', _('Polish')),
+    ('pt-br', _('Portuguese (Brazil)')),
+    ('ru', _('Russian')),
+    ('es', _('Spanish')),
     ('sv', _('Swedish'))
+    ('tr', _('Turkish')),
 ]
 LANGUAGES_OFFICIAL = {
     'en', 'de', 'de-informal'

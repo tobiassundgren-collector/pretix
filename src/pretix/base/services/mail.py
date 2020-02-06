@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import smtplib
+import ssl
 import warnings
 from email.mime.image import MIMEImage
 from email.utils import formataddr
@@ -132,7 +133,7 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
         else:
             sender = formataddr((settings.PRETIX_INSTANCE_NAME, sender))
 
-        subject = str(subject)
+        subject = raw_subject = str(subject)
         signature = ""
 
         bcc = []
@@ -198,13 +199,13 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
 
         try:
             if 'position' in inspect.signature(renderer.render).parameters:
-                body_html = renderer.render(content_plain, signature, str(subject), order, position)
+                body_html = renderer.render(content_plain, signature, raw_subject, order, position)
             else:
                 # Backwards compatibility
                 warnings.warn('E-mail renderer called without position argument because position argument is not '
                               'supported.',
                               DeprecationWarning)
-                body_html = renderer.render(content_plain, signature, str(subject), order)
+                body_html = renderer.render(content_plain, signature, raw_subject, order)
         except:
             logger.exception('Could not render HTML body')
             body_html = None
@@ -365,6 +366,8 @@ def mail_send_task(self, *args, to: List[str], subject: str, body: str, html: st
 
             raise SendMailException('Failed to send an email to {}.'.format(to))
         except Exception as e:
+            if isinstance(e, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, ssl.SSLError, OSError)):
+                self.retry(max_retries=5, countdown=2 ** (self.request.retries * 2))
             if order:
                 order.log_action(
                     'pretix.event.order.email.error',

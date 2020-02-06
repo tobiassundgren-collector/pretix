@@ -28,6 +28,7 @@ from pretix.base.models import (
     Device, GiftCard, Organizer, Team, TeamInvite, User,
 )
 from pretix.base.models.event import Event, EventMetaProperty, EventMetaValue
+from pretix.base.models.giftcards import gen_giftcard_secret
 from pretix.base.models.organizer import TeamAPIToken
 from pretix.base.services.mail import SendMailException, mail
 from pretix.control.forms.filter import (
@@ -688,7 +689,7 @@ class DeviceListView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixin,
     def get_queryset(self):
         return self.request.organizer.devices.prefetch_related(
             'limit_events'
-        ).order_by('-device_id')
+        ).order_by('revoked', '-device_id')
 
 
 class DeviceCreateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixin, CreateView):
@@ -1038,7 +1039,8 @@ class GiftCardCreateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMi
         kwargs = super().get_form_kwargs()
         any_event = self.request.organizer.events.first()
         kwargs['initial'] = {
-            'currency': any_event.currency if any_event else settings.DEFAULT_CURRENCY
+            'currency': any_event.currency if any_event else settings.DEFAULT_CURRENCY,
+            'secret': gen_giftcard_secret(self.request.organizer.settings.giftcard_length)
         }
         kwargs['organizer'] = self.request.organizer
         return kwargs
@@ -1054,9 +1056,11 @@ class GiftCardCreateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMi
         form.instance.transactions.create(
             value=form.cleaned_data['value']
         )
-        form.instance.log_action('pretix.giftcards.transaction.manual', user=self.request.user, data={
-            'value': form.cleaned_data['value']
-        })
+        form.instance.log_action('pretix.giftcards.created', user=self.request.user, data={})
+        if form.cleaned_data['value']:
+            form.instance.log_action('pretix.giftcards.transaction.manual', user=self.request.user, data={
+                'value': form.cleaned_data['value']
+            })
         return redirect(reverse(
             'control:organizer.giftcard',
             kwargs={
