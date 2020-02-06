@@ -35,7 +35,9 @@ python -m pretix updatestyles
 python manage.py runserver
 
 
-Modules
+* Modules
 python setup.py develop
 python setup.py develop --uninstall
 
+* Pull changes from remote
+ git pull https://github.com/pretix/pretix.git v3.5.0

@@ -417,7 +417,7 @@ ALL_LANGUAGES = [
     ('pt-br', _('Portuguese (Brazil)')),
     ('ru', _('Russian')),
     ('es', _('Spanish')),
-    ('sv', _('Swedish'))
+    ('sv', _('Swedish')),
     ('tr', _('Turkish')),
 ]
 LANGUAGES_OFFICIAL = {
