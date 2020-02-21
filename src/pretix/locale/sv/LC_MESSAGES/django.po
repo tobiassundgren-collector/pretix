@@ -3364,7 +3364,7 @@ msgstr "Datum"
 #: pretix/base/orderimport.py:150 pretix/presale/views/waiting.py:94
 msgctxt "subevent"
 msgid "You need to select a date."
-msgstr ""
+msgstr "Du måste välja ett datum."
 
 #: pretix/base/orderimport.py:157
 msgctxt "subevent"
@@ -17721,11 +17721,6 @@ msgstr "Vi kunde inte hitta den produkt du valt."
 #: pretix/presale/views/waiting.py:85
 msgid "The waiting list is disabled for this product."
 msgstr "Väntelista är inte aktiverat för denna produkt."
-
-#: pretix/presale/views/waiting.py:94
-msgctxt "subevent"
-msgid "You need to select a date."
-msgstr "Du måste välja ett datum."
 
 #: pretix/presale/views/waiting.py:106
 msgid ""
