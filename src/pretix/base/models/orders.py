@@ -400,10 +400,13 @@ class Order(LockModel, LoggedModel):
         term_last = self.event.settings.get('payment_term_last', as_type=RelativeDateWrapper)
         if term_last:
             if self.event.has_subevents and subevents:
-                term_last = min([
+                terms = [
                     term_last.datetime(se).date()
                     for se in subevents
-                ])
+                ]
+                if not terms:
+                    return
+                term_last = min(terms)
             else:
                 term_last = term_last.datetime(self.event).date()
             term_last = make_aware(datetime.combine(
@@ -434,10 +437,11 @@ class Order(LockModel, LoggedModel):
             until = self.event.settings.get('cancel_allow_user_until', as_type=RelativeDateWrapper)
         if until:
             if self.event.has_subevents:
-                return min([
+                terms = [
                     until.datetime(se)
                     for se in self.event.subevents.filter(id__in=self.positions.values_list('subevent', flat=True))
-                ])
+                ]
+                return min(terms) if terms else None
             else:
                 return until.datetime(self.event)
 
@@ -586,10 +590,11 @@ class Order(LockModel, LoggedModel):
 
         modify_deadline = self.event.settings.get('last_order_modification_date', as_type=RelativeDateWrapper)
         if self.event.has_subevents and modify_deadline:
-            modify_deadline = min([
+            dates = [
                 modify_deadline.datetime(se)
                 for se in self.event.subevents.filter(id__in=self.positions.values_list('subevent', flat=True))
-            ])
+            ]
+            modify_deadline = min(dates) if dates else None
         elif modify_deadline:
             modify_deadline = modify_deadline.datetime(self.event)
 
@@ -620,10 +625,11 @@ class Order(LockModel, LoggedModel):
         dl_date = self.event.settings.get('ticket_download_date', as_type=RelativeDateWrapper)
         if dl_date:
             if self.event.has_subevents:
-                dl_date = min([
+                dates = [
                     dl_date.datetime(se)
                     for se in self.event.subevents.filter(id__in=self.positions.values_list('subevent', flat=True))
-                ])
+                ]
+                dl_date = min(dates) if dates else None
             else:
                 dl_date = dl_date.datetime(self.event)
         return dl_date
@@ -648,10 +654,14 @@ class Order(LockModel, LoggedModel):
         term_last = self.event.settings.get('payment_term_last', as_type=RelativeDateWrapper)
         if term_last:
             if self.event.has_subevents:
-                term_last = min([
+                terms = [
                     term_last.datetime(se).date()
                     for se in self.event.subevents.filter(id__in=self.positions.values_list('subevent', flat=True))
-                ])
+                ]
+                if terms:
+                    term_last = min(terms)
+                else:
+                    term_last = None
             else:
                 term_last = term_last.datetime(self.event).date()
             term_last = make_aware(datetime.combine(
@@ -900,7 +910,7 @@ class QuestionAnswer(models.Model):
 
     @property
     def is_image(self):
-        return any(self.file.name.endswith(e) for e in ('.jpg', '.png', '.gif', '.tiff', '.bmp', '.jpeg'))
+        return any(self.file.name.lower().endswith(e) for e in ('.jpg', '.png', '.gif', '.tiff', '.bmp', '.jpeg'))
 
     @property
     def file_name(self):
@@ -1258,6 +1268,36 @@ class OrderPayment(models.Model):
             self.order.log_action('pretix.event.order.overpaid', {}, user=user, auth=auth)
         order_paid.send(self.order.event, order=self.order)
 
+    def fail(self, info=None, user=None, auth=None):
+        """
+        Marks the order as failed and sets info to ``info``, but only if the order is in ``created`` or ``pending``
+        state. This is equivalent to setting ``state`` to ``OrderPayment.PAYMENT_STATE_FAILED`` and logging a failure,
+        but it adds strong database logging since we do not want to report a failure for an order that has just
+        been marked as paid.
+        """
+        with transaction.atomic():
+            locked_instance = OrderPayment.objects.select_for_update().get(pk=self.pk)
+            if locked_instance.state not in (OrderPayment.PAYMENT_STATE_CREATED, OrderPayment.PAYMENT_STATE_PENDING):
+                # Race condition detected, this payment is already confirmed
+                logger.info('Failed payment {} but ignored due to likely race condition.'.format(
+                    self.full_id,
+                ))
+                return
+
+            if isinstance(info, str):
+                locked_instance.info = info
+            elif info:
+                locked_instance.info_data = info
+            locked_instance.state = OrderPayment.PAYMENT_STATE_FAILED
+            locked_instance.save(update_fields=['state', 'info'])
+
+        self.refresh_from_db()
+        self.order.log_action('pretix.event.order.payment.failed', {
+            'local_id': self.local_id,
+            'provider': self.provider,
+            'info': info,
+        }, user=user, auth=auth)
+
     def confirm(self, count_waitinglist=True, send_mail=True, force=False, user=None, auth=None, mail_text='',
                 ignore_date=False, lock=True, payment_date=None):
         """
@@ -1285,6 +1325,9 @@ class OrderPayment(models.Model):
             locked_instance = OrderPayment.objects.select_for_update().get(pk=self.pk)
             if locked_instance.state == self.PAYMENT_STATE_CONFIRMED:
                 # Race condition detected, this payment is already confirmed
+                logger.info('Confirmed payment {} but ignored due to likely race condition.'.format(
+                    self.full_id,
+                ))
                 return
 
             locked_instance.state = self.PAYMENT_STATE_CONFIRMED
@@ -1305,6 +1348,7 @@ class OrderPayment(models.Model):
         }, user=user, auth=auth)
 
         if self.order.status in (Order.STATUS_PAID, Order.STATUS_CANCELED):
+            logger.info('Confirmed payment {} but order is in status {}.'.format(self.full_id, self.order.status))
             return
 
         payment_sum = self.order.payments.filter(
@@ -1315,6 +1359,9 @@ class OrderPayment(models.Model):
                        OrderRefund.REFUND_STATE_CREATED)
         ).aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
         if payment_sum - refund_sum < self.order.total:
+            logger.info('Confirmed payment {} but payment sum is {} and refund sum is.'.format(
+                self.full_id, payment_sum, refund_sum
+            ))
             return
 
         if (self.order.status == Order.STATUS_PENDING and self.order.expires > now() + timedelta(hours=12)) or not lock:
@@ -1873,8 +1920,9 @@ class OrderPosition(AbstractPosition):
         if self.tax_rate is None:
             self._calculate_tax()
         self.order.touch()
-        if self.pk is None:
-            while OrderPosition.all.filter(secret=self.secret).exists():
+        if not self.pk:
+            while OrderPosition.all.filter(secret=self.secret,
+                                           order__event__organizer_id=self.order.event.organizer_id).exists():
                 self.secret = generate_position_secret()
 
         if not self.pseudonymization_id:
@@ -1891,9 +1939,10 @@ class OrderPosition(AbstractPosition):
         charset = list('ABCDEFGHJKLMNPQRSTUVWXYZ3789')
         while True:
             code = get_random_string(length=10, allowed_chars=charset)
-            if not OrderPosition.all.filter(pseudonymization_id=code).exists():
-                self.pseudonymization_id = code
-                return
+            with scopes_disabled():
+                if not OrderPosition.all.filter(pseudonymization_id=code).exists():
+                    self.pseudonymization_id = code
+                    return
 
     @property
     def event(self):

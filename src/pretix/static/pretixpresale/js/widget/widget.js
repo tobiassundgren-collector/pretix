@@ -5,7 +5,9 @@
 
 window.PretixWidget = {
     'build_widgets': true,
-    'widget_data': {}
+    'widget_data': {
+        'referer': location.href
+    }
 };
 
 var Vue = module.exports;
@@ -1036,9 +1038,11 @@ Vue.component('pretix-widget', {
 Vue.component('pretix-button', {
     template: ('<div class="pretix-widget-wrapper">'
         + '<div class="pretix-widget-button-container">'
-        + '<form method="post" :action="$root.formTarget" ref="form" target="_blank">'
+        + '<form :method="$root.formMethod" :action="$root.formTarget" ref="form" target="_blank">'
         + '<input type="hidden" name="_voucher_code" :value="$root.voucher_code" v-if="$root.voucher_code">'
+        + '<input type="hidden" name="voucher" :value="$root.voucher_code" v-if="$root.voucher_code">'
         + '<input type="hidden" name="subevent" :value="$root.subevent" />'
+        + '<input type="hidden" name="locale" :value="$root.lang" />'
         + '<input type="hidden" name="widget_data" :value="$root.widget_data_json" />'
         + '<input type="hidden" v-for="item in $root.items" :name="item.item" :value="item.count" />'
         + '<button class="pretix-button" @click="buy">{{ $root.button_text }}</button>'
@@ -1079,6 +1083,9 @@ var shared_root_methods = {
     },
     reload: function () {
         var url;
+        if (this.$root.is_button) {
+            return;
+        }
         if (this.$root.subevent) {
             url = this.$root.target_url + this.$root.subevent + '/widget/product_list?lang=' + lang;
         } else {
@@ -1201,7 +1208,20 @@ var shared_root_computed = {
         }
         return form_target;
     },
+    formMethod: function () {
+        if (!this.useIframe && this.is_button && this.items.length === 0) {
+            return 'get';
+        }
+        return 'post';
+    },
     formTarget: function () {
+        if (!this.useIframe && this.is_button && this.items.length === 0) {
+            var target = this.target_url;
+            if (this.voucher_code) {
+                target = this.target_url + 'redeem';
+            }
+            return target;
+        }
         var checkout_url = "/" + this.target_url.replace(/^[^\/]+:\/\/([^\/]+)\//, "") + "w/" + widget_id + "/";
         if (!this.$root.cart_exists) {
             checkout_url += "checkout/start";
@@ -1430,6 +1450,54 @@ window.PretixWidget.buildWidgets = function () {
         }
     });
 };
+
+window.PretixWidget.open = function (target_url, voucher, subevent, items, widget_data, skip_ssl_check) {
+    if (!target_url.match(/\/$/)) {
+        target_url += "/";
+    }
+
+    var all_widget_data = JSON.parse(JSON.stringify(window.PretixWidget.widget_data));
+    if (widget_data) {
+        Object.keys(widget_data).forEach(function(key) { all_widget_data[key] = widget_data[key]; });
+    }
+    var root = document.createElement("div");
+    document.body.appendChild(root);
+    root.classList.add("pretix-widget-hidden");
+    root.innerHTML = "<pretix-button ref='btn'></pretix-button>";
+    var app = new Vue({
+        el: root,
+        data: function () {
+            return {
+                target_url: target_url,
+                subevent: subevent || null,
+                is_button: true,
+                skip_ssl: skip_ssl_check || false,
+                voucher_code: voucher || null,
+                items: items || [],
+                error: null,
+                filter: null,
+                frame_dismissed: false,
+                widget_data: all_widget_data,
+                widget_id: 'pretix-widget-' + widget_id,
+                button_text: ""
+            }
+        },
+        created: function () {
+        },
+        computed: shared_root_computed,
+        methods: shared_root_methods
+    });
+    create_overlay(app);
+    app.$nextTick(function () {
+        if (this.$root.useIframe) {
+            this.$refs.btn.buy();
+        } else {
+            console.log(this.$refs.btn.$refs.form);
+            this.$refs.btn.$refs.form.submit();
+        }
+    })
+};
+
 if (typeof window.pretixWidgetCallback !== "undefined") {
     window.pretixWidgetCallback();
 }

@@ -22,6 +22,13 @@ There are multiple signals that will be sent out in the ordering cycle:
 .. automodule:: pretix.base.signals
    :members: validate_cart, validate_cart_addons, validate_order, order_fee_calculation, order_paid, order_placed, order_canceled, order_expired, order_modified, order_changed, order_approved, order_denied, order_fee_type_name, allow_ticket_download, order_split, order_gracefully_delete, invoice_line_text
 
+Check-ins
+"""""""""
+
+.. automodule:: pretix.base.signals
+   :members: checkin_created
+
+
 Frontend
 --------
 
@@ -81,3 +88,9 @@ Ticket designs
 
 .. automodule:: pretix.plugins.ticketoutputpdf.signals
    :members: override_layout
+
+API
+---
+
+.. automodule:: pretix.base.signals
+   :members: validate_event_settings, api_event_settings_fields

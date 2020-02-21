@@ -293,7 +293,7 @@ class Event(EventMixin, LoggedModel):
             "This will be used in URLs, order codes, invoice numbers, and bank transfer references."),
         validators=[
             RegexValidator(
-                regex="^[a-zA-Z0-9.-]+$",
+                regex="^[a-zA-Z0-9][a-zA-Z0-9.-]+$",
                 message=_("The slug may only contain letters, numbers, dots and dashes."),
             ),
             EventSlugBanlistValidator()
@@ -633,6 +633,8 @@ class Event(EventMixin, LoggedModel):
         for s in other.seats.filter(subevent__isnull=True):
             s.pk = None
             s.event = self
+            if s.product_id:
+                s.product = item_map[s.product_id]
             s.save()
 
         for s in other.settings._objects.all():

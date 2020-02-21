@@ -23,6 +23,8 @@ Resources and endpoints
    waitinglist
    giftcards
    carts
+   teams
    webhooks
    seatingplans
    billing_invoices
+   billing_var

@@ -11,6 +11,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Exists, F, Max, Min, OuterRef, Q, Sum
 from django.db.models.functions import Coalesce, Greatest
+from django.db.transaction import get_connection
 from django.dispatch import receiver
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
@@ -292,9 +293,10 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
 
         if not order.cancel_allowed():
             raise OrderError(_('You cannot cancel this order.'))
+        invoices = []
         i = order.invoices.filter(is_cancellation=False, refered__isnull=True).last()
         if i:
-            generate_cancellation(i)
+            invoices.append(generate_cancellation(i))
 
         for position in order.positions.all():
             for gc in position.issued_gift_cards.all():
@@ -336,7 +338,7 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
                 order.save(update_fields=['status', 'total'])
 
             if i:
-                generate_invoice(order)
+                invoices.append(generate_invoice(order))
         else:
             with order.event.lock():
                 order.status = Order.STATUS_CANCELED
@@ -357,7 +359,8 @@ def _cancel_order(order, user=None, send_mail: bool=True, api_token=None, device
                 try:
                     order.send_mail(
                         email_subject, email_template, email_context,
-                        'pretix.event.order.email.order_canceled', user
+                        'pretix.event.order.email.order_canceled', user,
+                        invoices=invoices if order.event.settings.invoice_email_attachment else []
                     )
                 except SendMailException:
                     logger.exception('Order canceled email could not be sent')
@@ -1031,7 +1034,7 @@ def send_download_reminders(sender, **kwargs):
                                 logger.exception('Reminder email could not be sent to attendee')
 
 
-def notify_user_changed_order(order, user=None, auth=None):
+def notify_user_changed_order(order, user=None, auth=None, invoices=[]):
     with language(order.locale):
         email_template = order.event.settings.mail_text_order_changed
         email_context = get_email_context(event=order.event, order=order)
@@ -1039,7 +1042,7 @@ def notify_user_changed_order(order, user=None, auth=None):
         try:
             order.send_mail(
                 email_subject, email_template, email_context,
-                'pretix.event.order.email.order_changed', user, auth=auth
+                'pretix.event.order.email.order_changed', user, auth=auth, invoices=invoices,
             )
         except SendMailException:
             logger.exception('Order changed email could not be sent')
@@ -1089,6 +1092,7 @@ class OrderChangeManager:
         self._operations = []
         self.notify = notify
         self._invoice_dirty = False
+        self._invoices = []
 
     def change_item(self, position: OrderPosition, item: Item, variation: Optional[ItemVariation]):
         if (not variation and item.has_variations) or (variation and variation.item_id != item.pk):
@@ -1705,8 +1709,8 @@ class OrderChangeManager:
     def _reissue_invoice(self):
         i = self.order.invoices.filter(is_cancellation=False).last()
         if self.reissue_invoice and i and self._invoice_dirty:
-            generate_cancellation(i)
-            generate_invoice(self.order)
+            self._invoices.append(generate_cancellation(i))
+            self._invoices.append(generate_invoice(self.order))
 
     def _check_complete_cancel(self):
         current = self.order.positions.count()
@@ -1752,9 +1756,15 @@ class OrderChangeManager:
         self._check_paid_to_free()
 
         if self.notify:
-            notify_user_changed_order(self.order, self.user, self.auth)
+            notify_user_changed_order(
+                self.order, self.user, self.auth,
+                self._invoices if self.event.settings.invoice_email_attachment else []
+            )
             if self.split_order:
-                notify_user_changed_order(self.split_order, self.user, self.auth)
+                notify_user_changed_order(
+                    self.split_order, self.user, self.auth,
+                    list(self.split_order.invoices.all()) if self.event.settings.invoice_email_attachment else []
+                )
 
         order_changed.send(self.order.event, order=self.order)
 
@@ -1854,6 +1864,9 @@ def cancel_order(self, order: int, user: int=None, send_mail: bool=True, api_tok
 
 def change_payment_provider(order: Order, payment_provider, amount=None, new_payment=None, create_log=True,
                             recreate_invoices=True):
+    if not get_connection().in_atomic_block:
+        raise Exception('change_payment_provider should only be called in atomic transaction!')
+
     oldtotal = order.total
     e = OrderPayment.objects.filter(fee=OuterRef('pk'), state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED,
                                                                    OrderPayment.PAYMENT_STATE_REFUNDED))
@@ -1874,34 +1887,32 @@ def change_payment_provider(order: Order, payment_provider, amount=None, new_pay
     new_fee = payment_provider.calculate_fee(
         order.pending_sum - old_fee if amount is None else amount
     )
-    with transaction.atomic():
-        if new_fee:
-            fee.value = new_fee
-            fee.internal_type = payment_provider.identifier
-            fee._calculate_tax()
-            fee.save()
-        else:
-            if fee.pk:
-                fee.delete()
-            fee = None
+    if new_fee:
+        fee.value = new_fee
+        fee.internal_type = payment_provider.identifier
+        fee._calculate_tax()
+        fee.save()
+    else:
+        if fee.pk:
+            fee.delete()
+        fee = None
 
     open_payment = None
     if new_payment:
-        lp = order.payments.exclude(pk=new_payment.pk).last()
+        lp = order.payments.select_for_update().exclude(pk=new_payment.pk).last()
     else:
-        lp = order.payments.last()
-    if lp and lp.state not in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED):
+        lp = order.payments.select_for_update().last()
+
+    if lp and lp.state in (OrderPayment.PAYMENT_STATE_PENDING, OrderPayment.PAYMENT_STATE_CREATED):
         open_payment = lp
 
-    if open_payment and open_payment.state in (OrderPayment.PAYMENT_STATE_PENDING,
-                                               OrderPayment.PAYMENT_STATE_CREATED):
+    if open_payment:
         try:
-            with transaction.atomic():
-                open_payment.payment_provider.cancel_payment(open_payment)
-                order.log_action('pretix.event.order.payment.canceled', {
-                    'local_id': open_payment.local_id,
-                    'provider': open_payment.provider,
-                })
+            open_payment.payment_provider.cancel_payment(open_payment)
+            order.log_action('pretix.event.order.payment.canceled', {
+                'local_id': open_payment.local_id,
+                'provider': open_payment.provider,
+            })
         except PaymentException as e:
             order.log_action(
                 'pretix.event.order.payment.canceled.failed',

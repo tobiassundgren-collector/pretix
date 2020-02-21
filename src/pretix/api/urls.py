@@ -7,8 +7,8 @@ from rest_framework import routers
 from pretix.api.views import cart
 
 from .views import (
-    checkin, device, event, item, oauth, order, organizer, user, voucher,
-    waitinglist, webhooks,
+    checkin, device, event, item, oauth, order, organizer, user, version,
+    voucher, waitinglist, webhooks,
 )
 
 router = routers.DefaultRouter()
@@ -20,6 +20,12 @@ orga_router.register(r'subevents', event.SubEventViewSet)
 orga_router.register(r'webhooks', webhooks.WebHookViewSet)
 orga_router.register(r'seatingplans', organizer.SeatingPlanViewSet)
 orga_router.register(r'giftcards', organizer.GiftCardViewSet)
+orga_router.register(r'teams', organizer.TeamViewSet)
+
+team_router = routers.DefaultRouter()
+team_router.register(r'members', organizer.TeamMemberViewSet)
+team_router.register(r'invites', organizer.TeamInviteViewSet)
+team_router.register(r'tokens', organizer.TeamAPITokenViewSet)
 
 event_router = routers.DefaultRouter()
 event_router.register(r'subevents', event.SubEventViewSet)
@@ -61,7 +67,10 @@ for app in apps.get_app_configs():
 urlpatterns = [
     url(r'^', include(router.urls)),
     url(r'^organizers/(?P<organizer>[^/]+)/', include(orga_router.urls)),
+    url(r'^organizers/(?P<organizer>[^/]+)/events/(?P<event>[^/]+)/settings/$', event.EventSettingsView.as_view(),
+        name="event.settings"),
     url(r'^organizers/(?P<organizer>[^/]+)/events/(?P<event>[^/]+)/', include(event_router.urls)),
+    url(r'^organizers/(?P<organizer>[^/]+)/teams/(?P<team>[^/]+)/', include(team_router.urls)),
     url(r'^organizers/(?P<organizer>[^/]+)/events/(?P<event>[^/]+)/items/(?P<item>[^/]+)/', include(item_router.urls)),
     url(r'^organizers/(?P<organizer>[^/]+)/events/(?P<event>[^/]+)/questions/(?P<question>[^/]+)/',
         include(question_router.urls)),
@@ -76,4 +85,5 @@ urlpatterns = [
     url(r"^device/roll$", device.RollKeyView.as_view(), name="device.roll"),
     url(r"^device/revoke$", device.RevokeKeyView.as_view(), name="device.revoke"),
     url(r"^me$", user.MeView.as_view(), name="user.me"),
+    url(r"^version$", version.VersionView.as_view(), name="version"),
 ]

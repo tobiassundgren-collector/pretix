@@ -28,6 +28,13 @@ def test_control_only_on_main_domain(env, client):
 
 
 @pytest.mark.django_db
+def test_append_slash(env, client):
+    r = client.get('/control')
+    assert r.status_code == 301
+    assert r['Location'] == '/control/'
+
+
+@pytest.mark.django_db
 def test_unknown_domain(env, client):
     r = client.get('/control/login', HTTP_HOST='foobar')
     assert r.status_code == 400
@@ -37,6 +44,13 @@ def test_unknown_domain(env, client):
 def test_event_on_custom_domain(env, client):
     KnownDomain.objects.create(domainname='foobar', organizer=env[0])
     r = client.get('/2015/', HTTP_HOST='foobar')
+    assert r.status_code == 200
+
+
+@pytest.mark.django_db
+def test_path_without_trailing_slash_on_custom_domain(env, client):
+    KnownDomain.objects.create(domainname='foobar', organizer=env[0])
+    r = client.get('/widget/product_list', HTTP_HOST='foobar')
     assert r.status_code == 200
 
 

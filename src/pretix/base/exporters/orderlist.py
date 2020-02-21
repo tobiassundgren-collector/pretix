@@ -3,9 +3,11 @@ from decimal import Decimal
 
 import pytz
 from django import forms
-from django.db.models import DateTimeField, F, Max, OuterRef, Subquery, Sum
+from django.db.models import (
+    Count, DateTimeField, F, IntegerField, Max, OuterRef, Subquery, Sum,
+)
 from django.dispatch import receiver
-from django.utils.formats import date_format, localize
+from django.utils.formats import date_format
 from django.utils.translation import pgettext, ugettext as _, ugettext_lazy
 
 from pretix.base.models import (
@@ -80,8 +82,12 @@ class OrderListExporter(MultiSheetListExporter):
             'm'
         ).order_by()
 
+        s = OrderPosition.objects.filter(
+            order=OuterRef('pk')
+        ).order_by().values('order').annotate(k=Count('id')).values('k')
         qs = self.event.orders.annotate(
-            payment_date=Subquery(p_date, output_field=DateTimeField())
+            payment_date=Subquery(p_date, output_field=DateTimeField()),
+            pcnt=Subquery(s, output_field=IntegerField())
         ).select_related('invoice_address').prefetch_related('invoices')
         if form_data['paid_only']:
             qs = qs.filter(status=Order.STATUS_PAID)
@@ -111,6 +117,7 @@ class OrderListExporter(MultiSheetListExporter):
         headers.append(_('Sales channel'))
         headers.append(_('Requires special attention'))
         headers.append(_('Comment'))
+        headers.append(_('Positions'))
 
         yield headers
 
@@ -134,7 +141,7 @@ class OrderListExporter(MultiSheetListExporter):
         for order in qs.order_by('datetime'):
             row = [
                 order.code,
-                localize(order.total),
+                order.total,
                 order.get_status_display(),
                 order.email,
                 order.datetime.astimezone(tz).strftime('%Y-%m-%d'),
@@ -163,7 +170,7 @@ class OrderListExporter(MultiSheetListExporter):
 
             row += [
                 order.payment_date.astimezone(tz).strftime('%Y-%m-%d') if order.payment_date else '',
-                localize(full_fee_sum_cache.get(order.id) or Decimal('0.00')),
+                full_fee_sum_cache.get(order.id) or Decimal('0.00'),
                 order.locale,
             ]
 
@@ -173,16 +180,19 @@ class OrderListExporter(MultiSheetListExporter):
                                                        {'grosssum': Decimal('0.00'), 'taxsum': Decimal('0.00')})
 
                 row += [
-                    localize(taxrate_values['grosssum'] + fee_taxrate_values['grosssum']),
-                    localize(taxrate_values['grosssum'] - taxrate_values['taxsum']
-                             + fee_taxrate_values['grosssum'] - fee_taxrate_values['taxsum']),
-                    localize(taxrate_values['taxsum'] + fee_taxrate_values['taxsum']),
+                    taxrate_values['grosssum'] + fee_taxrate_values['grosssum'],
+                    (
+                        taxrate_values['grosssum'] - taxrate_values['taxsum'] +
+                        fee_taxrate_values['grosssum'] - fee_taxrate_values['taxsum']
+                    ),
+                    taxrate_values['taxsum'] + fee_taxrate_values['taxsum'],
                 ]
 
             row.append(', '.join([i.number for i in order.invoices.all()]))
             row.append(order.sales_channel)
             row.append(_('Yes') if order.checkin_attention else _('No'))
             row.append(order.comment or "")
+            row.append(order.pcnt)
             yield row
 
     def iterate_fees(self, form_data: dict):
@@ -264,7 +274,7 @@ class OrderListExporter(MultiSheetListExporter):
             'order', 'order__invoice_address', 'item', 'variation',
             'voucher', 'tax_rule'
         ).prefetch_related(
-            'answers', 'answers__question'
+            'answers', 'answers__question', 'answers__options'
         )
         if form_data['paid_only']:
             qs = qs.filter(order__status=Order.STATUS_PAID)
@@ -299,8 +309,15 @@ class OrderListExporter(MultiSheetListExporter):
             _('Pseudonymization ID'),
         ]
         questions = list(self.event.questions.all())
+        options = {}
         for q in questions:
-            headers.append(str(q.question))
+            if q.type == Question.TYPE_CHOICE_MULTIPLE:
+                options[q.pk] = []
+                for o in q.options.all():
+                    headers.append(str(q.question) + ' – ' + str(o.answer))
+                    options[q.pk].append(o)
+            else:
+                headers.append(str(q.question))
         headers += [
             _('Company'),
             _('Invoice address name'),
@@ -354,12 +371,19 @@ class OrderListExporter(MultiSheetListExporter):
             for a in op.answers.all():
                 # We do not want to localize Date, Time and Datetime question answers, as those can lead
                 # to difficulties parsing the data (for example 2019-02-01 may become Février, 2019 01 in French).
-                if a.question.type in Question.UNLOCALIZED_TYPES:
+                if a.question.type == Question.TYPE_CHOICE_MULTIPLE:
+                    acache[a.question_id] = set(o.pk for o in a.options.all())
+                elif a.question.type in Question.UNLOCALIZED_TYPES:
                     acache[a.question_id] = a.answer
                 else:
                     acache[a.question_id] = str(a)
             for q in questions:
-                row.append(acache.get(q.pk, ''))
+                if q.type == Question.TYPE_CHOICE_MULTIPLE:
+                    for o in options[q.pk]:
+                        row.append(_('Yes') if o.pk in acache.get(q.pk, set()) else _('No'))
+                else:
+                    row.append(acache.get(q.pk, ''))
+
             try:
                 row += [
                     order.invoice_address.company,
@@ -450,7 +474,7 @@ class PaymentListExporter(ListExporter):
                 d2,
                 obj.get_state_display(),
                 obj.state,
-                localize(obj.amount * (-1 if isinstance(obj, OrderRefund) else 1)),
+                obj.amount * (-1 if isinstance(obj, OrderRefund) else 1),
                 provider_names.get(obj.provider, obj.provider)
             ]
             yield row
@@ -531,10 +555,11 @@ class InvoiceDataExporter(MultiSheetListExporter):
                 _('Foreign currency rate'),
                 _('Total value (with taxes)'),
                 _('Total value (without taxes)'),
+                _('Payment matching IDs'),
             ]
             qs = self.event.invoices.order_by('full_invoice_no').select_related(
                 'order', 'refers'
-            ).annotate(
+            ).prefetch_related('order__payments').annotate(
                 total_gross=Subquery(
                     InvoiceLine.objects.filter(
                         invoice=OuterRef('pk')
@@ -551,6 +576,16 @@ class InvoiceDataExporter(MultiSheetListExporter):
                 )
             )
             for i in qs:
+                pmis = []
+                for p in i.order.payments.all():
+                    if p.state in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_CREATED,
+                                   OrderPayment.PAYMENT_STATE_PENDING, OrderPayment.PAYMENT_STATE_REFUNDED):
+                        pprov = p.payment_provider
+                        if pprov:
+                            mid = pprov.matching_id(p)
+                            if mid:
+                                pmis.append(mid)
+                pmi = '\n'.join(pmis)
                 yield [
                     i.full_invoice_no,
                     date_format(i.date, "SHORT_DATE_FORMAT"),
@@ -581,6 +616,7 @@ class InvoiceDataExporter(MultiSheetListExporter):
                     i.foreign_currency_rate,
                     i.total_gross if i.total_gross else Decimal('0.00'),
                     Decimal(i.total_net if i.total_net else '0.00').quantize(Decimal('0.01')),
+                    pmi
                 ]
         elif sheet == 'lines':
             yield [

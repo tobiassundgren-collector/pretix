@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Sum
 from django.utils.crypto import get_random_string
@@ -10,7 +11,7 @@ from pretix.base.banlist import banned
 from pretix.base.models import LoggedModel
 
 
-def gen_giftcard_secret(length):
+def gen_giftcard_secret(length=8):
     charset = list('ABCDEFGHJKLMNPQRSTUVWXYZ3789')
     while True:
         code = get_random_string(length=length, allowed_chars=charset)
@@ -50,6 +51,12 @@ class GiftCard(LoggedModel):
         max_length=190,
         db_index=True,
         verbose_name=_('Gift card code'),
+        validators=[
+            RegexValidator(
+                regex="^[a-zA-Z0-9][a-zA-Z0-9.-]+$",
+                message=_("The giftcard code may only contain letters, numbers, dots and dashes."),
+            )
+        ],
     )
     testmode = models.BooleanField(
         verbose_name=_('Test mode card'),

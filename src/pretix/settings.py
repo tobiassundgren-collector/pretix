@@ -342,8 +342,8 @@ CORE_MODULES = {
 
 MIDDLEWARE = [
     'pretix.api.middleware.IdempotencyMiddleware',
-    'django.middleware.common.CommonMiddleware',
     'pretix.multidomain.middlewares.MultiDomainMiddleware',
+    'django.middleware.common.CommonMiddleware',
     'pretix.multidomain.middlewares.SessionMiddleware',
     'pretix.multidomain.middlewares.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -367,7 +367,7 @@ except ImportError:
 
 
 if METRICS_ENABLED:
-    MIDDLEWARE.insert(MIDDLEWARE.index('pretix.multidomain.middlewares.MultiDomainMiddleware') + 1,
+    MIDDLEWARE.insert(MIDDLEWARE.index('django.middleware.common.CommonMiddleware') + 1,
                       'pretix.helpers.metrics.middleware.MetricsMiddleware')
 
 

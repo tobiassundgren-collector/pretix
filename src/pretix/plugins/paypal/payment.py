@@ -359,12 +359,7 @@ class Paypal(BasePaymentProvider):
             return
 
         if payment.state != 'approved':
-            payment_obj.state = OrderPayment.PAYMENT_STATE_FAILED
-            payment_obj.save()
-            payment_obj.order.log_action('pretix.event.order.payment.failed', {
-                'local_id': payment.local_id,
-                'provider': payment.provider,
-            })
+            payment_obj.fail(info=payment.to_dict())
             logger.error('Invalid state: %s' % str(payment))
             raise PaymentException(_('We were unable to process your payment. See below for details on how to '
                                      'proceed.'))
@@ -395,6 +390,14 @@ class Paypal(BasePaymentProvider):
         ctx = {'request': request, 'event': self.event, 'settings': self.settings,
                'retry': retry, 'order': payment.order}
         return template.render(ctx)
+
+    def matching_id(self, payment: OrderPayment):
+        sale_id = None
+        for trans in payment.info_data.get('transactions', []):
+            for res in trans.get('related_resources', []):
+                if 'sale' in res and 'id' in res['sale']:
+                    sale_id = res['sale']['id']
+        return sale_id or payment.info_data.get('id', None)
 
     def api_payment_details(self, payment: OrderPayment):
         sale_id = None
