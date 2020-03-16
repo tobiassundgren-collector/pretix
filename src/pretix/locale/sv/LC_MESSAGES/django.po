@@ -8426,7 +8426,7 @@ msgstr "Betalning"
 #: pretix/control/views/event.py:1280 pretix/control/views/event.py:1311
 #: pretix/control/views/event.py:1316
 msgid "Tickets"
-msgstr ""
+msgstr "Biljetter"
 
 #: pretix/control/navigation.py:68
 #: pretix/control/templates/pretixcontrol/event/tax_index.html:3
