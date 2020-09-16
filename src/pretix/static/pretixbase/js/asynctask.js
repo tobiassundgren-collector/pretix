@@ -31,15 +31,24 @@ function async_task_check_callback(data, jqXHR, status) {
         }
         location.href = data.redirect;
         return;
+    } else if (typeof data.percentage === "number") {
+        $("#loadingmodal .progress").show();
+        $("#loadingmodal .progress .progress-bar").css("width", data.percentage + "%");
     }
     async_task_timeout = window.setTimeout(async_task_check, 250);
 
     if (async_task_is_long) {
-        $("#loadingmodal p.status").text(gettext(
-            'Your request has been queued on the server and will now be ' +
-            'processed. Depending on the size of your event, this might take up to a ' +
-            'few minutes.'
-        ));
+        if (data.started) {
+            $("#loadingmodal p.status").text(gettext(
+                'Your request is currently being processed. Depending on the size of your event, this might take up to ' +
+                'a few minutes.'
+            ));
+        } else {
+            $("#loadingmodal p.status").text(gettext(
+                'Your request has been queued on the server and will soon be ' +
+                'processed.'
+            ));
+        }
     } else {
         $("#loadingmodal p.status").text(gettext(
             'Your request arrived on the server but we still wait for it to be ' +
@@ -61,6 +70,7 @@ function async_task_check_error(jqXHR, textStatus, errorThrown) {
             jqXHR.responseText.indexOf("<body"),
             jqXHR.responseText.indexOf("</body")
         ));
+        form_handlers($("body"));
     } else if (c.length > 0) {
         // This is some kind of 500/404/403 page, show it in an overlay
         $("body").data('ajaxing', false);
@@ -101,11 +111,17 @@ function async_task_callback(data, jqXHR, status) {
     async_task_timeout = window.setTimeout(async_task_check, 100);
 
     if (async_task_is_long) {
-        $("#loadingmodal p.status").text(gettext(
-            'Your request has been queued on the server and will now be ' +
-            'processed. Depending on the size of your event, this might take up to a ' +
-            'few minutes.'
-        ));
+        if (data.started) {
+            $("#loadingmodal p.status").text(gettext(
+                'Your request is currently being processed. Depending on the size of your event, this might take up to ' +
+                'a few minutes.'
+            ));
+        } else {
+            $("#loadingmodal p.status").text(gettext(
+                'Your request has been queued on the server and will soon be ' +
+                'processed.'
+            ));
+        }
     } else {
         $("#loadingmodal p.status").text(gettext(
             'Your request arrived on the server but we still wait for it to be ' +
@@ -134,6 +150,7 @@ function async_task_error(jqXHR, textStatus, errorThrown) {
                 jqXHR.responseText.indexOf("<body"),
                 jqXHR.responseText.indexOf("</body")
             ));
+            form_handlers($("body"));
         } else if (c.length > 0) {
             waitingDialog.hide();
             ajaxErrDialog.show(c.first().html());
@@ -201,6 +218,7 @@ var waitingDialog = {
     show: function (message) {
         "use strict";
         $("#loadingmodal").find("h3").html(message);
+        $("#loadingmodal .progress").hide();
         $("body").addClass("loading");
     },
     hide: function () {

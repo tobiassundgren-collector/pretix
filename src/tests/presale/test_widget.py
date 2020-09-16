@@ -127,6 +127,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
         data = json.loads(response.content.decode())
         assert data == {
             "name": "30C3",
+            "date_range": "Dec. 26, 2021 00:00",
             "currency": "EUR",
             "show_variations_expanded": False,
             "display_net_prices": False,
@@ -145,6 +146,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
                             "price": {"gross": "23.00", "net": "19.33", "tax": "3.67", "name": "", "rate": "19.00", "includes_mixed_tax_rate": False},
                             "picture": None,
                             "has_variations": 0,
+                            "allow_waitinglist": True,
                             "description": None,
                             "min_price": None,
                             "avail": [100, None],
@@ -162,6 +164,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
                             "price": None,
                             "picture": None,
                             "has_variations": 4,
+                            "allow_waitinglist": True,
                             "description": None,
                             "min_price": "12.00",
                             "avail": None,
@@ -205,6 +208,51 @@ class WidgetCartTest(CartTestMixin, TestCase):
             "voucher_explanation_text": "",
         }
 
+    def test_product_list_view_filter(self):
+        response = self.client.get('/%s/%s/widget/product_list?items=%s' % (self.orga.slug, self.event.slug,
+                                                                            self.ticket.pk))
+        assert response['Access-Control-Allow-Origin'] == '*'
+        data = json.loads(response.content.decode())
+        assert data['items_by_category'] == [
+            {
+                "items": [
+                    {
+                        "require_voucher": False,
+                        "order_min": None,
+                        "max_price": None,
+                        "price": {"gross": "23.00", "net": "19.33", "tax": "3.67", "name": "", "rate": "19.00",
+                                  "includes_mixed_tax_rate": False},
+                        "picture": None,
+                        "has_variations": 0,
+                        "allow_waitinglist": True,
+                        "description": None,
+                        "min_price": None,
+                        "avail": [100, None],
+                        "variations": [],
+                        "id": self.ticket.pk,
+                        "free_price": False,
+                        "original_price": None,
+                        "name": "Early-bird ticket",
+                        "order_max": 4
+                    }
+                ],
+                "description": None,
+                "id": self.category.pk,
+                "name": "Everything"
+            }
+        ]
+
+        response = self.client.get('/%s/%s/widget/product_list?categories=0,%s' % (self.orga.slug, self.event.slug,
+                                                                                   self.category.pk))
+        assert response['Access-Control-Allow-Origin'] == '*'
+        data = json.loads(response.content.decode())
+        assert len(data['items_by_category']) == 1
+
+        response = self.client.get('/%s/%s/widget/product_list?categories=0' % (self.orga.slug, self.event.slug))
+        assert response['Access-Control-Allow-Origin'] == '*'
+        data = json.loads(response.content.decode())
+        assert len(data['items_by_category']) == 0
+
     def test_product_list_view_with_voucher(self):
         with scopes_disabled():
             self.event.vouchers.create(item=self.ticket, code="ABCDE")
@@ -213,6 +261,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
         data = json.loads(response.content.decode())
         assert data == {
             "name": "30C3",
+            "date_range": "Dec. 26, 2021 00:00",
             "currency": "EUR",
             "show_variations_expanded": False,
             "display_net_prices": False,
@@ -231,6 +280,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
                             "price": {"gross": "23.00", "net": "19.33", "tax": "3.67", "name": "", "rate": "19.00", "includes_mixed_tax_rate": False},
                             "picture": None,
                             "has_variations": 0,
+                            "allow_waitinglist": True,
                             "description": None,
                             "min_price": None,
                             "avail": [100, None],
@@ -262,6 +312,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
         data = json.loads(response.content.decode())
         assert data == {
             "name": "30C3",
+            "date_range": "Dec. 26, 2021 00:00",
             "currency": "EUR",
             "show_variations_expanded": False,
             "display_net_prices": False,
@@ -279,6 +330,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
                             'picture': None,
                             'description': None,
                             'has_variations': 2,
+                            "allow_waitinglist": True,
                             'require_voucher': False,
                             'order_min': None,
                             'order_max': None,
@@ -327,6 +379,7 @@ class WidgetCartTest(CartTestMixin, TestCase):
         data = json.loads(response.content.decode())
         assert data == {
             "name": "30C3",
+            "date_range": "Dec. 26, 2021 00:00",
             "currency": "EUR",
             'poweredby': '<a href="https://pretix.eu" target="_blank" rel="noopener">event ticketing powered by pretix</a>',
             "show_variations_expanded": False,
@@ -505,6 +558,44 @@ class WidgetCartTest(CartTestMixin, TestCase):
                         None, None, None
                     ]
                 ]
+            }
+
+    def test_subevent_week_calendar(self):
+        self.event.has_subevents = True
+        self.event.settings.timezone = 'Europe/Berlin'
+        self.event.save()
+        with freeze_time("2019-01-01 10:00:00"):
+            with scopes_disabled():
+                self.event.subevents.create(name="Past", active=True, date_from=now() - datetime.timedelta(days=3))
+                se1 = self.event.subevents.create(name="Present", active=True, date_from=now())
+                se2 = self.event.subevents.create(name="Future", active=True, date_from=now() + datetime.timedelta(days=3))
+                self.event.subevents.create(name="Disabled", active=False, date_from=now() + datetime.timedelta(days=3))
+                self.event.subevents.create(name="Hidden", active=True, is_public=False, date_from=now() + datetime.timedelta(days=3))
+
+            response = self.client.get('/%s/%s/widget/product_list?style=week' % (self.orga.slug, self.event.slug))
+            settings.SITE_URL = 'http://example.com'
+            data = json.loads(response.content.decode())
+            assert data == {
+                'list_type': 'week',
+                'week': [2019, 1],
+                'poweredby': '<a href="https://pretix.eu" target="_blank" rel="noopener">event ticketing powered by pretix</a>',
+                'days': [
+                    {'day_formatted': 'Mon, Dec 31st', 'date': '2018-12-31', 'events': []},
+                    {'day_formatted': 'Tue, Jan 1st', 'date': '2019-01-01', 'events': [
+                        {'name': 'Present', 'time': '11:00', 'continued': False, 'date_range': 'Jan. 1, 2019 11:00',
+                         'location': '',
+                         'availability': {'color': 'green', 'text': 'Book now'},
+                         'event_url': 'http://example.com/ccc/30c3/', 'subevent': se1.pk}]},
+                    {'day_formatted': 'Wed, Jan 2nd', 'date': '2019-01-02', 'events': []},
+                    {'day_formatted': 'Thu, Jan 3rd', 'date': '2019-01-03', 'events': []},
+                    {'day_formatted': 'Fri, Jan 4th', 'date': '2019-01-04', 'events': [
+                        {'name': 'Future', 'time': '11:00', 'continued': False, 'date_range': 'Jan. 4, 2019 11:00',
+                         'location': '',
+                         'availability': {'color': 'green', 'text': 'Book now'},
+                         'event_url': 'http://example.com/ccc/30c3/', 'subevent': se2.pk}]},
+                    {'day_formatted': 'Sat, Jan 5th', 'date': '2019-01-05', 'events': []},
+                    {'day_formatted': 'Sun, Jan 6th', 'date': '2019-01-06', 'events': []}
+                ],
             }
 
     def test_event_list(self):

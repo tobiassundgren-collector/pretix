@@ -7,7 +7,7 @@ Coding style and quality
   for more information. Use four spaces for indentation.
 
 * We sort our imports by a certain schema, but you don't have to do this by hand. Again, ``setup.cfg`` contains
-  some definitions that allow the command ``isort -rc <directory>`` to automatically sort the imports in your source
+  some definitions that allow the command ``isort <directory>`` to automatically sort the imports in your source
   files.
 
 * For templates and models, please take a look at the `Django Coding Style`_. We like Django's `class-based views`_ and
@@ -18,7 +18,7 @@ Coding style and quality
 * We expect all new code to come with proper tests. When writing new tests, please write them using `pytest-style`_
   test functions and raw ``assert`` statements. Use `fixtures`_ to prevent repetitive code. Some old parts of pretix'
   test suite are in the style of Python's unit test module. If you extend those files, you might continue in this style,
-  but please use pytest style for any new test files.
+  but please use ``pytest`` style for any new test files.
 
 * Please keep the first line of your commit messages short. When referencing an issue, please phrase it like
   ``Fix #123 -- Problems with order creation`` or ``Refs #123 -- Fix this part of that bug``.

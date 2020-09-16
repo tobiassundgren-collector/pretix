@@ -106,6 +106,7 @@
                                         {% bootstrap_form_errors form %}
                                         {% bootstrap_field form.size layout="control" %}
                                         {% bootstrap_field form.itemvars layout="control" %}
+                                        {% bootstrap_field form.release_after_exit layout="control" %}
                                     </div>
                                 </div>
                             {% endfor %}
@@ -133,6 +134,7 @@
                                     <div class="panel-body form-horizontal">
                                         {% bootstrap_field formset.empty_form.size layout="control" %}
                                         {% bootstrap_field formset.empty_form.itemvars layout="control" %}
+                                        {% bootstrap_field formset.empty_form.release_after_exit layout="control" %}
                                     </div>
                                 </div>
                             {% endescapescript %}
@@ -145,7 +147,19 @@
                 <fieldset>
                     <legend>{% trans "Item prices" %}</legend>
                     {% for f in itemvar_forms %}
-                        {% bootstrap_field f.price addon_after=request.event.currency layout="control" %}
+                        <div class="form-group">
+                            <label class="col-md-3 control-label" for="id_{{ f.prefix }}-price">
+                                {% if f.variation %}{{ f.item }} – {{ f.variation }}{% else %}{{ f.item }}{% endif %}
+                                <br>
+                                <span class="optional">{% trans "Optional" %}</span>
+                            </label>
+                            <div class="col-md-6">
+                                {% bootstrap_field f.price addon_after=request.event.currency form_group_class="" layout="inline" %}
+                            </div>
+                            <div class="col-md-3">
+                                {% bootstrap_field f.disabled layout="inline" form_group_class="" %}
+                            </div>
+                        </div>
                     {% endfor %}
                 </fieldset>
                 <fieldset>

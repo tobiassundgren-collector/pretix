@@ -7,7 +7,7 @@ import requests
 from celery.exceptions import MaxRetriesExceededError
 from django.db.models import Exists, OuterRef, Q
 from django.dispatch import receiver
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django_scopes import scope, scopes_disabled
 from requests import RequestException
 
@@ -126,6 +126,10 @@ def register_default_webhook_events(sender, **kwargs):
             _('Order canceled'),
         ),
         ParametrizedOrderWebhookEvent(
+            'pretix.event.order.reactivated',
+            _('Order reactivated'),
+        ),
+        ParametrizedOrderWebhookEvent(
             'pretix.event.order.expired',
             _('Order expired'),
         ),
@@ -164,9 +168,9 @@ def register_default_webhook_events(sender, **kwargs):
     )
 
 
-@app.task(base=TransactionAwareTask)
+@app.task(base=TransactionAwareTask, acks_late=True)
 def notify_webhooks(logentry_id: int):
-    logentry = LogEntry.all.get(id=logentry_id)
+    logentry = LogEntry.all.select_related('event', 'event__organizer').get(id=logentry_id)
 
     if not logentry.organizer:
         return  # We need to know the organizer
@@ -201,7 +205,7 @@ def notify_webhooks(logentry_id: int):
         send_webhook.apply_async(args=(logentry_id, notification_type.action_type, wh.pk))
 
 
-@app.task(base=ProfiledTask, bind=True, max_retries=9)
+@app.task(base=ProfiledTask, bind=True, max_retries=9, acks_late=True)
 def send_webhook(self, logentry_id: int, action_type: str, webhook_id: int):
     # 9 retries with 2**(2*x) timing is roughly 72 hours
     with scopes_disabled():

@@ -65,7 +65,8 @@ $(document).ajaxError(function (event, jqXHR, settings, thrownError) {
     var c = $(jqXHR.responseText).filter('.container');
     if (c.length > 0) {
         ajaxErrDialog.show(c.first().html());
-    } else if (thrownError !== "abort") {
+    } else if (thrownError !== "abort" && thrownError !== "") {
+        console.log(thrownError);
         alert(gettext('Unknown error.'));
     }
 });
@@ -226,19 +227,21 @@ var form_handlers = function (el) {
         if ($(this).val() === "") {
             $note.remove();
         }
-        if (c > 7) {
-            $note.html("<span class='fa fa-fw fa-check-circle'></span>")
-                .append(gettext('Your color has great contrast and is very easy to read!'));
-            $note.addClass("text-success").removeClass("text-warning").removeClass("text-danger");
-        } else if (c > 2.5) {
-            $note.html("<span class='fa fa-fw fa-info-circle'></span>")
-                .append(gettext('Your color has decent contrast and is probably good-enough to read!'));
-            $note.removeClass("text-success").removeClass("text-warning").removeClass("text-danger");
-        } else {
-            $note.html("<span class='fa fa-fw fa-warning'></span>")
-                .append(gettext('Your color has bad contrast for text on white background, please choose a darker ' +
-                    'shade.'));
-            $note.addClass("text-danger").removeClass("text-success").removeClass("text-warning");
+        if (!$(this).is(".no-contrast")) {
+            if (c > 7) {
+                $note.html("<span class='fa fa-fw fa-check-circle'></span>")
+                    .append(gettext('Your color has great contrast and is very easy to read!'));
+                $note.addClass("text-success").removeClass("text-warning").removeClass("text-danger");
+            } else if (c > 2.5) {
+                $note.html("<span class='fa fa-fw fa-info-circle'></span>")
+                    .append(gettext('Your color has decent contrast and is probably good-enough to read!'));
+                $note.removeClass("text-success").removeClass("text-warning").removeClass("text-danger");
+            } else {
+                $note.html("<span class='fa fa-fw fa-warning'></span>")
+                    .append(gettext('Your color has bad contrast for text on white background, please choose a darker ' +
+                        'shade.'));
+                $note.addClass("text-danger").removeClass("text-success").removeClass("text-warning");
+            }
         }
     });
 
@@ -248,7 +251,7 @@ var form_handlers = function (el) {
             update = function () {
                 var enabled = dependency.prop('checked');
                 dependent.prop('disabled', !enabled).parents('.form-group').toggleClass('disabled', !enabled);
-                if (!enabled) {
+                if (!enabled && !$(this).is('[data-checkbox-dependency-visual]')) {
                     dependent.prop('checked', false);
                 }
             };
@@ -309,6 +312,24 @@ var form_handlers = function (el) {
         update();
         dependency.closest('.form-group').find('input[name=' + dependency.attr("name") + ']').on("change", update);
         dependency.closest('.form-group').find('input[name=' + dependency.attr("name") + ']').on("dp.change", update);
+    });
+
+    $("input[name$=vat_id][data-countries-in-eu]").each(function () {
+        var dependent = $(this),
+            dependency_country = $(this).closest(".panel-body, form").find('select[name$=country]'),
+            dependency_id_is_business_1 = $(this).closest(".panel-body, form").find('input[id$=id_is_business_1]'),
+            update = function (ev) {
+                if (dependency_id_is_business_1.length && !dependency_id_is_business_1.prop("checked")) {
+                    dependent.closest(".form-group").hide();
+                } else if (dependent.attr('data-countries-in-eu').split(',').includes(dependency_country.val())) {
+                    dependent.closest(".form-group").show();
+                } else {
+                    dependent.closest(".form-group").hide();
+                }
+            };
+        update();
+        dependency_country.on("change", update);
+        dependency_id_is_business_1.on("change", update);
     });
 
     $("select[name$=state]:not([data-static])").each(function () {

@@ -8,12 +8,13 @@ from django.db.models.functions import Coalesce, Greatest
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
-from django.utils.formats import get_format
+from django.utils.formats import date_format, get_format
 from django.utils.timezone import make_aware
-from django.utils.translation import pgettext, ugettext as _
+from django.utils.translation import gettext as _, pgettext
 
 from pretix.base.models import (
-    EventMetaProperty, EventMetaValue, Order, Organizer, User, Voucher,
+    EventMetaProperty, EventMetaValue, ItemMetaProperty, ItemMetaValue,
+    ItemVariation, Order, Organizer, User, Voucher,
 )
 from pretix.control.forms.event import EventWizardCopyForm
 from pretix.control.permissions import event_permission_required
@@ -162,7 +163,9 @@ def nav_context_list(request):
         qs_orga = qs_orga.filter(Q(name__icontains=query) | Q(slug__icontains=query))
 
     if query:
-        qs_orders = Order.objects.filter(code__icontains=query).select_related('event', 'event__organizer')
+        qs_orders = Order.objects.filter(
+            code__icontains=query
+        ).select_related('event', 'event__organizer').only('event', 'code', 'pk').order_by()
         if not request.user.has_active_staff_session(request.session.session_key):
             qs_orders = qs_orders.filter(
                 Q(event__organizer_id__in=request.user.teams.filter(
@@ -171,7 +174,9 @@ def nav_context_list(request):
                     can_view_orders=True).values_list('limit_events__id', flat=True))
             )
 
-        qs_vouchers = Voucher.objects.filter(code__icontains=query).select_related('event', 'event__organizer')
+        qs_vouchers = Voucher.objects.filter(
+            code__icontains=query
+        ).select_related('event', 'event__organizer').only('event', 'code', 'pk').order_by()
         if not request.user.has_active_staff_session(request.session.session_key):
             qs_vouchers = qs_vouchers.filter(
                 Q(event__organizer_id__in=request.user.teams.filter(
@@ -260,8 +265,10 @@ def subevent_select2(request, **kwargs):
             {
                 'id': e.pk,
                 'name': str(e.name),
-                'date_range': e.get_date_range_display(),
-                'text': '{} – {}'.format(e.name, e.get_date_range_display()),
+                'date_range': e.get_date_range_display() + (
+                    " " + date_format(e.date_from.astimezone(tz), "TIME_FORMAT") if e.settings.show_times else ""
+                ),
+                'text': str(e)
             }
             for e in qs[offset:offset + pagesize]
         ],
@@ -311,6 +318,68 @@ def quotas_select2(request, **kwargs):
                 'text': q.name
             }
             for q in qs[offset:offset + pagesize]
+        ],
+        'pagination': {
+            "more": total >= (offset + pagesize)
+        }
+    }
+    return JsonResponse(doc)
+
+
+@event_permission_required(None)
+def items_select2(request, **kwargs):
+    query = request.GET.get('query', '')
+    try:
+        page = int(request.GET.get('page', '1'))
+    except ValueError:
+        page = 1
+
+    qs = request.event.items.filter(
+        name__icontains=i18ncomp(query)
+    ).order_by('position')
+
+    total = qs.count()
+    pagesize = 20
+    offset = (page - 1) * pagesize
+    doc = {
+        'results': [
+            {
+                'id': e.pk,
+                'text': str(e),
+            }
+            for e in qs[offset:offset + pagesize]
+        ],
+        'pagination': {
+            "more": total >= (offset + pagesize)
+        }
+    }
+    return JsonResponse(doc)
+
+
+@event_permission_required(None)
+def variations_select2(request, **kwargs):
+    query = request.GET.get('query', '')
+    try:
+        page = int(request.GET.get('page', '1'))
+    except ValueError:
+        page = 1
+
+    q = Q(item__event=request.event)
+    for word in query.split():
+        q &= Q(value__icontains=i18ncomp(word)) | Q(item__name__icontains=i18ncomp(ord))
+
+    qs = ItemVariation.objects.filter(q).order_by('item__position', 'item__name', 'position', 'value').select_related('item')
+
+    total = qs.count()
+    pagesize = 20
+    offset = (page - 1) * pagesize
+    doc = {
+        'results': [
+            {
+                'id': e.pk,
+                'text': str(e.item) + " – " + str(e),
+            }
+            for e in qs[offset:offset + pagesize]
         ],
         'pagination': {
             "more": total >= (offset + pagesize)
@@ -582,6 +651,49 @@ def meta_values(request):
                 Q(event__organizer_id__in=request.user.teams.filter(all_events=True).values_list('organizer', flat=True))
                 | Q(event__id__in=request.user.teams.values_list('limit_events__id', flat=True))
             )
+
+    return JsonResponse({
+        'results': [
+            {'name': v, 'id': v}
+            for v in sorted(set(defaults.values_list('default', flat=True)[:10]) | set(matches.values_list('value', flat=True)[:10]))
+        ]
+    })
+
+
+def item_meta_values(request, organizer, event):
+    q = request.GET.get('q')
+    propname = request.GET.get('property')
+
+    matches = ItemMetaValue.objects.filter(
+        value__icontains=q,
+        property__name=propname
+    )
+    defaults = ItemMetaProperty.objects.filter(
+        name=propname,
+        default__icontains=q
+    )
+
+    organizer = get_object_or_404(Organizer, slug=organizer)
+    if not request.user.has_organizer_permission(organizer, request=request):
+        raise PermissionDenied()
+
+    defaults = defaults.filter(event__organizer_id=organizer.pk)
+    matches = matches.filter(item__event__organizer_id=organizer.pk)
+    all_access = (
+        request.user.has_active_staff_session(request.session.session_key)
+        or request.user.teams.filter(all_events=True, organizer=organizer, can_change_items=True).exists()
+    )
+    if not all_access:
+        defaults = matches.filter(
+            event__id__in=request.user.teams.filter(can_change_items=True).values_list(
+                'limit_events__id', flat=True
+            )
+        )
+        matches = matches.filter(
+            item__event__id__in=request.user.teams.filter(can_change_items=True).values_list(
+                'limit_events__id', flat=True
+            )
+        )
 
     return JsonResponse({
         'results': [

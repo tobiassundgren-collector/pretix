@@ -7,7 +7,7 @@ from django.db import migrations, models
 from django.db.models import F
 from django.db.models.functions import Concat
 from django.utils.crypto import get_random_string
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 
 import pretix.base.models.auth
 import pretix.base.validators
@@ -97,7 +97,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='event',
             name='slug',
-            field=models.SlugField(
+            field=models.CharField(max_length=50, db_index=True, 
                 help_text='Should be short, only contain lowercase letters, numbers, dots, and dashes, and must be '
                           'unique among your events. We recommend some kind of abbreviation or a date with less than '
                           '10 characters that can be easily remembered, but you can also choose to use a random '
@@ -119,7 +119,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='organizer',
             name='slug',
-            field=models.SlugField(
+            field=models.CharField(max_length=50, db_index=True, 
                 help_text='Should be short, only contain lowercase letters, numbers, dots, and dashes. Every slug can '
                           'only be used once. This is being used in URLs to refer to your organizer accounts and your'
                           ' events.',

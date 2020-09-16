@@ -2,7 +2,7 @@ import string
 
 from django.db import models
 from django.utils.crypto import get_random_string
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from pretix.base.models import LoggedModel
 
@@ -104,8 +104,8 @@ class TicketLayout(LoggedModel):
         "bold":false,
         "italic":false,
         "width":"110.00",
-        "content":"event_date_range",
-        "text":"May 31st – June 4th, 2017",
+        "content":"event_begin",
+        "text":"2016-05-31 20:00",
         "align":"left"
     },
     {

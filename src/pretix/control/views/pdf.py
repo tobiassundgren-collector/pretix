@@ -15,7 +15,7 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils.crypto import get_random_string
 from django.utils.timezone import now
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from django.views.generic import TemplateView
 from PyPDF2 import PdfFileWriter
 from reportlab.lib.units import mm
@@ -50,9 +50,9 @@ class BaseEditorView(EventPermissionRequiredMixin, TemplateView):
         f = self.request.FILES.get('background')
         error = False
         if f.size > self.maxfilesize:
-            error = _('The uploaded PDF file is to large.')
+            error = _('The uploaded PDF file is too large.')
         if f.size < self.minfilesize:
-            error = _('The uploaded PDF file is to small.')
+            error = _('The uploaded PDF file is too small.')
         if mimetypes.guess_type(f.name)[0] not in self.accepted_formats:
             error = _('Please only upload PDF files.')
         # if there was an error, add error message to response_data and return

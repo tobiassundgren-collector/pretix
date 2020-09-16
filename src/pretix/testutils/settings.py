@@ -53,6 +53,7 @@ CACHES = {
         'BACKEND': 'django.core.cache.backends.dummy.DummyCache',
     }
 }
+DATABASE_REPLICA = 'default'
 
 # Don't run migrations
 
@@ -66,5 +67,5 @@ class DisableMigrations(object):
         return None
 
 
-if not os.environ.get("TRAVIS", ""):
+if not os.environ.get("TRAVIS", "") and not os.environ.get("GITHUB_WORKFLOW", ""):
     MIGRATION_MODULES = DisableMigrations()

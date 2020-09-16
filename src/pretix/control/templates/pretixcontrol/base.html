@@ -110,7 +110,7 @@
                                 </button>
                             </form>
                         {% else %}
-                            <a href="{% eventurl request.event "presale:event.index" %}" title="{% trans "Go to Shop" %}"
+                            <a href="{% eventurl request.event "presale:event.index" %}" title="{% trans "Go to shop" %}"
                                     target="_blank" class="navbar-toggle mobile-navbar-view-link">
                                 <i class="fa fa-eye"></i>
                             </a>
@@ -137,7 +137,7 @@
                                     </button>
                                 </form>
                             {% else %}
-                                <a href="{% eventurl request.event "presale:event.index" %}" title="{% trans "Go to Shop" %}"  target="_blank">
+                                <a href="{% eventurl request.event "presale:event.index" %}" title="{% trans "Go to shop" %}"  target="_blank">
                                     <i class="fa fa-eye"></i> {% trans "Go to shop" %}
                                 </a>
                             {% endif %}
@@ -423,11 +423,20 @@
         <div id="ajaxerr">
         </div>
         <div id="loadingmodal">
-            <i class="fa fa-cog big-rotating-icon"></i>
-            <h1>{% trans "We are processing your request …" %}</h1>
-            <p>
-                {% trans "If this takes longer than a few minutes, please contact us." %}
-            </p>
+            <div class="modal-card">
+                <div class="modal-card-icon">
+                    <i class="fa fa-cog big-rotating-icon"></i>
+                </div>
+                <div class="modal-card-content">
+                    <h3></h3>
+                    <p class="text"></p>
+                    <p class="status">{% trans "If this takes longer than a few minutes, please contact us." %}</p>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-success">
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 	</body>
 </html>

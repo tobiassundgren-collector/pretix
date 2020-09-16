@@ -53,6 +53,7 @@ class BaseQuestionsViewMixin:
                                    data=(self.request.POST if self.request.method == 'POST' else None),
                                    files=(self.request.FILES if self.request.method == 'POST' else None))
             form.pos = cartpos or orderpos
+            form.show_copy_answers_to_addon_button = form.pos.addon_to and set(form.pos.addon_to.item.questions.all()) & set(form.pos.item.questions.all())
             if len(form.fields) > 0:
                 formlist.append(form)
         return formlist
@@ -61,7 +62,7 @@ class BaseQuestionsViewMixin:
     def formdict(self):
         storage = OrderedDict()
         for f in self.forms:
-            pos = f.cartpos or f.orderpos
+            pos = f.pos
             if pos.addon_to_id:
                 if pos.addon_to not in storage:
                     storage[pos.addon_to] = []
@@ -85,10 +86,20 @@ class BaseQuestionsViewMixin:
                 for k, v in form.cleaned_data.items():
                     if k == 'attendee_name_parts':
                         form.pos.attendee_name_parts = v if v else None
-                        form.pos.save()
                     elif k == 'attendee_email':
                         form.pos.attendee_email = v if v != '' else None
-                        form.pos.save()
+                    elif k == 'company':
+                        form.pos.company = v if v != '' else None
+                    elif k == 'street':
+                        form.pos.street = v if v != '' else None
+                    elif k == 'zipcode':
+                        form.pos.zipcode = v if v != '' else None
+                    elif k == 'city':
+                        form.pos.city = v if v != '' else None
+                    elif k == 'country':
+                        form.pos.country = v if v != '' else None
+                    elif k == 'state':
+                        form.pos.state = v if v != '' else None
                     elif k.startswith('question_'):
                         field = form.fields[k]
                         if hasattr(field, 'answer'):
@@ -119,7 +130,7 @@ class BaseQuestionsViewMixin:
                             meta_info['question_form_data'][k] = v
 
             form.pos.meta_info = json.dumps(meta_info)
-            form.pos.save(update_fields=['meta_info'])
+            form.pos.save()
         return not failed
 
     def _save_to_answer(self, field, answer, value):

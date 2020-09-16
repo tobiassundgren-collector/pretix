@@ -17,8 +17,7 @@ from django.http import HttpRequest
 from django.template.loader import get_template
 from django.utils.crypto import get_random_string
 from django.utils.timezone import now
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
-from django_countries import Countries
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 from i18nfield.forms import I18nFormField, I18nTextarea, I18nTextInput
 from i18nfield.strings import LazyI18nString
 
@@ -29,10 +28,12 @@ from pretix.base.models import (
     OrderRefund, Quota,
 )
 from pretix.base.reldate import RelativeDateField, RelativeDateWrapper
+from pretix.base.services.cart import get_fees
 from pretix.base.settings import SettingsSandbox
 from pretix.base.signals import register_payment_providers
 from pretix.base.templatetags.money import money_filter
 from pretix.base.templatetags.rich_text import rich_text
+from pretix.helpers.countries import CachedCountries
 from pretix.helpers.money import DecimalTextInput
 from pretix.multidomain.urlreverse import build_absolute_uri, eventreverse
 from pretix.presale.views import get_cart, get_cart_total
@@ -48,6 +49,7 @@ class PaymentProviderForm(Form):
             val = cleaned_data.get(k)
             if v._required and not val:
                 self.add_error(k, _('This field is required.'))
+        return cleaned_data
 
 
 class BasePaymentProvider:
@@ -166,10 +168,20 @@ class BasePaymentProvider:
     @property
     def abort_pending_allowed(self) -> bool:
         """
-        Whether or not a user can abort a payment in pending start to switch to another
+        Whether or not a user can abort a payment in pending state to switch to another
         payment method. This returns ``False`` by default which is no guarantee that
         aborting a pending payment can never happen, it just hides the frontend button
         to avoid users accidentally committing double payments.
+        """
+        return False
+
+    @property
+    def requires_invoice_immediately(self):
+        """
+        Return whether this payment method requires an invoice to exist for an order, even though the event
+        is configured to only create invoices for paid orders.
+        By default this is False, but it might be overwritten for e.g. bank transfer.
+        `execute_payment` is called after the invoice is created.
         """
         return False
 
@@ -285,7 +297,7 @@ class BasePaymentProvider:
             ('_restricted_countries',
              forms.MultipleChoiceField(
                  label=_('Restrict to countries'),
-                 choices=Countries(),
+                 choices=CachedCountries(),
                  help_text=_('Only allow choosing this payment provider for invoice addresses in the selected '
                              'countries. If you don\'t select any country, all countries are allowed. This is only '
                              'enabled if the invoice address is required.'),
@@ -305,7 +317,7 @@ class BasePaymentProvider:
                  initial=['web'],
                  widget=forms.CheckboxSelectMultiple,
                  help_text=_(
-                     'Only allow the usage of this payment provider in the following sales channels'),
+                     'Only allow the usage of this payment provider in the selected sales channels.'),
              )),
             ('_hidden',
              forms.BooleanField(
@@ -373,6 +385,8 @@ class BasePaymentProvider:
         """
         return {}
 
+    payment_form_class = PaymentProviderForm
+
     def payment_form(self, request: HttpRequest) -> Form:
         """
         This is called by the default implementation of :py:meth:`payment_form_render`
@@ -385,7 +399,7 @@ class BasePaymentProvider:
         ``PaymentProviderForm`` (from this module) that handles some nasty issues about
         required fields for you.
         """
-        form = PaymentProviderForm(
+        form = self.payment_form_class(
             data=(request.POST if request.method == 'POST' and request.POST.get("payment") == self.identifier else None),
             prefix='payment_%s' % self.identifier,
             initial={
@@ -766,7 +780,7 @@ class BasePaymentProvider:
 
     def matching_id(self, payment: OrderPayment):
         """
-        Will be called to get an ID for a matching this payment when comparing pretix records with records of an external
+        Will be called to get an ID for matching this payment when comparing pretix records with records of an external
         source. This should return the main transaction ID for your API.
 
         :param payment: The payment in question.
@@ -900,16 +914,16 @@ class ManualPayment(BasePaymentProvider):
                 ('email_instructions', I18nFormField(
                     label=_('Payment process description in order confirmation emails'),
                     help_text=_('This text will be included for the {payment_info} placeholder in order confirmation '
-                                'mails. It should instruct the user on how to proceed with the payment. You can use'
-                                'the placeholders {order}, {total}, {currency} and {total_with_currency}'),
+                                'mails. It should instruct the user on how to proceed with the payment. You can use '
+                                'the placeholders {order}, {total}, {currency} and {total_with_currency}.'),
                     widget=I18nTextarea,
                     validators=[PlaceholderValidator(['{order}', '{total}', '{currency}', '{total_with_currency}'])],
                 )),
                 ('pending_description', I18nFormField(
                     label=_('Payment process description for pending orders'),
                     help_text=_('This text will be shown on the order confirmation page for pending orders. '
-                                'It should instruct the user on how to proceed with the payment. You can use'
-                                'the placeholders {order}, {total}, {currency} and {total_with_currency}'),
+                                'It should instruct the user on how to proceed with the payment. You can use '
+                                'the placeholders {order}, {total}, {currency} and {total_with_currency}.'),
                     widget=I18nTextarea,
                     validators=[PlaceholderValidator(['{order}', '{total}', '{currency}', '{total_with_currency}'])],
                 )),
@@ -1061,7 +1075,10 @@ class GiftCardPayment(BasePaymentProvider):
 
     def api_payment_details(self, payment: OrderPayment):
         from .models import GiftCard
-        gc = GiftCard.objects.get(pk=payment.info_data.get('gift_card'))
+        try:
+            gc = GiftCard.objects.get(pk=payment.info_data.get('gift_card'))
+        except GiftCard.DoesNotExist:
+            return {}
         return {
             'gift_card': {
                 'id': gc.pk,
@@ -1096,6 +1113,9 @@ class GiftCardPayment(BasePaymentProvider):
             if not gc.testmode and self.event.testmode:
                 messages.error(request, _("Only test gift cards can be used in test mode."))
                 return
+            if gc.expires and gc.expires < now():
+                messages.error(request, _("This gift card is no longer valid."))
+                return
             if gc.value <= Decimal("0.00"):
                 messages.error(request, _("All credit on this gift card has been used."))
                 return
@@ -1106,8 +1126,16 @@ class GiftCardPayment(BasePaymentProvider):
                 return
             cs['gift_cards'] = cs['gift_cards'] + [gc.pk]
 
-            remainder = cart['total'] - gc.value
-            if remainder >= Decimal('0.00'):
+            total = sum(p.total for p in cart['positions'])
+            # Recompute fees. Some plugins, e.g. pretix-servicefees, change their fee schedule if a gift card is
+            # applied.
+            fees = get_fees(
+                self.event, request, total, cart['invoice_address'], cs.get('payment'),
+                cart['raw']
+            )
+            total += sum([f.value for f in fees])
+            remainder = total - gc.value
+            if remainder > Decimal('0.00'):
                 del cs['payment']
                 messages.success(request, _("Your gift card has been applied, but {} still need to be paid. Please select a payment method.").format(
                     money_filter(remainder, self.event.currency)
@@ -1147,6 +1175,9 @@ class GiftCardPayment(BasePaymentProvider):
             if not gc.testmode and payment.order.testmode:
                 messages.error(request, _("Only test gift cards can be used in test mode."))
                 return
+            if gc.expires and gc.expires < now():
+                messages.error(request, _("This gift card is no longer valid."))
+                return
             if gc.value <= Decimal("0.00"):
                 messages.error(request, _("All credit on this gift card has been used."))
                 return
@@ -1184,7 +1215,10 @@ class GiftCardPayment(BasePaymentProvider):
             if not gc.accepted_by(self.event.organizer):  # noqa - just a safeguard
                 raise PaymentException(_("This gift card is not accepted by this event organizer."))
             if payment.amount > gc.value:  # noqa - just a safeguard
-                raise PaymentException(_("This gift card was used in the meantime. Please try again"))
+                raise PaymentException(_("This gift card was used in the meantime. Please try again."))
+            if gc.expires and gc.expires < now():  # noqa - just a safeguard
+                messages.error(request, _("This gift card is no longer valid."))
+                return
             trans = gc.transactions.create(
                 value=-1 * payment.amount,
                 order=payment.order,
@@ -1210,6 +1244,7 @@ class GiftCardPayment(BasePaymentProvider):
         )
         refund.info_data = {
             'gift_card': gc.pk,
+            'gift_card_code': gc.secret,
             'transaction_id': trans.pk,
         }
         refund.done()

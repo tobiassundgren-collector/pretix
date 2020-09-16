@@ -4,15 +4,12 @@ from decimal import Decimal
 from unittest import mock
 
 import pytest
-from django.dispatch import receiver
 from django.utils.timezone import now
 from django_scopes import scopes_disabled
 from pytz import UTC
 
-from pretix.base.channels import SalesChannel
 from pretix.base.models import Question, SeatingPlan
 from pretix.base.models.orders import CartPosition
-from pretix.base.signals import register_sales_channels
 
 
 @pytest.fixture
@@ -50,21 +47,6 @@ def quota(event, item):
     q = event.quotas.create(name="Budget Quota", size=200)
     q.items.add(item)
     return q
-
-
-class FoobarSalesChannel(SalesChannel):
-    identifier = "bar"
-    verbose_name = "Foobar"
-    icon = "home"
-    testmode_supported = False
-    unlimited_items_per_order = True
-
-
-@receiver(register_sales_channels, dispatch_uid="test_cart_register_sales_channels")
-def base_sales_channels(sender, **kwargs):
-    return (
-        FoobarSalesChannel(),
-    )
 
 
 TEST_CARTPOSITION_RES = {
@@ -651,7 +633,7 @@ def seat(event, organizer, item):
     event.seat_category_mappings.create(
         layout_category='Stalls', product=item
     )
-    return event.seats.create(name="A1", product=item, seat_guid="A1")
+    return event.seats.create(seat_number="A1", product=item, seat_guid="A1")
 
 
 @pytest.mark.django_db
@@ -683,7 +665,7 @@ def test_cartpos_create_with_blocked_seat(token_client, organizer, event, item, 
         ), format='json', data=res
     )
     assert resp.status_code == 400
-    assert resp.data == ['The selected seat "A1" is not available.']
+    assert resp.data == ['The selected seat "Seat A1" is not available.']
 
 
 @pytest.mark.django_db
@@ -718,7 +700,7 @@ def test_cartpos_create_with_used_seat(token_client, organizer, event, item, quo
         ), format='json', data=res
     )
     assert resp.status_code == 400
-    assert resp.data == ['The selected seat "A1" is not available.']
+    assert resp.data == ['The selected seat "Seat A1" is not available.']
 
 
 @pytest.mark.django_db

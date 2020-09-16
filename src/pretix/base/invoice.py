@@ -10,7 +10,7 @@ from django.contrib.staticfiles import finders
 from django.dispatch import receiver
 from django.utils.formats import date_format, localize
 from django.utils.translation import (
-    get_language, pgettext, ugettext, ugettext_lazy,
+    get_language, gettext, gettext_lazy, pgettext,
 )
 from PIL.Image import BICUBIC
 from reportlab.lib import pagesizes
@@ -264,7 +264,8 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
     invoice_to_top = 52 * mm
 
     def _draw_invoice_to(self, canvas):
-        p = Paragraph(self.invoice.address_invoice_to.strip().replace('\n', '<br />\n'), style=self.stylesheet['Normal'])
+        p = Paragraph(bleach.clean(self.invoice.address_invoice_to, tags=[]).strip().replace('\n', '<br />\n'),
+                      style=self.stylesheet['Normal'])
         p.wrapOn(canvas, self.invoice_to_width, self.invoice_to_height)
         p_size = p.wrap(self.invoice_to_width, self.invoice_to_height)
         p.drawOn(canvas, self.invoice_to_left, self.pagesize[1] - p_size[1] - self.invoice_to_top)
@@ -390,7 +391,7 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
                 p_size = p.wrap(self.event_width, self.event_height)
             return txt
 
-        if not self.invoice.event.has_subevents:
+        if not self.invoice.event.has_subevents and self.invoice.event.settings.show_dates_on_frontpage:
             if self.invoice.event.settings.show_date_to and self.invoice.event.date_to:
                 p_str = (
                     shorten(self.invoice.event.name) + '\n' +
@@ -422,7 +423,7 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
             canvas.saveState()
             canvas.setFont('OpenSansBd', 30)
             canvas.setFillColorRGB(32, 0, 0)
-            canvas.drawRightString(self.pagesize[0] - 20 * mm, (297 - 100) * mm, ugettext('TEST MODE'))
+            canvas.drawRightString(self.pagesize[0] - 20 * mm, (297 - 100) * mm, gettext('TEST MODE'))
             canvas.restoreState()
 
     def _on_first_page(self, canvas: Canvas, doc):
@@ -459,6 +460,12 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
 
     def _get_intro(self):
         story = []
+        if self.invoice.custom_field:
+            story.append(Paragraph(
+                '{}: {}'.format(self.invoice.event.settings.invoice_address_custom_field, self.invoice.custom_field),
+                self.stylesheet['Normal']
+            ))
+
         if self.invoice.internal_reference:
             story.append(Paragraph(
                 pgettext('invoice', 'Customer reference: {reference}').format(reference=self.invoice.internal_reference),
@@ -665,6 +672,7 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
                     table
                 ]))
         elif self.invoice.foreign_currency_display and self.invoice.foreign_currency_rate:
+            foreign_total = round_decimal(total * self.invoice.foreign_currency_rate)
             story.append(Spacer(1, 5 * mm))
             story.append(Paragraph(
                 pgettext(
@@ -672,7 +680,7 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
                                '{date}, the invoice total corresponds to {total}.'
                 ).format(rate=localize(self.invoice.foreign_currency_rate),
                          date=date_format(self.invoice.foreign_currency_rate_date, "SHORT_DATE_FORMAT"),
-                         total=fmt(total)),
+                         total=fmt(foreign_total)),
                 self.stylesheet['Fineprint']
             ))
 
@@ -681,7 +689,7 @@ class ClassicInvoiceRenderer(BaseReportlabInvoiceRenderer):
 
 class Modern1Renderer(ClassicInvoiceRenderer):
     identifier = 'modern1'
-    verbose_name = ugettext_lazy('Modern Invoice Renderer (pretix 2.7)')
+    verbose_name = gettext_lazy('Modern Invoice Renderer (pretix 2.7)')
     bottom_margin = 16.9 * mm
     top_margin = 16.9 * mm
     right_margin = 20 * mm

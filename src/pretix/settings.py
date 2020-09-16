@@ -2,18 +2,18 @@ import configparser
 import logging
 import os
 import sys
-
 from urllib.parse import urlparse
 
+import django.conf.locale
+from django.utils.crypto import get_random_string
 from kombu import Queue
+from pkg_resources import iter_entry_points
 from pycountry import currencies
 
-import django.conf.locale
-from django.contrib.messages import constants as messages  # NOQA
-from django.utils.crypto import get_random_string
-from django.utils.translation import ugettext_lazy as _  # NOQA
-from pkg_resources import iter_entry_points
 from . import __version__
+
+from django.contrib.messages import constants as messages  # NOQA
+from django.utils.translation import gettext_lazy as _  # NOQA
 
 config = configparser.RawConfigParser()
 if 'PRETIX_CONFIG_FILE' in os.environ:
@@ -58,6 +58,7 @@ else:
 
 debug_fallback = "runserver" in sys.argv
 DEBUG = config.getboolean('django', 'debug', fallback=debug_fallback)
+LOG_CSP = config.getboolean('pretix', 'csp_log', fallback=True)
 
 PDFTK = config.get('tools', 'pdftk', fallback=None)
 
@@ -240,6 +241,8 @@ else:
 
 SESSION_COOKIE_DOMAIN = config.get('pretix', 'cookie_domain', fallback=None)
 
+CACHE_TICKETS_HOURS = config.getint('cache', 'tickets', fallback=24 * 3)
+
 ENTROPY = {
     'order_code': config.getint('entropy', 'order_code', fallback=5),
     'ticket_secret': config.getint('entropy', 'ticket_secret', fallback=32),
@@ -306,6 +309,8 @@ except ImportError:
 
 PLUGINS = []
 for entry_point in iter_entry_points(group='pretix.plugin', name=None):
+    if entry_point.module_name in PRETIX_PLUGINS_EXCLUDE:
+        continue
     PLUGINS.append(entry_point.module_name)
     INSTALLED_APPS.append(entry_point.module_name)
 
@@ -424,7 +429,7 @@ LANGUAGES_OFFICIAL = {
     'en', 'de', 'de-informal'
 }
 LANGUAGES_INCUBATING = {
-    'pt-br', 'pl', 'it',
+    'pt-br', 'pl',
 } - set(config.get('languages', 'allow_incubating', fallback='').split(','))
 LANGUAGES_RTL = {
     'ar', 'hw'
@@ -441,13 +446,15 @@ EXTRA_LANG_INFO = {
         'bidi': False,
         'code': 'de-informal',
         'name': 'German (informal)',
-        'name_local': 'Deutsch'
+        'name_local': 'Deutsch',
+        'public_code': 'de',
     },
     'nl-informal': {
         'bidi': False,
         'code': 'nl-informal',
         'name': 'Dutch (informal)',
-        'name_local': 'Nederlands'
+        'name_local': 'Nederlands',
+        'public_code': 'nl',
     },
     'fr': {
         'bidi': False,
@@ -633,7 +640,10 @@ SENTRY_ENABLED = False
 if config.has_option('sentry', 'dsn') and not any(c in sys.argv for c in ('shell', 'shell_scoped', 'shell_plus')):
     import sentry_sdk
     from sentry_sdk.integrations.celery import CeleryIntegration
-    from sentry_sdk.integrations.logging import LoggingIntegration, ignore_logger
+    from sentry_sdk.integrations.logging import (
+        LoggingIntegration, ignore_logger,
+    )
+
     from .sentry import PretixSentryIntegration, setup_custom_filters
 
     SENTRY_ENABLED = True
@@ -716,4 +726,8 @@ OAUTH2_PROVIDER = {
     'ACCESS_TOKEN_EXPIRE_SECONDS': 3600 * 24,
     'ROTATE_REFRESH_TOKEN': False,
 
+}
+
+COUNTRIES_OVERRIDE = {
+    'XK': _('Kosovo'),
 }

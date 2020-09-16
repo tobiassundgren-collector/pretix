@@ -15,9 +15,9 @@ from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
-from django.utils.http import is_safe_url
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.timezone import now
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.views import View
 from django.views.generic import FormView, ListView, TemplateView, UpdateView
 from django_otp.plugins.otp_static.models import StaticDevice
@@ -101,18 +101,21 @@ class ReauthView(TemplateView):
             t = int(time.time())
             request.session['pretix_auth_login_time'] = t
             request.session['pretix_auth_last_used'] = t
-            if "next" in request.GET and is_safe_url(request.GET.get("next"), allowed_hosts=None):
-                return redirect(request.GET.get("next"))
+            next_url = get_auth_backends()[request.user.auth_backend].get_next_url(request)
+            if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts=None):
+                return redirect(next_url)
             return redirect(reverse('control:index'))
         else:
             messages.error(request, _('The password you entered was invalid, please try again.'))
             return self.get(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
-        u = get_auth_backends()[request.user.auth_backend].request_authenticate(request)
+        backend = get_auth_backends()[request.user.auth_backend]
+        u = backend.request_authenticate(request)
         if u and u == request.user:
-            if "next" in request.GET and is_safe_url(request.GET.get("next"), allowed_hosts=None):
-                return redirect(request.GET.get("next"))
+            next_url = backend.get_next_url(request)
+            if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts=None):
+                return redirect(next_url)
             return redirect(reverse('control:index'))
         return super().get(request, *args, **kwargs)
 
@@ -239,6 +242,10 @@ class User2FAMainView(RecentAuthenticationRequiredMixin, TemplateView):
 
         try:
             ctx['static_tokens'] = StaticDevice.objects.get(user=self.request.user, name='emergency').token_set.all()
+        except StaticDevice.MultipleObjectsReturned:
+            ctx['static_tokens'] = StaticDevice.objects.filter(
+                user=self.request.user, name='emergency'
+            ).first().token_set.all()
         except StaticDevice.DoesNotExist:
             d = StaticDevice.objects.create(user=self.request.user, name='emergency')
             for i in range(10):
@@ -316,6 +323,8 @@ class User2FADeviceDeleteView(RecentAuthenticationRequiredMixin, TemplateView):
             msgs.append(_('Two-factor authentication has been disabled.'))
 
         self.request.user.send_security_notice(msgs)
+        self.request.user.update_session_token()
+        update_session_auth_hash(self.request, self.request.user)
         messages.success(request, _('The device has been removed.'))
         return redirect(reverse('control:user.settings.2fa'))
 
@@ -427,6 +436,8 @@ class User2FADeviceConfirmWebAuthnView(RecentAuthenticationRequiredMixin, Templa
                     _('Two-factor authentication has been enabled.')
                 )
             self.request.user.send_security_notice(notices)
+            self.request.user.update_session_token()
+            update_session_auth_hash(self.request, self.request.user)
 
             note = ''
             if not self.request.user.require_2fa:
@@ -485,6 +496,8 @@ class User2FADeviceConfirmTOTPView(RecentAuthenticationRequiredMixin, TemplateVi
                     _('Two-factor authentication has been enabled.')
                 )
             self.request.user.send_security_notice(notices)
+            self.request.user.update_session_token()
+            update_session_auth_hash(self.request, self.request.user)
 
             note = ''
             if not self.request.user.require_2fa:
@@ -519,6 +532,8 @@ class User2FAEnableView(RecentAuthenticationRequiredMixin, TemplateView):
         self.request.user.send_security_notice([
             _('Two-factor authentication has been enabled.')
         ])
+        self.request.user.update_session_token()
+        update_session_auth_hash(self.request, self.request.user)
         return redirect(reverse('control:user.settings.2fa'))
 
 
@@ -533,6 +548,8 @@ class User2FADisableView(RecentAuthenticationRequiredMixin, TemplateView):
         self.request.user.send_security_notice([
             _('Two-factor authentication has been disabled.')
         ])
+        self.request.user.update_session_token()
+        update_session_auth_hash(self.request, self.request.user)
         return redirect(reverse('control:user.settings.2fa'))
 
 
@@ -540,14 +557,16 @@ class User2FARegenerateEmergencyView(RecentAuthenticationRequiredMixin, Template
     template_name = 'pretixcontrol/user/2fa_regenemergency.html'
 
     def post(self, request, *args, **kwargs):
-        d = StaticDevice.objects.get(user=self.request.user, name='emergency')
-        d.token_set.all().delete()
+        StaticDevice.objects.filter(user=self.request.user, name='emergency').delete()
+        d = StaticDevice.objects.create(user=self.request.user, name='emergency')
         for i in range(10):
             d.token_set.create(token=get_random_string(length=12, allowed_chars='1234567890'))
         self.request.user.log_action('pretix.user.settings.2fa.regenemergency', user=self.request.user)
         self.request.user.send_security_notice([
             _('Your two-factor emergency codes have been regenerated.')
         ])
+        self.request.user.update_session_token()
+        update_session_auth_hash(self.request, self.request.user)
         messages.success(request, _('Your emergency codes have been newly generated. Remember to store them in a safe '
                                     'place in case you lose access to your devices.'))
         return redirect(reverse('control:user.settings.2fa'))
@@ -681,7 +700,7 @@ class StartStaffSession(StaffMemberRequiredMixin, RecentAuthenticationRequiredMi
                 session_key=request.session.session_key
             )
 
-        if "next" in request.GET and is_safe_url(request.GET.get("next"), allowed_hosts=None):
+        if "next" in request.GET and url_has_allowed_host_and_scheme(request.GET.get("next"), allowed_hosts=None):
             return redirect(request.GET.get("next"))
         else:
             return redirect(reverse("control:index"))

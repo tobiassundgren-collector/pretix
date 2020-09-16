@@ -575,6 +575,37 @@ def test_order_resend_link(client, env):
 
 
 @pytest.mark.django_db
+def test_order_reactivate_not_canceled(client, env):
+    with scopes_disabled():
+        o = Order.objects.get(id=env[2].id)
+        o.status = Order.STATUS_PAID
+        o.save()
+    client.login(email='dummy@dummy.dummy', password='dummy')
+    response = client.get('/control/event/dummy/dummy/orders/FOO/reactivate', follow=True)
+    assert 'alert-danger' in response.content.decode()
+    response = client.post('/control/event/dummy/dummy/orders/FOO/reactivate', follow=True)
+    assert 'alert-danger' in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_order_reactivate(client, env):
+    with scopes_disabled():
+        q = Quota.objects.create(event=env[0], size=3)
+        q.items.add(env[3])
+        o = Order.objects.get(id=env[2].id)
+        o.status = Order.STATUS_CANCELED
+        o.save()
+    client.login(email='dummy@dummy.dummy', password='dummy')
+    response = client.post('/control/event/dummy/dummy/orders/FOO/reactivate', {
+    }, follow=True)
+    print(response.content.decode())
+    assert 'alert-success' in response.content.decode()
+    with scopes_disabled():
+        o = Order.objects.get(id=env[2].id)
+        assert o.status == Order.STATUS_PENDING
+
+
+@pytest.mark.django_db
 def test_order_extend_not_pending(client, env):
     with scopes_disabled():
         o = Order.objects.get(id=env[2].id)
@@ -594,7 +625,7 @@ def test_order_extend_not_expired(client, env):
         q.items.add(env[3])
         o = Order.objects.get(id=env[2].id)
         generate_invoice(o)
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -614,7 +645,7 @@ def test_order_extend_overdue_quota_empty(client, env):
         o.save()
         q = Quota.objects.create(event=env[0], size=0)
         q.items.add(env[3])
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -637,7 +668,7 @@ def test_order_extend_overdue_quota_blocked_by_waiting_list(client, env):
         env[0].waitinglistentries.create(item=env[3], email='foo@bar.com')
         generate_cancellation(generate_invoice(o))
 
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -660,7 +691,7 @@ def test_order_extend_expired_quota_left(client, env):
         generate_cancellation(generate_invoice(o))
         q = Quota.objects.create(event=env[0], size=3)
         q.items.add(env[3])
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     with scopes_disabled():
         assert o.invoices.count() == 2
@@ -686,7 +717,7 @@ def test_order_extend_expired_quota_empty(client, env):
     with scopes_disabled():
         q = Quota.objects.create(event=env[0], size=0)
         q.items.add(env[3])
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -707,7 +738,7 @@ def test_order_extend_expired_quota_empty_ignore(client, env):
         o.save()
         q = Quota.objects.create(event=env[0], size=0)
         q.items.add(env[3])
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate,
@@ -727,13 +758,13 @@ def test_order_extend_expired_seat_free(client, env):
         o.status = Order.STATUS_EXPIRED
         o.save()
         generate_cancellation(generate_invoice(o))
-        seat_a1 = env[0].seats.create(name="A1", product=env[3], seat_guid="A1")
+        seat_a1 = env[0].seats.create(seat_number="A1", product=env[3], seat_guid="A1")
         p = o.positions.first()
         p.seat = seat_a1
         p.save()
         q = Quota.objects.create(event=env[0], size=3)
         q.items.add(env[3])
-        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
         client.login(email='dummy@dummy.dummy', password='dummy')
         assert o.invoices.count() == 2
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
@@ -755,14 +786,14 @@ def test_order_extend_expired_seat_blocked(client, env):
         o.status = Order.STATUS_EXPIRED
         olddate = o.expires
         o.save()
-        seat_a1 = env[0].seats.create(name="A1", product=env[3], seat_guid="A1", blocked=True)
+        seat_a1 = env[0].seats.create(seat_number="A1", product=env[3], seat_guid="A1", blocked=True)
         p = o.positions.first()
         p.seat = seat_a1
         p.save()
 
         q = Quota.objects.create(event=env[0], size=100)
         q.items.add(env[3])
-        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -782,7 +813,7 @@ def test_order_extend_expired_seat_taken(client, env):
         o.status = Order.STATUS_EXPIRED
         olddate = o.expires
         o.save()
-        seat_a1 = env[0].seats.create(name="A1", product=env[3], seat_guid="A1")
+        seat_a1 = env[0].seats.create(seat_number="A1", product=env[3], seat_guid="A1")
         p = o.positions.first()
         p.seat = seat_a1
         p.save()
@@ -804,7 +835,7 @@ def test_order_extend_expired_seat_taken(client, env):
 
         q = Quota.objects.create(event=env[0], size=100)
         q.items.add(env[3])
-        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
         client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -833,7 +864,7 @@ def test_order_extend_expired_quota_partial(client, env):
         o.save()
         q = Quota.objects.create(event=env[0], size=1)
         q.items.add(env[3])
-    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+    newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -863,7 +894,7 @@ def test_order_extend_expired_voucher_budget_ok(client, env):
 
         q = Quota.objects.create(event=env[0], size=100)
         q.items.add(env[3])
-        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -894,7 +925,7 @@ def test_order_extend_expired_voucher_budget_fail(client, env):
 
         q = Quota.objects.create(event=env[0], size=100)
         q.items.add(env[3])
-        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d %H:%M:%S")
+        newdate = (now() + timedelta(days=20)).strftime("%Y-%m-%d")
     client.login(email='dummy@dummy.dummy', password='dummy')
     response = client.post('/control/event/dummy/dummy/orders/FOO/extend', {
         'expires': newdate
@@ -1012,7 +1043,7 @@ def test_order_mark_paid_expired_seat_taken(client, env):
         o.status = Order.STATUS_EXPIRED
         olddate = o.expires
         o.save()
-        seat_a1 = env[0].seats.create(name="A1", product=env[3], seat_guid="A1")
+        seat_a1 = env[0].seats.create(seat_number="A1", product=env[3], seat_guid="A1")
         p = o.positions.first()
         p.seat = seat_a1
         p.save()
@@ -1339,7 +1370,7 @@ class OrderChangeTests(SoupTest):
             'add-INITIAL_FORMS': '0',
             'add-MIN_NUM_FORMS': '0',
             'add-MAX_NUM_FORMS': '100',
-            'other-recalculate_taxes': 'on',
+            'other-recalculate_taxes': 'net',
             'op-{}-operation'.format(self.op1.pk): '',
             'op-{}-operation'.format(self.op2.pk): '',
             'op-{}-itemvar'.format(self.op2.pk): str(self.ticket.pk),
@@ -1352,6 +1383,42 @@ class OrderChangeTests(SoupTest):
             ops = list(self.order.positions.all())
         for op in ops:
             assert op.price == Decimal('21.50')
+            assert op.tax_value == Decimal('0.00')
+            assert op.tax_rate == Decimal('0.00')
+
+    def test_recalculate_reverse_charge_keep_gross(self):
+        self.tr7.eu_reverse_charge = True
+        self.tr7.home_country = Country('DE')
+        self.tr7.save()
+        self.tr19.eu_reverse_charge = True
+        self.tr19.home_country = Country('DE')
+        self.tr19.save()
+        with scopes_disabled():
+            InvoiceAddress.objects.create(
+                order=self.order, is_business=True, vat_id='ATU1234567', vat_id_validated=True,
+                country=Country('AT')
+            )
+
+        self.client.post('/control/event/{}/{}/orders/{}/change'.format(
+            self.event.organizer.slug, self.event.slug, self.order.code
+        ), {
+            'add-TOTAL_FORMS': '0',
+            'add-INITIAL_FORMS': '0',
+            'add-MIN_NUM_FORMS': '0',
+            'add-MAX_NUM_FORMS': '100',
+            'other-recalculate_taxes': 'gross',
+            'op-{}-operation'.format(self.op1.pk): '',
+            'op-{}-operation'.format(self.op2.pk): '',
+            'op-{}-itemvar'.format(self.op2.pk): str(self.ticket.pk),
+            'op-{}-price'.format(self.op2.pk): str(self.op2.price),
+            'op-{}-itemvar'.format(self.op1.pk): str(self.ticket.pk),
+            'op-{}-price'.format(self.op1.pk): str(self.op1.price),
+        })
+
+        with scopes_disabled():
+            ops = list(self.order.positions.all())
+        for op in ops:
+            assert op.price == Decimal('23.00')
             assert op.tax_value == Decimal('0.00')
             assert op.tax_rate == Decimal('0.00')
 
@@ -1848,7 +1915,7 @@ def test_refund_propose_equal_payment(client, env):
     }, follow=True)
     doc = BeautifulSoup(response.content.decode(), "lxml")
     assert doc.select("input[name=refund-{}]".format(p2.pk))[0]['value'] == '7.00'
-    assert doc.select("input[name=refund-manual]".format(p2.pk))[0]['value'] == '0.00'
+    assert not doc.select("input[name=refund-manual]".format(p2.pk))[0].get('value')
 
 
 @pytest.mark.django_db
@@ -1869,7 +1936,7 @@ def test_refund_propose_higher_payment(client, env):
     }, follow=True)
     doc = BeautifulSoup(response.content.decode(), "lxml")
     assert doc.select("input[name=refund-{}]".format(p2.pk))[0]['value'] == '7.00'
-    assert doc.select("input[name=refund-manual]".format(p2.pk))[0]['value'] == '0.00'
+    assert not doc.select("input[name=refund-manual]".format(p2.pk))[0].get('value')
 
 
 @pytest.mark.django_db
@@ -2174,3 +2241,41 @@ def test_refund_list(client, env):
     response = client.get('/control/event/dummy/dummy/orders/refunds/?status=all&provider=banktransfer')
     assert 'R-1' in response.content.decode()
     assert 'R-2' not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_delete_cancellation_request(client, env):
+    with scopes_disabled():
+        r = env[2].cancellation_requests.create(
+            cancellation_fee=Decimal('4.00'),
+            refund_as_giftcard=True
+        )
+    client.login(email='dummy@dummy.dummy', password='dummy')
+    response = client.post('/control/event/dummy/dummy/orders/FOO/cancellationrequests/{}/delete'.format(r.pk), {},
+                           follow=True)
+    assert 'alert-success' in response.content.decode()
+    assert not env[2].cancellation_requests.exists()
+
+
+@pytest.mark.django_db
+def test_approve_cancellation_request(client, env):
+    with scopes_disabled():
+        o = Order.objects.get(id=env[2].id)
+        o.payments.create(state=OrderPayment.PAYMENT_STATE_CONFIRMED, amount=o.total)
+        o.status = Order.STATUS_PAID
+        o.save()
+        r = env[2].cancellation_requests.create(
+            cancellation_fee=Decimal('4.00'),
+            refund_as_giftcard=True
+        )
+    client.login(email='dummy@dummy.dummy', password='dummy')
+    response = client.get('/control/event/dummy/dummy/orders/FOO/transition?status=c&req={}'.format(r.pk), {})
+    doc = BeautifulSoup(response.content.decode(), "lxml")
+    assert doc.select('input[name=cancellation_fee]')[0]['value'] == '4.00'
+    response = client.post('/control/event/dummy/dummy/orders/FOO/transition?req={}'.format(r.pk), {
+        'status': 'c',
+        'cancellation_fee': '4.00'
+    }, follow=True)
+    doc = BeautifulSoup(response.content.decode(), "lxml")
+    assert doc.select('input[name=refund-new-giftcard]')[0]['value'] == '10.00'
+    assert not env[2].cancellation_requests.exists()

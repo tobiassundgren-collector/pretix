@@ -12,7 +12,7 @@ from django.db.models import Max, OuterRef, Subquery, Sum
 from django.template.defaultfilters import floatformat
 from django.utils.formats import date_format, localize
 from django.utils.timezone import get_current_timezone, now
-from django.utils.translation import pgettext, ugettext as _, ugettext_lazy
+from django.utils.translation import gettext as _, gettext_lazy, pgettext
 from reportlab.lib import colors
 
 from pretix.base.decimal import round_decimal
@@ -43,8 +43,8 @@ class ReportlabExportMixin:
 
     @staticmethod
     def register_fonts():
-        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
 
         pdfmetrics.registerFont(TTFont('OpenSans', finders.find('fonts/OpenSans-Regular.ttf')))
         pdfmetrics.registerFont(TTFont('OpenSansIt', finders.find('fonts/OpenSans-Italic.ttf')))
@@ -56,8 +56,8 @@ class ReportlabExportMixin:
         return BaseDocTemplate
 
     def create(self, form_data):
-        from reportlab.platypus import PageTemplate
         from reportlab.lib.units import mm
+        from reportlab.platypus import PageTemplate
 
         with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
             Report.register_fonts()
@@ -119,8 +119,11 @@ class ReportlabExportMixin:
         return settings.PRETIX_INSTANCE_NAME
 
     def get_left_header_string(self):
-        return "%s – %s – %s" % (self.event.organizer.name, self.event.name,
-                                 self.event.get_date_range_display())
+        if self.event.has_subevents:
+            return "%s – %s" % (self.event.organizer.name, self.event.name)
+        else:
+            return "%s – %s – %s" % (self.event.organizer.name, self.event.name,
+                                     self.event.get_date_range_display())
 
     def page_header(self, canvas, doc):
         from reportlab.lib.units import mm
@@ -143,14 +146,14 @@ class Report(ReportlabExportMixin, BaseExporter):
     def identifier(self) -> str:
         raise NotImplementedError()
 
-    def __init__(self, event):
-        super().__init__(event)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class OverviewReport(Report):
     name = "overview"
     identifier = 'pdfreport'
-    verbose_name = ugettext_lazy('Order overview (PDF)')
+    verbose_name = gettext_lazy('Order overview (PDF)')
 
     @property
     def pagesize(self):
@@ -159,8 +162,8 @@ class OverviewReport(Report):
         return pagesizes.landscape(pagesizes.A4)
 
     def get_story(self, doc, form_data):
-        from reportlab.platypus import Paragraph, Spacer, TableStyle, Table
         from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
         if form_data.get('date_from'):
             form_data['date_from'] = parse(form_data['date_from'])
@@ -238,6 +241,7 @@ class OverviewReport(Report):
             date_filter=form_data.get('date_axis'),
             date_from=form_data.get('date_from'),
             date_until=form_data.get('date_until'),
+            fees=True
         )
         places = settings.CURRENCY_PLACES.get(self.event.currency, 2)
         states = (
@@ -295,7 +299,7 @@ class OverviewReport(Report):
 class OrderTaxListReportPDF(Report):
     name = "ordertaxlist"
     identifier = 'ordertaxes'
-    verbose_name = ugettext_lazy('List of orders with taxes (PDF)')
+    verbose_name = gettext_lazy('List of orders with taxes (PDF)')
 
     @property
     def export_form_fields(self):
@@ -303,7 +307,7 @@ class OrderTaxListReportPDF(Report):
             [
                 ('status',
                  forms.MultipleChoiceField(
-                     label=ugettext_lazy('Filter by status'),
+                     label=gettext_lazy('Filter by status'),
                      initial=[Order.STATUS_PAID],
                      choices=Order.STATUS_CHOICE,
                      widget=forms.CheckboxSelectMultiple,
@@ -311,11 +315,11 @@ class OrderTaxListReportPDF(Report):
                  )),
                 ('sort',
                  forms.ChoiceField(
-                     label=ugettext_lazy('Sort by'),
+                     label=gettext_lazy('Sort by'),
                      initial='datetime',
                      choices=(
-                         ('datetime', ugettext_lazy('Order date')),
-                         ('payment_date', ugettext_lazy('Payment date')),
+                         ('datetime', gettext_lazy('Order date')),
+                         ('payment_date', gettext_lazy('Payment date')),
                      ),
                      widget=forms.RadioSelect,
                      required=False
@@ -330,8 +334,8 @@ class OrderTaxListReportPDF(Report):
         return pagesizes.landscape(pagesizes.A4)
 
     def get_story(self, doc, form_data):
-        from reportlab.platypus import Paragraph, Spacer, TableStyle, Table
         from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
         headlinestyle = self.get_style()
         headlinestyle.fontSize = 15
@@ -466,7 +470,7 @@ class OrderTaxListReportPDF(Report):
 
 class OrderTaxListReport(ListExporter):
     identifier = 'ordertaxeslist'
-    verbose_name = ugettext_lazy('List of orders with taxes')
+    verbose_name = gettext_lazy('List of orders with taxes')
 
     @property
     def export_form_fields(self):
@@ -486,8 +490,8 @@ class OrderTaxListReport(ListExporter):
                      label=_('Sort by'),
                      initial='datetime',
                      choices=(
-                         ('datetime', ugettext_lazy('Order date')),
-                         ('payment_date', ugettext_lazy('Payment date')),
+                         ('datetime', gettext_lazy('Order date')),
+                         ('payment_date', gettext_lazy('Payment date')),
                      ),
                      widget=forms.RadioSelect,
                      required=False

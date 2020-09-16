@@ -12,7 +12,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.functional import cached_property
 from django.utils.timezone import now
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from django.views.generic import DetailView, ListView, View
 
 from pretix.base.models import Order, OrderPayment, OrderRefund, Quota
@@ -83,17 +83,6 @@ class ActionView(View):
                     'status': 'error',
                     'message': _('Negative amount but refund can\'t be logged, please create manual refund first.')
                 })
-
-        if trans.order.status == Order.STATUS_PAID:
-            return JsonResponse({
-                'status': 'error',
-                'message': _('The order is already marked as paid.')
-            })
-        elif trans.order.status == Order.STATUS_CANCELED:
-            return JsonResponse({
-                'status': 'error',
-                'message': _('The order has already been canceled.')
-            })
 
         p = trans.order.payments.get_or_create(
             amount=trans.amount,
@@ -331,6 +320,7 @@ class ImportView(ListView):
         elif 'file' in self.request.FILES and (
             '.txt' in self.request.FILES.get('file').name.lower()
             or '.sta' in self.request.FILES.get('file').name.lower()
+            or '.swi' in self.request.FILES.get('file').name.lower()  # Rabobank's MT940 Structured
         ):
             return self.process_mt940()
 
@@ -488,6 +478,7 @@ class ImportView(ListView):
             ).order_by('created').last()
             ctx['runningimport'] = BankImportJob.objects.filter(
                 state__in=[BankImportJob.STATE_PENDING, BankImportJob.STATE_RUNNING],
+                organizer=self.request.organizer,
                 event=self.request.event
             ).order_by('created').last()
         else:
@@ -498,6 +489,7 @@ class ImportView(ListView):
             ).order_by('created').last()
             ctx['runningimport'] = BankImportJob.objects.filter(
                 state__in=[BankImportJob.STATE_PENDING, BankImportJob.STATE_RUNNING],
+                organizer=self.request.organizer,
                 event__isnull=True
             ).order_by('created').last()
             ctx['basetpl'] = 'pretixplugins/banktransfer/import_base_organizer.html'

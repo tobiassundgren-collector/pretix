@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from pretix import __version__ as version
 
@@ -15,7 +15,7 @@ class BankTransferApp(AppConfig):
         category = 'PAYMENT'
         version = version
         description = _("This plugin allows you to receive payments " +
-                        "via bank transfer ")
+                        "via bank transfer.")
 
     def ready(self):
         from . import signals  # NOQA

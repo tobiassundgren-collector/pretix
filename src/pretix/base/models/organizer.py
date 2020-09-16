@@ -1,11 +1,13 @@
 import string
+from datetime import date, datetime, time
 
 from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Exists, OuterRef, Q
 from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext_lazy as _
+from django.utils.timezone import get_current_timezone, make_aware, now
+from django.utils.translation import gettext_lazy as _
 
 from pretix.base.models.base import LoggedModel
 from pretix.base.validators import OrganizerSlugBanlistValidator
@@ -30,7 +32,7 @@ class Organizer(LoggedModel):
     settings_namespace = 'organizer'
     name = models.CharField(max_length=200,
                             verbose_name=_("Name"))
-    slug = models.SlugField(
+    slug = models.CharField(
         max_length=50, db_index=True,
         help_text=_(
             "Should be short, only contain lowercase letters, numbers, dots, and dashes. Every slug can only be used "
@@ -101,8 +103,17 @@ class Organizer(LoggedModel):
             Q(issuer=self) | Q(accepted=True)
         )
 
+    @property
+    def default_gift_card_expiry(self):
+        if self.settings.giftcard_expiry_years is not None:
+            tz = get_current_timezone()
+            return make_aware(datetime.combine(
+                date(now().astimezone(tz).year + self.settings.get('giftcard_expiry_years', as_type=int), 12, 31),
+                time(hour=23, minute=59, second=59)
+            ), tz)
+
     def allow_delete(self):
-        from . import Order, Invoice
+        from . import Invoice, Order
         return (
             not Order.objects.filter(event__organizer=self).exists() and
             not Invoice.objects.filter(event__organizer=self).exists() and

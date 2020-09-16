@@ -92,9 +92,11 @@ Example::
 
 ``trust_x_forwarded_proto``
     Specifies whether the ``X-Forwarded-Proto`` header can be trusted. Only set to ``on`` if you have a reverse
-    proxy that actively removes and re-adds the header to make sure the correct client IP is the first value.
+    proxy that actively removes and re-adds the header to make sure the correct value is set.
     Defaults to ``off``.
 
+``csp_log``
+    Log violations of the Content Security Policy (CSP). Defaults to ``on``.
 
 Locale settings
 ---------------
@@ -335,6 +337,15 @@ application. If you want to use sentry, you need to set a DSN in the configurati
 
 ``dsn``
     You will be given this value by your sentry installation.
+
+
+Caching
+-------
+
+You can adjust some caching settings to control how much storage pretix uses::
+
+    [cache]
+    tickets=48  ; Number of hours tickets (PDF, passbook, …) are cached
 
 
 Secret length

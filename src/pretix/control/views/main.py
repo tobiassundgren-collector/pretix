@@ -10,7 +10,7 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext, ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _
 from django.views import View
 from django.views.generic import ListView
 from i18nfield.strings import LazyI18nString
@@ -18,6 +18,7 @@ from i18nfield.strings import LazyI18nString
 from pretix.base.forms import SafeSessionWizardView
 from pretix.base.i18n import language
 from pretix.base.models import Event, EventMetaValue, Organizer, Quota, Team
+from pretix.base.services.quotas import QuotaAvailability
 from pretix.control.forms.event import (
     EventWizardBasicsForm, EventWizardCopyForm, EventWizardFoundationForm,
 )
@@ -82,19 +83,27 @@ class EventList(PaginationMixin, ListView):
             self.filter_form[k] for k in self.filter_form.fields if k.startswith('meta_')
         ]
 
+        quotas = []
         for s in ctx['events']:
             s.first_quotas = s.first_quotas[:4]
-            for q in s.first_quotas:
-                q.cached_avail = (
-                    (q.cached_availability_state, q.cached_availability_number)
-                    if q.cached_availability_time is not None
-                    else q.availability(allow_cache=True)
+            quotas += list(s.first_quotas)
+
+        qa = QuotaAvailability(early_out=False)
+        for q in quotas:
+            if q.cached_availability_time is None or q.cached_availability_paid_orders is None:
+                qa.queue(q)
+        qa.compute()
+
+        for q in quotas:
+            q.cached_avail = (
+                qa.results[q] if q in qa.results
+                else (q.cached_availability_state, q.cached_availability_number)
+            )
+            if q.size is not None:
+                q.percent_paid = min(
+                    100,
+                    round(q.cached_availability_paid_orders / q.size * 100) if q.size > 0 else 100
                 )
-                if q.size is not None:
-                    q.percent_paid = min(
-                        100,
-                        round(q.cached_availability_paid_orders / q.size * 100) if q.size > 0 else 100
-                    )
         return ctx
 
     @cached_property
@@ -242,19 +251,6 @@ class EventWizard(SafeSessionWizardView):
                     t.members.add(self.request.user)
                     t.limit_events.add(event)
 
-            if event.has_subevents:
-                se = event.subevents.create(
-                    name=event.name,
-                    date_from=event.date_from,
-                    date_to=event.date_to,
-                    presale_start=event.presale_start,
-                    presale_end=event.presale_end,
-                    location=event.location,
-                    geo_lat=event.geo_lat,
-                    geo_lon=event.geo_lon,
-                    active=True
-                )
-
             logdata = {}
             for f in form_list:
                 logdata.update({
@@ -268,23 +264,16 @@ class EventWizard(SafeSessionWizardView):
             elif self.clone_from:
                 event.copy_data_from(self.clone_from)
             else:
-                if event.has_subevents:
-                    event.checkin_lists.create(
-                        name=str(se),
-                        all_products=True,
-                        subevent=se
-                    )
-                else:
-                    event.checkin_lists.create(
-                        name=_('Default'),
-                        all_products=True
-                    )
+                event.checkin_lists.create(
+                    name=_('Default'),
+                    all_products=True
+                )
                 event.set_defaults()
 
             if basics_data['tax_rate']:
                 if not event.settings.tax_rate_default or event.settings.tax_rate_default.rate != basics_data['tax_rate']:
                     event.settings.tax_rate_default = event.tax_rules.create(
-                        name=LazyI18nString.from_gettext(ugettext('VAT')),
+                        name=LazyI18nString.from_gettext(gettext('VAT')),
                         rate=basics_data['tax_rate']
                     )
 

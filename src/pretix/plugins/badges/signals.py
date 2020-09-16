@@ -6,7 +6,7 @@ from django.dispatch import receiver
 from django.template.loader import get_template
 from django.urls import resolve, reverse
 from django.utils.html import escape
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from pretix.base.models import Event, Order
 from pretix.base.signals import (
@@ -99,7 +99,7 @@ def register_pdf(sender, **kwargs):
 
 
 def _cached_rendermap(event):
-    if hasattr(event, '_cached_rendermap'):
+    if hasattr(event, '_cached_renderermap'):
         return event._cached_renderermap
     renderermap = {
         bi.item_id: bi.layout_id

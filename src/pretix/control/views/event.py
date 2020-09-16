@@ -1,4 +1,5 @@
 import json
+import operator
 import re
 from collections import OrderedDict
 from decimal import Decimal
@@ -9,8 +10,10 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.contenttypes.models import ContentType
 from django.core.files import File
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.db.models import ProtectedError
+from django.forms import inlineformset_factory
 from django.http import (
     Http404, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed,
     JsonResponse,
@@ -20,7 +23,7 @@ from django.urls import reverse
 from django.utils import translation
 from django.utils.functional import cached_property
 from django.utils.timezone import now
-from django.utils.translation import ugettext, ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _
 from django.views.generic import DeleteView, FormView, ListView
 from django.views.generic.base import TemplateView, View
 from django.views.generic.detail import SingleObjectMixin
@@ -38,8 +41,9 @@ from pretix.base.services.invoices import build_preview_invoice_pdf
 from pretix.base.signals import register_ticket_outputs
 from pretix.base.templatetags.rich_text import markdown_compile_email
 from pretix.control.forms.event import (
-    CancelSettingsForm, CommentForm, EventDeleteForm, EventMetaValueForm,
-    EventSettingsForm, EventUpdateForm, InvoiceSettingsForm, MailSettingsForm,
+    CancelSettingsForm, CommentForm, ConfirmTextFormset, EventDeleteForm,
+    EventMetaValueForm, EventSettingsForm, EventUpdateForm,
+    InvoiceSettingsForm, ItemMetaPropertyForm, MailSettingsForm,
     PaymentSettingsForm, ProviderForm, QuickSetupForm,
     QuickSetupProductFormSet, TaxRuleForm, TaxRuleLineFormSet,
     TicketSettingsForm, WidgetCodeForm,
@@ -47,10 +51,12 @@ from pretix.control.forms.event import (
 from pretix.control.permissions import EventPermissionRequiredMixin
 from pretix.control.views.user import RecentAuthenticationRequiredMixin
 from pretix.helpers.database import rolledback_transaction
-from pretix.multidomain.urlreverse import get_domain
+from pretix.multidomain.urlreverse import get_event_domain
 from pretix.plugins.stripe.payment import StripeSettingsHolder
 from pretix.presale.style import regenerate_css
 
+from ...base.models.items import ItemMetaProperty
+from ...base.settings import LazyI18nStringList
 from ..logdisplay import OVERVIEW_BANLIST
 from . import CreateView, PaginationMixin, UpdateView
 
@@ -137,6 +143,8 @@ class EventUpdate(DecoupleMixin, EventSettingsViewMixin, EventPermissionRequired
         context = super().get_context_data(*args, **kwargs)
         context['sform'] = self.sform
         context['meta_forms'] = self.meta_forms
+        context['item_meta_property_formset'] = self.item_meta_property_formset
+        context['confirm_texts_formset'] = self.confirm_texts_formset
         return context
 
     @transaction.atomic
@@ -144,20 +152,27 @@ class EventUpdate(DecoupleMixin, EventSettingsViewMixin, EventPermissionRequired
         self._save_decoupled(self.sform)
         self.sform.save()
         self.save_meta()
+        self.save_item_meta_property_formset(self.object)
+        self.save_confirm_texts_formset(self.object)
         change_css = False
 
-        if self.sform.has_changed():
-            self.request.event.log_action('pretix.event.settings', user=self.request.user, data={
-                k: self.request.event.settings.get(k) for k in self.sform.changed_data
-            })
+        if self.sform.has_changed() or self.confirm_texts_formset.has_changed():
+            data = {k: self.request.event.settings.get(k) for k in self.sform.changed_data}
+            if self.confirm_texts_formset.has_changed():
+                data.update(confirm_texts=self.confirm_texts_formset.cleaned_data)
+            self.request.event.log_action('pretix.event.settings', user=self.request.user, data=data)
             display_properties = (
                 'primary_color', 'theme_color_success', 'theme_color_danger', 'primary_font',
+                'theme_color_background', 'theme_round_borders',
             )
             if any(p in self.sform.changed_data for p in display_properties):
                 change_css = True
         if form.has_changed():
             self.request.event.log_action('pretix.event.changed', user=self.request.user, data={
-                k: getattr(self.request.event, k) for k in form.changed_data
+                k: (form.cleaned_data.get(k).name
+                    if isinstance(form.cleaned_data.get(k), File)
+                    else form.cleaned_data.get(k))
+                for k in form.changed_data
             })
 
         if change_css:
@@ -179,11 +194,13 @@ class EventUpdate(DecoupleMixin, EventSettingsViewMixin, EventPermissionRequired
         kwargs = super().get_form_kwargs()
         if self.request.user.has_active_staff_session(self.request.session.session_key):
             kwargs['change_slug'] = True
+            kwargs['domain'] = True
         return kwargs
 
     def post(self, request, *args, **kwargs):
         form = self.get_form()
-        if form.is_valid() and self.sform.is_valid() and all([f.is_valid() for f in self.meta_forms]):
+        if form.is_valid() and self.sform.is_valid() and all([f.is_valid() for f in self.meta_forms]) and \
+                self.item_meta_property_formset.is_valid() and self.confirm_texts_formset.is_valid():
             # reset timezone
             zone = timezone(self.sform.cleaned_data['timezone'])
             event = form.instance
@@ -199,6 +216,47 @@ class EventUpdate(DecoupleMixin, EventSettingsViewMixin, EventPermissionRequired
     @staticmethod
     def reset_timezone(tz, dt):
         return tz.localize(dt.replace(tzinfo=None)) if dt is not None else None
+
+    @cached_property
+    def item_meta_property_formset(self):
+        formsetclass = inlineformset_factory(
+            Event, ItemMetaProperty,
+            form=ItemMetaPropertyForm, can_order=False, can_delete=True, extra=0
+        )
+        return formsetclass(self.request.POST if self.request.method == "POST" else None, prefix="item-meta-property",
+                            instance=self.object, queryset=self.object.item_meta_properties.all())
+
+    def save_item_meta_property_formset(self, obj):
+        for form in self.item_meta_property_formset.initial_forms:
+            if form in self.item_meta_property_formset.deleted_forms:
+                if not form.instance.pk:
+                    continue
+                form.instance.delete()
+                form.instance.pk = None
+            elif form.has_changed():
+                form.save()
+
+        for form in self.item_meta_property_formset.extra_forms:
+            if not form.has_changed():
+                continue
+            if self.item_meta_property_formset._should_delete_form(form):
+                continue
+            form.instance.event = obj
+            form.save()
+
+    @cached_property
+    def confirm_texts_formset(self):
+        initial = [{"text": text, "ORDER": order} for order, text in
+                   enumerate(self.object.settings.get("confirm_texts", as_type=LazyI18nStringList))]
+        return ConfirmTextFormset(self.request.POST if self.request.method == "POST" else None, event=self.object,
+                                  prefix="confirm-texts", initial=initial)
+
+    def save_confirm_texts_formset(self, obj):
+        obj.settings.confirm_texts = LazyI18nStringList(
+            form_data['text'].data
+            for form_data in sorted(self.confirm_texts_formset.cleaned_data, key=operator.itemgetter("ORDER"))
+            if not form_data.get("DELETE", False)
+        )
 
 
 class EventPlugins(EventSettingsViewMixin, EventPermissionRequiredMixin, TemplateView, SingleObjectMixin):
@@ -317,6 +375,7 @@ class PaymentProviderSettings(EventSettingsViewMixin, EventPermissionRequiredMix
             obj=self.request.event,
             settingspref=self.provider.settings.get_prefix(),
             data=(self.request.POST if self.request.method == 'POST' else None),
+            files=(self.request.FILES if self.request.method == 'POST' else None),
             provider=self.provider
         )
         form.fields = OrderedDict(
@@ -385,7 +444,6 @@ class EventSettingsFormView(EventPermissionRequiredMixin, DecoupleMixin, FormVie
         if form.is_valid():
             form.save()
             self._save_decoupled(form)
-            self.form_success()
             if form.has_changed():
                 self.request.event.log_action(
                     'pretix.event.settings', user=self.request.user, data={
@@ -495,6 +553,11 @@ class InvoicePreview(EventPermissionRequiredMixin, View):
         resp = HttpResponse(fcontent, content_type=ftype)
         resp['Content-Disposition'] = 'attachment; filename="{}"'.format(fname)
         return resp
+
+
+class DangerZone(EventPermissionRequiredMixin, TemplateView):
+    permission = 'can_change_event_settings'
+    template_name = 'pretixcontrol/event/dangerzone.html'
 
 
 class DisplaySettings(View):
@@ -625,14 +688,14 @@ class MailSettingsRendererPreview(MailSettingsPreview):
             with rolledback_transaction():
                 order = request.event.orders.create(status=Order.STATUS_PENDING, datetime=now(),
                                                     expires=now(), code="PREVIEW", total=119)
-                item = request.event.items.create(name=ugettext("Sample product"), default_price=42.23,
-                                                  description=ugettext("Sample product description"))
-                p = order.positions.create(item=item, attendee_name_parts={'_legacy': ugettext("John Doe")},
+                item = request.event.items.create(name=gettext("Sample product"), default_price=42.23,
+                                                  description=gettext("Sample product description"))
+                p = order.positions.create(item=item, attendee_name_parts={'_legacy': gettext("John Doe")},
                                            price=item.default_price)
                 v = renderers[request.GET.get('renderer')].render(
                     v,
                     str(request.event.settings.mail_text_signature),
-                    ugettext('Your order: %(code)s') % {'code': order.code},
+                    gettext('Your order: %(code)s') % {'code': order.code},
                     order,
                     position=p
                 )
@@ -912,6 +975,8 @@ class EventLog(EventPermissionRequiredMixin, ListView):
             qs = qs.filter(user__isnull=False)
         elif self.request.GET.get('user') == 'no':
             qs = qs.filter(user__isnull=True)
+        elif self.request.GET.get('user', '').startswith('d-'):
+            qs = qs.filter(device_id=self.request.GET.get('user')[2:])
         elif self.request.GET.get('user'):
             qs = qs.filter(user_id=self.request.GET.get('user'))
 
@@ -926,6 +991,7 @@ class EventLog(EventPermissionRequiredMixin, ListView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data()
         ctx['userlist'] = self.request.event.logentry_set.order_by().distinct().values('user__id', 'user__email')
+        ctx['devicelist'] = self.request.event.logentry_set.order_by('device__name').distinct().values('device__id', 'device__name')
         return ctx
 
 
@@ -1016,7 +1082,7 @@ class TaxCreate(EventSettingsViewMixin, EventPermissionRequiredMixin, CreateView
 
     def get_initial(self):
         return {
-            'name': LazyI18nString.from_gettext(ugettext('VAT'))
+            'name': LazyI18nString.from_gettext(gettext('VAT'))
         }
 
     def post(self, request, *args, **kwargs):
@@ -1042,7 +1108,7 @@ class TaxCreate(EventSettingsViewMixin, EventPermissionRequiredMixin, CreateView
         form.instance.event = self.request.event
         form.instance.custom_rules = json.dumps([
             f.cleaned_data for f in self.formset if f not in self.formset.deleted_forms
-        ])
+        ], cls=DjangoJSONEncoder)
         messages.success(self.request, _('The new tax rule has been created.'))
         ret = super().form_valid(form)
         form.instance.log_action('pretix.event.taxrule.added', user=self.request.user, data=dict(form.cleaned_data))
@@ -1093,7 +1159,7 @@ class TaxUpdate(EventSettingsViewMixin, EventPermissionRequiredMixin, UpdateView
         messages.success(self.request, _('Your changes have been saved.'))
         form.instance.custom_rules = json.dumps([
             f.cleaned_data for f in self.formset if f not in self.formset.deleted_forms
-        ])
+        ], cls=DjangoJSONEncoder)
         if form.has_changed():
             self.object.log_action(
                 'pretix.event.taxrule.changed', user=self.request.user, data={
@@ -1170,7 +1236,7 @@ class WidgetSettings(EventSettingsViewMixin, EventPermissionRequiredMixin, FormV
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         ctx['urlprefix'] = settings.SITE_URL
-        domain = get_domain(self.request.organizer)
+        domain = get_event_domain(self.request.event, fallback=True)
         if domain:
             siteurlsplit = urlsplit(settings.SITE_URL)
             if siteurlsplit.port and siteurlsplit.port not in (80, 443):
@@ -1275,9 +1341,9 @@ class QuickSetupView(FormView):
         tax_rule = self.request.event.tax_rules.first()
         if any(f not in self.formset.deleted_forms for f in self.formset):
             category = self.request.event.categories.create(
-                name=LazyI18nString.from_gettext(ugettext('Tickets'))
+                name=LazyI18nString.from_gettext(gettext('Tickets'))
             )
-            category.log_action('pretix.event.category.added', data={'name': ugettext('Tickets')},
+            category.log_action('pretix.event.category.added', data={'name': gettext('Tickets')},
                                 user=self.request.user)
 
         subevent = self.request.event.subevents.first()
@@ -1308,12 +1374,12 @@ class QuickSetupView(FormView):
 
         if form.cleaned_data['total_quota']:
             quota = self.request.event.quotas.create(
-                name=ugettext('Tickets'),
+                name=gettext('Tickets'),
                 size=form.cleaned_data['total_quota'],
                 subevent=subevent,
             )
             quota.log_action('pretix.event.quota.added', user=self.request.user, data={
-                'name': ugettext('Tickets'),
+                'name': gettext('Tickets'),
                 'size': quota.size
             })
             quota.items.add(*items)
@@ -1339,12 +1405,12 @@ class QuickSetupView(FormView):
             event=self.request.event,
             initial=[
                 {
-                    'name': LazyI18nString.from_gettext(ugettext('Regular ticket')),
+                    'name': LazyI18nString.from_gettext(gettext('Regular ticket')),
                     'default_price': Decimal('35.00'),
                     'quota': 100,
                 },
                 {
-                    'name': LazyI18nString.from_gettext(ugettext('Reduced ticket')),
+                    'name': LazyI18nString.from_gettext(gettext('Reduced ticket')),
                     'default_price': Decimal('29.00'),
                     'quota': 50,
                 },

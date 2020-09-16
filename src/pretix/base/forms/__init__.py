@@ -3,7 +3,6 @@ import logging
 import i18nfield.forms
 from django import forms
 from django.forms.models import ModelFormMetaclass
-from django.utils import six
 from django.utils.crypto import get_random_string
 from formtools.wizard.views import SessionWizardView
 from hierarkey.forms import HierarkeyForm
@@ -25,7 +24,7 @@ class BaseI18nModelForm(i18nfield.forms.BaseI18nModelForm):
         super().__init__(*args, **kwargs)
 
 
-class I18nModelForm(six.with_metaclass(ModelFormMetaclass, BaseI18nModelForm)):
+class I18nModelForm(BaseI18nModelForm, metaclass=ModelFormMetaclass):
     pass
 
 
@@ -49,6 +48,9 @@ class I18nInlineFormSet(i18nfield.forms.I18nInlineFormSet):
         super().__init__(*args, **kwargs)
 
 
+SECRET_REDACTED = '*****'
+
+
 class SettingsForm(i18nfield.forms.I18nFormMixin, HierarkeyForm):
     auto_fields = []
 
@@ -63,6 +65,8 @@ class SettingsForm(i18nfield.forms.I18nFormMixin, HierarkeyForm):
         super().__init__(*args, **kwargs)
         for fname in self.auto_fields:
             kwargs = DEFAULTS[fname].get('form_kwargs', {})
+            if callable(kwargs):
+                kwargs = kwargs()
             kwargs.setdefault('required', False)
             field = DEFAULTS[fname]['form_class'](
                 **kwargs
@@ -73,6 +77,12 @@ class SettingsForm(i18nfield.forms.I18nFormMixin, HierarkeyForm):
         for k, f in self.fields.items():
             if isinstance(f, (RelativeDateTimeField, RelativeDateField)):
                 f.set_event(self.obj)
+
+    def save(self):
+        for k, v in self.cleaned_data.items():
+            if isinstance(self.fields.get(k), SecretKeySettingsField) and self.cleaned_data.get(k) == SECRET_REDACTED:
+                self.cleaned_data[k] = self.initial[k]
+        return super().save()
 
     def get_new_filename(self, name: str) -> str:
         from pretix.base.models import Event
@@ -112,3 +122,32 @@ class SafeSessionWizardView(SessionWizardView):
             }
         )
         return context
+
+
+class SecretKeySettingsWidget(forms.TextInput):
+    def __init__(self, attrs=None):
+        if attrs is None:
+            attrs = {}
+        attrs.update({
+            'autocomplete': 'new-password'  # see https://bugs.chromium.org/p/chromium/issues/detail?id=370363#c7
+        })
+        super().__init__(attrs)
+
+    def get_context(self, name, value, attrs):
+        if value:
+            value = SECRET_REDACTED
+        return super().get_context(name, value, attrs)
+
+
+class SecretKeySettingsField(forms.CharField):
+    widget = SecretKeySettingsWidget
+
+    def has_changed(self, initial, data):
+        if data == SECRET_REDACTED:
+            return False
+        return super().has_changed(initial, data)
+
+    def run_validators(self, value):
+        if value == SECRET_REDACTED:
+            return
+        return super().run_validators(value)

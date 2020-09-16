@@ -15,7 +15,7 @@ from pretix.base.models import (
 from pretix.base.services.invoices import generate_invoice, invoice_pdf_task
 from pretix.base.services.tickets import generate
 from pretix.base.shredder import (
-    AttendeeNameShredder, CachedTicketShredder, EmailAddressShredder,
+    AttendeeInfoShredder, CachedTicketShredder, EmailAddressShredder,
     InvoiceAddressShredder, InvoiceShredder, PaymentInfoShredder,
     QuestionAnswerShredder, WaitingListShredder, shred_constraints,
 )
@@ -57,7 +57,8 @@ def order(event, item):
         variation=None,
         price=Decimal("14"),
         attendee_name_parts={'full_name': "Peter", "_scheme": "full"},
-        attendee_email="foo@example.org"
+        attendee_email="foo@example.org",
+        company='Foobar',
     )
     return o
 
@@ -145,15 +146,23 @@ def test_attendee_name_shredder(event, order):
     l1 = order.log_action(
         'pretix.event.order.modified',
         data={
-            "data": [{"attendee_name": "Hans", "question_1": "Test"}],
+            "data": [{"attendee_name": "Peter", "question_1": "Test", "company": "Foobar"}],
             "invoice_data": {"name": "Foo"}
         }
     )
 
-    s = AttendeeNameShredder(event)
+    s = AttendeeInfoShredder(event)
     f = list(s.generate_files())
     assert json.loads(f[0][2]) == {
-        '{}-{}'.format(order.code, 1): 'Peter'
+        '{}-{}'.format(order.code, 1): {
+            'name': 'Peter',
+            'company': 'Foobar',
+            'street': None,
+            'zipcode': None,
+            'city': None,
+            'country': None,
+            'state': None
+        }
     }
     s.shred_data()
     order.refresh_from_db()
@@ -161,6 +170,7 @@ def test_attendee_name_shredder(event, order):
     l1.refresh_from_db()
     assert 'Hans' not in l1.data
     assert 'Foo' in l1.data
+    assert 'Foobar' not in l1.data
     assert 'Test' in l1.data
 
 
@@ -331,31 +341,31 @@ def test_shred_constraint_offline(event):
 
 
 @pytest.mark.django_db
-def test_shred_constraint_60_days(event):
+def test_shred_constraint_30_days(event):
     event.live = False
-    event.date_from = now() - timedelta(days=62)
-    event.date_to = now() - timedelta(days=62)
+    event.date_from = now() - timedelta(days=32)
+    event.date_to = now() - timedelta(days=32)
     assert shred_constraints(event) is None
-    event.date_from = now() - timedelta(days=52)
-    event.date_to = now() - timedelta(days=52)
+    event.date_from = now() - timedelta(days=22)
+    event.date_to = now() - timedelta(days=22)
     assert shred_constraints(event)
-    event.date_from = now() - timedelta(days=62)
-    event.date_to = now() - timedelta(days=52)
+    event.date_from = now() - timedelta(days=32)
+    event.date_to = now() - timedelta(days=22)
     assert shred_constraints(event)
 
 
 @pytest.mark.django_db
-def test_shred_constraint_60_days_subevents(event):
+def test_shred_constraint_30_days_subevents(event):
     event.has_subevents = True
     event.live = False
 
     event.subevents.create(
-        date_from=now() - timedelta(days=62),
-        date_to=now() - timedelta(days=62)
+        date_from=now() - timedelta(days=32),
+        date_to=now() - timedelta(days=32)
     )
     assert shred_constraints(event) is None
     event.subevents.create(
-        date_from=now() - timedelta(days=62),
-        date_to=now() - timedelta(days=52)
+        date_from=now() - timedelta(days=22),
+        date_to=now() - timedelta(days=32)
     )
     assert shred_constraints(event)

@@ -10,11 +10,12 @@ from django.urls import reverse
 from django.utils.formats import date_format
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 from i18nfield.strings import LazyI18nString
 
 from pretix.base.models import (
-    CheckinList, Event, ItemVariation, LogEntry, OrderPosition,
+    Checkin, CheckinList, Event, ItemVariation, LogEntry, OrderPosition,
+    TaxRule,
 )
 from pretix.base.signals import logentry_display
 from pretix.base.templatetags.money import money_filter
@@ -65,6 +66,23 @@ def _display_order_changed(event: Event, logentry: LogEntry):
             old_price=money_filter(Decimal(data['old_price']), event.currency),
             new_price=money_filter(Decimal(data['new_price']), event.currency),
         )
+    elif logentry.action_type == 'pretix.event.order.changed.tax_rule':
+        if 'positionid' in data:
+            return text + ' ' + _('Tax rule of position #{posid} changed from {old_rule} '
+                                  'to {new_rule}.').format(
+                posid=data.get('positionid', '?'),
+                old_rule=TaxRule.objects.get(pk=data['old_taxrule']) if data['old_taxrule'] else '–',
+                new_rule=TaxRule.objects.get(pk=data['new_taxrule']),
+            )
+        elif 'fee' in data:
+            return text + ' ' + _('Tax rule of fee #{fee} changed from {old_rule} '
+                                  'to {new_rule}.').format(
+                fee=data.get('fee', '?'),
+                old_rule=TaxRule.objects.get(pk=data['old_taxrule']) if data['old_taxrule'] else '–',
+                new_rule=TaxRule.objects.get(pk=data['new_taxrule']),
+            )
+    elif logentry.action_type == 'pretix.event.order.changed.addfee':
+        return text + ' ' + str(_('A fee has been added'))
     elif logentry.action_type == 'pretix.event.order.changed.feevalue':
         return text + ' ' + _('A fee was changed from {old_price} to {new_price}.').format(
             old_price=money_filter(Decimal(data['old_price']), event.currency),
@@ -132,7 +150,7 @@ def _display_checkin(event, logentry):
     show_dt = False
     if 'datetime' in data:
         dt = dateutil.parser.parse(data.get('datetime'))
-        show_dt = abs((logentry.datetime - dt).total_seconds()) > 60 or 'forced' in data
+        show_dt = abs((logentry.datetime - dt).total_seconds()) > 5 or 'forced' in data
         tz = pytz.timezone(event.settings.timezone)
         dt_formatted = date_format(dt.astimezone(tz), "SHORT_DATETIME_FORMAT")
 
@@ -144,6 +162,61 @@ def _display_checkin(event, logentry):
     else:
         checkin_list = _("(unknown)")
 
+    if logentry.action_type == 'pretix.event.checkin.unknown':
+        if show_dt:
+            return _(
+                'Unknown scan of code "{barcode}" at {datetime} for list "{list}", type "{type}".'
+            ).format(
+                posid=data.get('positionid'),
+                type=data.get('type'),
+                barcode=data.get('barcode'),
+                datetime=dt_formatted,
+                list=checkin_list
+            )
+        else:
+            return _(
+                'Unknown scan of code "{barcode}" for list "{list}", type "{type}".'
+            ).format(
+                posid=data.get('positionid'),
+                type=data.get('type'),
+                barcode=data.get('barcode'),
+                list=checkin_list
+            )
+
+    if logentry.action_type == 'pretix.event.checkin.denied':
+        if show_dt:
+            return _(
+                'Denied scan of position #{posid} at {datetime} for list "{list}", type "{type}", '
+                'error code "{errorcode}".'
+            ).format(
+                posid=data.get('positionid'),
+                type=data.get('type'),
+                errorcode=data.get('errorcode'),
+                datetime=dt_formatted,
+                list=checkin_list
+            )
+        else:
+            return _(
+                'Denied scan of position #{posid} for list "{list}", type "{type}", error code "{errorcode}".'
+            ).format(
+                posid=data.get('positionid'),
+                type=data.get('type'),
+                errorcode=data.get('errorcode'),
+                list=checkin_list
+            )
+
+    if data.get('type') == Checkin.TYPE_EXIT:
+        if show_dt:
+            return _('Position #{posid} has been checked out at {datetime} for list "{list}".').format(
+                posid=data.get('positionid'),
+                datetime=dt_formatted,
+                list=checkin_list
+            )
+        else:
+            return _('Position #{posid} has been checked out for list "{list}".').format(
+                posid=data.get('positionid'),
+                list=checkin_list
+            )
     if data.get('first'):
         if show_dt:
             return _('Position #{posid} has been checked in at {datetime} for list "{list}".').format(
@@ -180,14 +253,17 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
     plains = {
         'pretix.object.cloned': _('This object has been created by cloning.'),
         'pretix.event.comment': _('The event\'s internal comment has been updated.'),
+        'pretix.event.canceled': _('The event has been canceled.'),
         'pretix.event.order.modified': _('The order details have been changed.'),
         'pretix.event.order.unpaid': _('The order has been marked as unpaid.'),
         'pretix.event.order.secret.changed': _('The order\'s secret has been changed.'),
         'pretix.event.order.expirychanged': _('The order\'s expiry date has been changed.'),
         'pretix.event.order.expired': _('The order has been marked as expired.'),
         'pretix.event.order.paid': _('The order has been marked as paid.'),
+        'pretix.event.order.cancellationrequest.deleted': _('The cancellation request has been deleted.'),
         'pretix.event.order.refunded': _('The order has been refunded.'),
         'pretix.event.order.canceled': _('The order has been canceled.'),
+        'pretix.event.order.reactivated': _('The order has been reactivated.'),
         'pretix.event.order.deleted': _('The test mode order {code} has been deleted.'),
         'pretix.event.order.placed': _('The order has been created.'),
         'pretix.event.order.placed.require_approval': _('The order requires approval before it can continue to be processed.'),
@@ -213,6 +289,8 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.event.order.email.expire_warning_sent': _('An email has been sent with a warning that the order is about '
                                                           'to expire.'),
         'pretix.event.order.email.order_canceled': _('An email has been sent to notify the user that the order has been canceled.'),
+        'pretix.event.order.email.event_canceled': _('An email has been sent to notify the user that the event has '
+                                                     'been canceled.'),
         'pretix.event.order.email.order_changed': _('An email has been sent to notify the user that the order has been changed.'),
         'pretix.event.order.email.order_free': _('An email has been sent to notify the user that the order has been received.'),
         'pretix.event.order.email.order_paid': _('An email has been sent to notify the user that payment has been received.'),
@@ -226,7 +304,7 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.event.order.email.resend': _('An email with a link to the order detail page has been resent to the user.'),
         'pretix.event.order.payment.confirmed': _('Payment {local_id} has been confirmed.'),
         'pretix.event.order.payment.canceled': _('Payment {local_id} has been canceled.'),
-        'pretix.event.order.payment.canceled.failed': _('Cancelling payment {local_id} has failed.'),
+        'pretix.event.order.payment.canceled.failed': _('Canceling payment {local_id} has failed.'),
         'pretix.event.order.payment.started': _('Payment {local_id} has been started.'),
         'pretix.event.order.payment.failed': _('Payment {local_id} has failed.'),
         'pretix.event.order.quotaexceeded': _('The order could not be marked as paid: {message}'),
@@ -314,6 +392,7 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.team.changed': _('The team settings have been changed.'),
         'pretix.team.deleted': _('The team has been deleted.'),
         'pretix.subevent.deleted': pgettext_lazy('subevent', 'The event date has been deleted.'),
+        'pretix.subevent.canceled': pgettext_lazy('subevent', 'The event date has been canceled.'),
         'pretix.subevent.changed': pgettext_lazy('subevent', 'The event date has been changed.'),
         'pretix.subevent.added': pgettext_lazy('subevent', 'The event date has been created.'),
         'pretix.subevent.quota.added': pgettext_lazy('subevent', 'A quota has been added to the event date.'),
@@ -326,6 +405,7 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.device.keyroll': _('The access token of the device has been regenerated.'),
         'pretix.device.updated': _('The device has notified the server of an hardware or software update.'),
         'pretix.giftcards.created': _('The gift card has been created.'),
+        'pretix.giftcards.modified': _('The gift card has been changed.'),
         'pretix.giftcards.transaction.manual': _('A manual transaction has been performed.'),
     }
 
@@ -360,7 +440,7 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
             bleach.clean(logentry.parsed_data.get('msg'), tags=[], strip=True)
         )
 
-    if logentry.action_type == 'pretix.event.checkin':
+    if sender and logentry.action_type.startswith('pretix.event.checkin'):
         return _display_checkin(sender, logentry)
 
     if logentry.action_type == 'pretix.control.views.checkin':

@@ -45,6 +45,8 @@ var strings = {
     'back': django.pgettext('widget', 'Back'),
     'next_month': django.pgettext('widget', 'Next month'),
     'previous_month': django.pgettext('widget', 'Previous month'),
+    'next_week': django.pgettext('widget', 'Next week'),
+    'previous_week': django.pgettext('widget', 'Previous week'),
     'show_seating': django.pgettext('widget', 'Open seat selection'),
     'days': {
         'MO': django.gettext('Mo'),
@@ -88,6 +90,17 @@ var padNumber = function(number, size) {
     var s = String(number);
     while (s.length < (size || 2)) {s = "0" + s;}
     return s;
+};
+
+var getISOWeeks = function (y) {
+    var d, isLeap;
+
+    d = new Date(y, 0, 1);
+    isLeap = new Date(y, 1, 29).getMonth() === 1;
+
+    //check for a Jan 1 that's a Thursday or a leap year that has a
+    //Wednesday jan 1. Otherwise it's 52
+    return d.getDay() === 4 || isLeap && d.getDay() === 3 ? 53 : 52
 };
 
 /* HTTP API Call helpers */
@@ -173,27 +186,27 @@ var widget_id = makeid(16);
 /* Vue Components */
 Vue.component('availbox', {
     template: ('<div class="pretix-widget-availability-box">'
-        + '<div class="pretix-widget-availability-unavailable" v-if="item.require_voucher">'
+        + '<div class="pretix-widget-availability-unavailable" v-if="require_voucher">'
         + '<small>' + strings.voucher_required + '</small>'
         + '</div>'
         + '<div class="pretix-widget-availability-unavailable"'
-        + '       v-if="!item.require_voucher && avail[0] < 100 && avail[0] > 10">'
+        + '       v-if="!require_voucher && avail[0] < 100 && avail[0] > 10">'
         + strings.reserved
         + '</div>'
         + '<div class="pretix-widget-availability-gone" '
-        + '       v-if="!item.require_voucher && avail[0] <= 10">'
+        + '       v-if="!require_voucher && avail[0] <= 10">'
         + strings.sold_out
         + '</div>'
         + '<div class="pretix-widget-waiting-list-link"'
         + '     v-if="waiting_list_show">'
         + '<a :href="waiting_list_url" target="_blank" @click="$root.open_link_in_frame">' + strings.waiting_list + '</a>'
         + '</div>'
-        + '<div class="pretix-widget-availability-available" v-if="!item.require_voucher && avail[0] === 100">'
+        + '<div class="pretix-widget-availability-available" v-if="!require_voucher && avail[0] === 100">'
         + '<label class="pretix-widget-item-count-single-label" v-if="order_max === 1">'
-        + '<input type="checkbox" value="1" v-bind:name="input_name">'
+        + '<input type="checkbox" value="1" :checked="!!amount_selected" @change="amount_selected = $event.target.checked" :name="input_name">'
         + '</label>'
         + '<input type="number" class="pretix-widget-item-count-multiple" placeholder="0" min="0"'
-        + '       :value="($root.itemnum == 1 && !item.has_variations) ? 1 : false" v-bind:max="order_max" v-bind:name="input_name"'
+        + '       v-model="amount_selected" :max="order_max" :name="input_name"'
         + '       v-if="order_max !== 1">'
         + '</div>'
         + '</div>'),
@@ -201,7 +214,35 @@ Vue.component('availbox', {
         item: Object,
         variation: Object
     },
+    mounted: function() {
+        if (this.item.has_variations) {
+            this.$set(this.variation, 'amount_selected', 0);
+        } else {
+            // Automatically set the only available item to be selected.
+            this.$set(this.item, 'amount_selected', this.$root.itemnum === 1 && !this.$root.has_seating_plan ? 1 : 0);
+        }
+        this.$root.$emit('amounts_changed')
+    },
     computed: {
+        require_voucher: function () {
+            return this.item.require_voucher && !this.$root.voucher_code
+        },
+        amount_selected: {
+            get: function () {
+                return this.item.has_variations ? this.variation.amount_selected : this.item.amount_selected
+            },
+            set: function (value) {
+                // Unary operator to force boolean to integer conversion, as the HTML form submission
+                // needs the value to be integer for all products.
+                value = (+value);
+                if (this.item.has_variations) {
+                    this.variation.amount_selected = value;
+                } else {
+                    this.item.amount_selected = value;
+                }
+                this.$root.$emit("amounts_changed")
+            }
+        },
         input_name: function () {
             if (this.item.has_variations) {
                 return 'variation_' + this.item.id + '_' + this.variation.id;
@@ -209,20 +250,20 @@ Vue.component('availbox', {
                 return 'item_' + this.item.id;
             }
         },
-    order_max: function () {
+        order_max: function () {
             return this.item.has_variations ? this.variation.order_max : this.item.order_max;
         },
         avail: function () {
             return this.item.has_variations ? this.variation.avail : this.item.avail;
         },
         waiting_list_show: function () {
-            return this.avail[0] < 100 && this.$root.waiting_list_enabled;
+            return this.avail[0] < 100 && this.$root.waiting_list_enabled && this.item.allow_waitinglist;
         },
         waiting_list_url: function () {
             if (this.item.has_variations) {
-                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&var=' + this.variation.id + '&widget_data=' + escape(this.$root.widget_data_json);
+                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&var=' + this.variation.id + '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
             } else {
-                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&widget_data=' + escape(this.$root.widget_data_json);
+                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
             }
         }
     }
@@ -468,7 +509,7 @@ var shared_methods = {
                 this.resume();
             }
         } else {
-            var url = this.$root.formTarget + "&locale=" + lang + "&ajax=1";
+            var url = this.$root.formAction + "&locale=" + lang + "&ajax=1";
             this.$root.overlay.frame_loading = true;
 
             this.async_task_interval = 100;
@@ -542,9 +583,9 @@ var shared_methods = {
         } else {
             return;
         }
-        var redirect_url = this.$root.voucherFormTarget + '&voucher=' + this.voucher + '&subevent=' + this.$root.subevent;
+        var redirect_url = this.$root.voucherFormTarget + '&voucher=' + encodeURIComponent(this.voucher) + '&subevent=' + this.$root.subevent;
         if (this.$root.widget_data) {
-            redirect_url += '&widget_data=' + escape(this.$root.widget_data_json);
+            redirect_url += '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
         }
         var iframe = this.$root.overlay.$children[0].$refs['frame-container'].children[0];
         this.$root.overlay.frame_loading = true;
@@ -552,9 +593,9 @@ var shared_methods = {
     },
     voucher_open: function (voucher) {
         var redirect_url;
-        redirect_url = this.$root.voucherFormTarget + '&voucher=' + voucher;
+        redirect_url = this.$root.voucherFormTarget + '&voucher=' + encodeURIComponent(voucher);
         if (this.$root.widget_data) {
-            redirect_url += '&widget_data=' + escape(this.$root.widget_data_json);
+            redirect_url += '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
         }
         if (this.$root.useIframe) {
             var iframe = this.$root.overlay.$children[0].$refs['frame-container'].children[0];
@@ -571,7 +612,7 @@ var shared_methods = {
             redirect_url += '&take_cart_id=' + this.$root.cart_id;
         }
         if (this.$root.widget_data) {
-            redirect_url += '&widget_data=' + escape(this.$root.widget_data_json);
+            redirect_url += '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
         }
         if (this.$root.useIframe) {
             var iframe = this.$root.overlay.$children[0].$refs['frame-container'].children[0];
@@ -679,7 +720,7 @@ Vue.component('pretix-overlay', {
 
 Vue.component('pretix-widget-event-form', {
     template: ('<div class="pretix-widget-event-form">'
-        + '<div class="pretix-widget-event-list-back" v-if="$root.events || $root.weeks">'
+        + '<div class="pretix-widget-event-list-back" v-if="$root.events || $root.weeks || $root.days">'
         + '<a href="#" @click.prevent="back_to_list" v-if="!$root.subevent">&lsaquo; '
         + strings['back_to_list']
         + '</a>'
@@ -687,10 +728,13 @@ Vue.component('pretix-widget-event-form', {
         + strings['back_to_dates']
         + '</a>'
         + '</div>'
-        + '<div class="pretix-widget-event-header" v-if="$root.events || $root.weeks">'
+        + '<div class="pretix-widget-event-header" v-if="$root.events || $root.weeks || $root.days">'
         + '<strong>{{ $root.name }}</strong>'
         + '</div>'
-        + '<form method="post" :action="$root.formTarget" ref="form" target="_blank">'
+        + '<div class="pretix-widget-event-details" v-if="($root.events || $root.weeks || $root.days) && $root.date_range">'
+        + '{{ $root.date_range }}'
+        + '</div>'
+        + '<form method="post" :action="$root.formAction" ref="form" :target="$root.formTarget">'
         + '<input type="hidden" name="_voucher_code" :value="$root.voucher_code" v-if="$root.voucher_code">'
         + '<input type="hidden" name="subevent" :value="$root.subevent" />'
         + '<input type="hidden" name="widget_data" :value="$root.widget_data_json" />'
@@ -710,7 +754,7 @@ Vue.component('pretix-widget-event-form', {
         + '</div>'
         + '<category v-for="category in this.$root.categories" :category="category" :key="category.id"></category>'
         + '<div class="pretix-widget-action" v-if="$root.display_add_to_cart">'
-        + '<button @click="$parent.buy" type="submit">{{ this.buy_label }}</button>'
+        + '<button @click="$parent.buy" type="submit" :disabled="buy_disabled">{{ this.buy_label }}</button>'
         + '</div>'
         + '</form>'
         + '<form method="get" :action="$root.voucherFormTarget" target="_blank" '
@@ -722,6 +766,7 @@ Vue.component('pretix-widget-event-form', {
         + '<input class="pretix-widget-voucher-input" type="text" v-model="$parent.voucher" name="voucher" placeholder="'+strings.voucher_code+'">'
         + '</div>'
         + '<input type="hidden" name="subevent" :value="$root.subevent" />'
+        + '<input type="hidden" name="widget_data" :value="$root.widget_data_json" />'
         + '<input type="hidden" name="locale" value="' + lang + '" />'
         + '<div class="pretix-widget-voucher-button-wrap">'
         + '<button @click="$parent.redeem">' + strings.redeem + '</button>'
@@ -730,6 +775,18 @@ Vue.component('pretix-widget-event-form', {
         + '</form>'
         + '</div>'
     ),
+    data: function () {
+        return {
+            buy_disabled: true
+        }
+    },
+    mounted: function() {
+        this.$root.$on('amounts_changed', this.calculate_buy_disabled)
+        this.calculate_buy_disabled()
+    },
+    beforeDestroy: function() {
+        this.$root.$off('amounts_changed', this.calculate_buy_disabled)
+    },
     computed: {
         buy_label: function () {
             var i, j, k, all_free = true;
@@ -766,11 +823,35 @@ Vue.component('pretix-widget-event-form', {
             this.$root.error = null;
             this.$root.subevent = null;
             this.$root.trigger_load_callback();
-            if (this.$root.events !== undefined) {
+            if (this.$root.events !== undefined && this.$root.events !== null) {
                 this.$root.view = "events";
+            } else if (this.$root.days !== undefined && this.$root.days !== null) {
+                this.$root.view = "days";
             } else {
                 this.$root.view = "weeks";
             }
+        },
+        calculate_buy_disabled: function() {
+            var i, j, k;
+            for (i = 0; i < this.$root.categories.length; i++) {
+                var cat = this.$root.categories[i];
+                for (j = 0; j < cat.items.length; j++) {
+                    var item = cat.items[j];
+                    if (item.has_variations) {
+                        for (k = 0; k < item.variations.length; k++) {
+                            var v = item.variations[k];
+                            if (v.amount_selected) {
+                                this.buy_disabled = false;
+                                return;
+                            }
+                        }
+                    } else if (item.amount_selected) {
+                        this.buy_disabled = false;
+                        return;
+                    }
+                }
+            }
+            this.buy_disabled = true;
         }
     }
 });
@@ -866,6 +947,64 @@ Vue.component('pretix-widget-event-calendar-event', {
     }
 });
 
+Vue.component('pretix-widget-event-week-cell', {
+    template: ('<div :class="classObject" @click.prevent="selectDay">'
+        + '<div class="pretix-widget-event-calendar-day" v-if="day">'
+        + '{{ dayhead }}'
+        + '</div>'
+        + '<div class="pretix-widget-event-calendar-events" v-if="day">'
+        + '<pretix-widget-event-calendar-event v-for="e in day.events" :event="e"></pretix-widget-event-calendar-event>'
+        + '</div>'
+        + '</div>'),
+    props: {
+        day: Object,
+    },
+    methods: {
+        selectDay: function () {
+            if (!this.day || !this.day.events.length || !this.$parent.$parent.$parent.mobile) {
+                return;
+            }
+            if (this.day.events.length === 1) {
+                var ev = this.day.events[0];
+                this.$root.parent_stack.push(this.$root.target_url);
+                this.$root.target_url = ev.event_url;
+                this.$root.error = null;
+                this.$root.subevent = ev.subevent;
+                this.$root.loading++;
+                this.$root.reload();
+            } else {
+                this.$root.events = this.day.events;
+                this.$root.view = "events";
+            }
+        }
+    },
+    computed: {
+        dayhead: function () {
+            if (!this.day) {
+                return;
+            }
+            return this.day.day_formatted;
+        },
+        classObject: function () {
+            var o = {};
+            if (this.day && this.day.events.length > 0) {
+                o['pretix-widget-has-events'] = true;
+                var best = 'red';
+                for (var i = 0; i < this.day.events.length; i++) {
+                    var ev = this.day.events[i];
+                    if (ev.availability.color === 'green') {
+                        best = 'green';
+                    } else if (ev.availability.color === 'orange' && best !== 'green') {
+                        best = 'orange'
+                    }
+                }
+                o['pretix-widget-day-availability-' + best] = true;
+            }
+            return o
+        }
+    }
+});
+
 Vue.component('pretix-widget-event-calendar-cell', {
     template: ('<td :class="classObject" @click.prevent="selectDay">'
         + '<div class="pretix-widget-event-calendar-day" v-if="day">'
@@ -876,7 +1015,7 @@ Vue.component('pretix-widget-event-calendar-cell', {
         + '</div>'
         + '</td>'),
     props: {
-        day: Object
+        day: Object,
     },
     methods: {
         selectDay: function () {
@@ -1003,6 +1142,69 @@ Vue.component('pretix-widget-event-calendar', {
     },
 });
 
+Vue.component('pretix-widget-event-week-calendar', {
+    template: ('<div class="pretix-widget-event-calendar pretix-widget-event-week-calendar" ref="weekcalendar">'
+        + '<div class="pretix-widget-back" v-if="$root.events !== undefined">'
+        + '<a href="#" @click.prevent="back_to_list">&lsaquo; '
+        + strings['back']
+        + '</a>'
+        + '</div>'
+        + '<div class="pretix-widget-event-calendar-head">'
+        + '<a class="pretix-widget-event-calendar-previous-month" href="#" @click.prevent="prevweek">&laquo; '
+        + strings['previous_week']
+        + '</a> '
+        + '<strong>{{ weekname }}</strong> '
+        + '<a class="pretix-widget-event-calendar-next-month" href="#" @click.prevent="nextweek">'
+        + strings['next_week']
+        + ' &raquo;</a>'
+        + '</div>'
+        + '<div class="pretix-widget-event-week-table">'
+        + '<div class="pretix-widget-event-week-col" v-for="d in $root.days">'
+        + '<pretix-widget-event-week-cell :day="d">'
+        + '</pretix-widget-event-week-cell>'
+        + '</div>'
+        + '</div>'
+        + '</div>'
+        + '</div>'),
+    computed: {
+        weekname: function () {
+            var curWeek = this.$root.week[1];
+            var curYear = this.$root.week[0];
+            return curWeek + ' / ' + curYear;
+        }
+    },
+    methods: {
+        back_to_list: function () {
+            this.$root.weeks = undefined;
+            this.$root.view = "events";
+        },
+        prevweek: function () {
+            var curWeek = this.$root.week[1];
+            var curYear = this.$root.week[0];
+            curWeek--;
+            if (curWeek < 1) {
+                curYear--;
+                curWeek = getISOWeeks(curYear);
+            }
+            this.$root.week = [curYear, curWeek];
+            this.$root.loading++;
+            this.$root.reload();
+        },
+        nextweek: function () {
+            var curWeek = this.$root.week[1];
+            var curYear = this.$root.week[0];
+            curWeek++;
+            if (curWeek > getISOWeeks(curYear)) {
+                curWeek = 1;
+                curYear++;
+            }
+            this.$root.week = [curYear, curWeek];
+            this.$root.loading++;
+            this.$root.reload();
+        }
+    },
+});
+
 Vue.component('pretix-widget', {
     template: ('<div class="pretix-widget-wrapper" ref="wrapper">'
         + '<div :class="classObject">'
@@ -1012,6 +1214,7 @@ Vue.component('pretix-widget', {
         + '<pretix-widget-event-form ref="formcomp" v-if="$root.view === \'event\'"></pretix-widget-event-form>'
         + '<pretix-widget-event-list v-if="$root.view === \'events\'"></pretix-widget-event-list>'
         + '<pretix-widget-event-calendar v-if="$root.view === \'weeks\'"></pretix-widget-event-calendar>'
+        + '<pretix-widget-event-week-calendar v-if="$root.view === \'days\'"></pretix-widget-event-week-calendar>'
         + '<div class="pretix-widget-clear"></div>'
         + '<div class="pretix-widget-attribution" v-if="$root.poweredby" v-html="$root.poweredby">'
         + '</div>'
@@ -1022,7 +1225,7 @@ Vue.component('pretix-widget', {
     data: shared_widget_data,
     methods: shared_methods,
     mounted: function () {
-        this.mobile = this.$refs.wrapper.clientWidth <= 800;
+        this.mobile = this.$refs.wrapper.clientWidth <= 600;
     },
     computed: {
         classObject: function () {
@@ -1038,7 +1241,7 @@ Vue.component('pretix-widget', {
 Vue.component('pretix-button', {
     template: ('<div class="pretix-widget-wrapper">'
         + '<div class="pretix-widget-button-container">'
-        + '<form :method="$root.formMethod" :action="$root.formTarget" ref="form" target="_blank">'
+        + '<form :method="$root.formMethod" :action="$root.formAction" ref="form" :target="$root.formTarget">'
         + '<input type="hidden" name="_voucher_code" :value="$root.voucher_code" v-if="$root.voucher_code">'
         + '<input type="hidden" name="voucher" :value="$root.voucher_code" v-if="$root.voucher_code">'
         + '<input type="hidden" name="subevent" :value="$root.subevent" />'
@@ -1094,15 +1297,23 @@ var shared_root_methods = {
         if (this.$root.filter) {
             url += '&' + this.$root.filter;
         }
+        if (this.$root.item_filter) {
+            url += '&items=' + encodeURIComponent(this.$root.item_filter);
+        }
+        if (this.$root.category_filter) {
+            url += '&categories=' + encodeURIComponent(this.$root.category_filter);
+        }
         var cart_id = getCookie(this.cookieName);
         if (this.$root.voucher_code) {
-            url += '&voucher=' + escape(this.$root.voucher_code);
+            url += '&voucher=' + encodeURIComponent(this.$root.voucher_code);
         }
         if (cart_id) {
             url += "&cart_id=" + cart_id;
         }
         if (this.$root.date !== null) {
             url += "&year=" + this.$root.date.substr(0, 4) + "&month=" + this.$root.date.substr(5, 2);
+        } else if (this.$root.week !== null) {
+            url += "&year=" + this.$root.week[0] + "&week=" + this.$root.week[1];
         }
         if (this.$root.style !== null) {
             url = url + '&style=' + this.$root.style;
@@ -1121,8 +1332,15 @@ var shared_root_methods = {
             if (data.weeks !== undefined) {
                 root.weeks = data.weeks;
                 root.date = data.date;
+                root.week = null;
                 root.events = undefined;
                 root.view = "weeks";
+            } else if (data.days !== undefined) {
+                root.days = data.days;
+                root.date = null;
+                root.week = data.week;
+                root.events = undefined;
+                root.view = "days";
             } else if (data.events !== undefined) {
                 root.events = data.events;
                 root.weeks = undefined;
@@ -1130,6 +1348,7 @@ var shared_root_methods = {
             } else {
                 root.view = "event";
                 root.name = data.name;
+                root.date_range = data.date_range;
                 root.categories = data.items_by_category;
                 root.currency = data.currency;
                 root.display_net_prices = data.display_net_prices;
@@ -1174,7 +1393,7 @@ var shared_root_methods = {
             redirect_url += '&take_cart_id=' + this.$root.cart_id;
         }
         if (this.$root.widget_data) {
-            redirect_url += '&widget_data=' + escape(this.$root.widget_data_json);
+            redirect_url += '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
         }
         if (this.$root.useIframe) {
             var iframe = this.$root.overlay.$children[0].$refs['frame-container'].children[0];
@@ -1197,6 +1416,19 @@ var shared_root_computed = {
     cookieName: function () {
         return "pretix_widget_" + this.target_url.replace(/[^a-zA-Z0-9]+/g, "_");
     },
+    formTarget: function () {
+        var is_firefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+        var is_android = navigator.userAgent.toLowerCase().indexOf("android") > -1;
+        if (is_android && is_firefox) {
+            // Opening a POST form in a new browser fails in Firefox. This is supposed to be fixed since FF 76
+            // but for some reason, it is still the case in FF for Android.
+            // https://bugzilla.mozilla.org/show_bug.cgi?id=1629441
+            // https://github.com/pretix/pretix/issues/1040
+            return "_top";
+        } else {
+            return "_blank";
+        }
+    },
     voucherFormTarget: function () {
         var form_target = this.target_url + 'w/' + widget_id + '/redeem?iframe=1&locale=' + lang;
         var cookie = getCookie(this.cookieName);
@@ -1214,7 +1446,7 @@ var shared_root_computed = {
         }
         return 'post';
     },
-    formTarget: function () {
+    formAction: function () {
         if (!this.useIframe && this.is_button && this.items.length === 0) {
             var target = this.target_url;
             if (this.voucher_code) {
@@ -1308,6 +1540,8 @@ var create_widget = function (element) {
     var disable_vouchers = element.attributes["disable-vouchers"] ? true : false;
     var widget_data = JSON.parse(JSON.stringify(window.PretixWidget.widget_data));
     var filter = element.attributes.filter ? element.attributes.filter.value : null;
+    var items = element.attributes.items ? element.attributes.items.value : null;
+    var categories = element.attributes.categories ? element.attributes.categories.value : null;
     for (var i = 0; i < element.attributes.length; i++) {
         var attrib = element.attributes[i];
         if (attrib.name.match(/^data-.*$/)) {
@@ -1330,7 +1564,10 @@ var create_widget = function (element) {
                 categories: null,
                 currency: null,
                 name: null,
+                date_range: null,
                 filter: filter,
+                item_filter: items,
+                category_filter: categories,
                 voucher_code: voucher,
                 display_net_prices: false,
                 voucher_explanation_text: null,
@@ -1339,7 +1576,9 @@ var create_widget = function (element) {
                 style: style,
                 error: null,
                 weeks: null,
+                days: null,
                 date: null,
+                week: null,
                 frame_dismissed: false,
                 events: null,
                 view: null,

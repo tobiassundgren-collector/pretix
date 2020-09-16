@@ -3,13 +3,14 @@ import logging
 from decimal import Decimal
 
 import paypalrestsdk
+import paypalrestsdk.exceptions
 from django.contrib import messages
 from django.core import signing
 from django.db.models import Sum
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
@@ -55,7 +56,7 @@ def oauth_return(request, *args, **kwargs):
     try:
         tokeninfo = Tokeninfo.create(request.GET.get('code'))
         userinfo = Tokeninfo.create_with_refresh_token(tokeninfo['refresh_token']).userinfo()
-    except:
+    except paypalrestsdk.exceptions.ConnectionError:
         logger.exception('Failed to obtain OAuth token')
         messages.error(request, _('An error occurred during connecting with PayPal, please try again.'))
     else:
@@ -170,7 +171,7 @@ def webhook(request, *args, **kwargs):
 
     try:
         sale = paypalrestsdk.Sale.find(saleid)
-    except:
+    except paypalrestsdk.exceptions.ConnectionError:
         logger.exception('PayPal error on webhook. Event data: %s' % str(event_json))
         return HttpResponse('Sale not found', status=500)
 
@@ -197,7 +198,7 @@ def webhook(request, *args, **kwargs):
         if event_json['resource_type'] == 'refund':
             try:
                 refund = paypalrestsdk.Refund.find(event_json['resource']['id'])
-            except:
+            except paypalrestsdk.exceptions.ConnectionError:
                 logger.exception('PayPal error on webhook. Event data: %s' % str(event_json))
                 return HttpResponse('Refund not found', status=500)
 

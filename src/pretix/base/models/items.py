@@ -1,21 +1,21 @@
 import sys
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from datetime import date, datetime, time
 from decimal import Decimal, DecimalException
 from typing import Tuple
 
 import dateutil.parser
 import pytz
-from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
-from django.db.models import F, Func, Q, Sum
+from django.db.models import Q
 from django.utils import formats
 from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
 from django.utils.timezone import is_naive, make_aware, now
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 from django_countries.fields import Country
 from django_scopes import ScopedManager
 from i18nfield.fields import I18nCharField, I18nTextField
@@ -24,7 +24,6 @@ from pretix.base.models import fields
 from pretix.base.models.base import LoggedModel
 from pretix.base.models.fields import MultiStringField
 from pretix.base.models.tax import TaxedPrice
-from pretix.base.signals import quota_availability
 
 from .event import Event, SubEvent
 
@@ -119,6 +118,7 @@ class SubEventItem(models.Model):
     subevent = models.ForeignKey('SubEvent', on_delete=models.CASCADE)
     item = models.ForeignKey('Item', on_delete=models.CASCADE)
     price = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    disabled = models.BooleanField(default=False, verbose_name=_('Disable product for this date'))
 
     def delete(self, *args, **kwargs):
         super().delete(*args, **kwargs)
@@ -146,6 +146,7 @@ class SubEventItemVariation(models.Model):
     subevent = models.ForeignKey('SubEvent', on_delete=models.CASCADE)
     variation = models.ForeignKey('ItemVariation', on_delete=models.CASCADE)
     price = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    disabled = models.BooleanField(default=False)
 
     def delete(self, *args, **kwargs):
         super().delete(*args, **kwargs)
@@ -377,9 +378,9 @@ class Item(LoggedModel):
                     'but only for fixed bundles!')
     )
     allow_cancel = models.BooleanField(
-        verbose_name=_('Allow product to be canceled'),
+        verbose_name=_('Allow product to be canceled or changed'),
         default=True,
-        help_text=_('If this is checked, the usual cancellation settings of this event apply. If this is unchecked, '
+        help_text=_('If this is checked, the usual cancellation and order change settings of this event apply. If this is unchecked, '
                     'orders containing this product can not be canceled by users but only by you.')
     )
     min_per_order = models.IntegerField(
@@ -411,7 +412,8 @@ class Item(LoggedModel):
     )
     sales_channels = fields.MultiStringField(
         verbose_name=_('Sales channels'),
-        default=['web']
+        default=['web'],
+        blank=True,
     )
     issue_giftcard = models.BooleanField(
         verbose_name=_('This product is a gift card'),
@@ -447,23 +449,32 @@ class Item(LoggedModel):
             return self.event.settings.show_quota_left
         return self.show_quota_left
 
-    def tax(self, price=None, base_price_is='auto', currency=None, include_bundled=False):
+    def tax(self, price=None, base_price_is='auto', currency=None, invoice_address=None, override_tax_rate=None, include_bundled=False):
         price = price if price is not None else self.default_price
 
         if not self.tax_rule:
             t = TaxedPrice(gross=price, net=price, tax=Decimal('0.00'),
                            rate=Decimal('0.00'), name='')
         else:
-            t = self.tax_rule.tax(price, base_price_is=base_price_is, currency=currency)
+            t = self.tax_rule.tax(price, base_price_is=base_price_is, invoice_address=invoice_address,
+                                  override_tax_rate=override_tax_rate, currency=currency or self.event.currency)
 
         if include_bundled:
             for b in self.bundles.all():
                 if b.designated_price and b.bundled_item.tax_rule_id != self.tax_rule_id:
                     if b.bundled_variation:
-                        bprice = b.bundled_variation.tax(b.designated_price * b.count, base_price_is='gross', currency=currency)
+                        bprice = b.bundled_variation.tax(b.designated_price * b.count, base_price_is='gross',
+                                                         invoice_address=invoice_address,
+                                                         currency=currency)
                     else:
-                        bprice = b.bundled_item.tax(b.designated_price * b.count, base_price_is='gross', currency=currency)
-                    compare_price = self.tax_rule.tax(b.designated_price * b.count, base_price_is='gross', currency=currency)
+                        bprice = b.bundled_item.tax(b.designated_price * b.count,
+                                                    invoice_address=invoice_address,
+                                                    base_price_is='gross',
+                                                    currency=currency)
+                    compare_price = self.tax_rule.tax(b.designated_price * b.count,
+                                                      override_tax_rate=override_tax_rate,
+                                                      invoice_address=invoice_address,
+                                                      currency=currency)
                     t.net += bprice.net - compare_price.net
                     t.tax += bprice.tax - compare_price.tax
                     t.name = "MIXED!"
@@ -533,6 +544,8 @@ class Item(LoggedModel):
                     quotacounter[q] += b.count
 
         for q, n in quotacounter.items():
+            if n == 0:
+                continue
             a = q.availability(count_waitinglist=count_waitinglist, _cache=_cache)
             if a[1] is None:
                 continue
@@ -590,6 +603,16 @@ class Item(LoggedModel):
         if from_date is not None and until_date is not None:
             if from_date > until_date:
                 raise ValidationError(_('The item\'s availability cannot end before it starts.'))
+
+    @property
+    def meta_data(self):
+        data = {p.name: p.default for p in self.event.item_meta_properties.all()}
+        if hasattr(self, 'meta_values_cached'):
+            data.update({v.property.name: v.value for v in self.meta_values_cached})
+        else:
+            data.update({v.property.name: v.value for v in self.meta_values.select_related('property').all()})
+
+        return OrderedDict((k, v) for k, v in sorted(data.items(), key=lambda k: k[0]))
 
 
 class ItemVariation(models.Model):
@@ -659,23 +682,31 @@ class ItemVariation(models.Model):
     def price(self):
         return self.default_price if self.default_price is not None else self.item.default_price
 
-    def tax(self, price=None, base_price_is='auto', currency=None, include_bundled=False):
+    def tax(self, price=None, base_price_is='auto', currency=None, include_bundled=False, override_tax_rate=None,
+            invoice_address=None):
         price = price if price is not None else self.price
 
         if not self.item.tax_rule:
             t = TaxedPrice(gross=price, net=price, tax=Decimal('0.00'),
                            rate=Decimal('0.00'), name='')
         else:
-            t = self.item.tax_rule.tax(price, base_price_is=base_price_is, currency=currency)
+            t = self.item.tax_rule.tax(price, base_price_is=base_price_is, currency=currency,
+                                       override_tax_rate=override_tax_rate,
+                                       invoice_address=invoice_address)
 
         if include_bundled:
             for b in self.item.bundles.all():
                 if b.designated_price and b.bundled_item.tax_rule_id != self.item.tax_rule_id:
                     if b.bundled_variation:
-                        bprice = b.bundled_variation.tax(b.designated_price * b.count, base_price_is='gross', currency=currency)
+                        bprice = b.bundled_variation.tax(b.designated_price * b.count, base_price_is='gross',
+                                                         currency=currency,
+                                                         invoice_address=invoice_address)
                     else:
-                        bprice = b.bundled_item.tax(b.designated_price * b.count, base_price_is='gross', currency=currency)
-                    compare_price = self.item.tax_rule.tax(b.designated_price * b.count, base_price_is='gross', currency=currency)
+                        bprice = b.bundled_item.tax(b.designated_price * b.count, base_price_is='gross',
+                                                    currency=currency,
+                                                    invoice_address=invoice_address)
+                    compare_price = self.item.tax_rule.tax(b.designated_price * b.count, base_price_is='gross',
+                                                           currency=currency, invoice_address=invoice_address)
                     t.net += bprice.net - compare_price.net
                     t.tax += bprice.tax - compare_price.tax
                     t.name = "MIXED!"
@@ -809,6 +840,10 @@ class ItemAddOn(models.Model):
         verbose_name=_('Add-Ons are included in the price'),
         help_text=_('If selected, adding add-ons to this ticket is free, even if the add-ons would normally cost '
                     'money individually.')
+    )
+    multi_allowed = models.BooleanField(
+        default=False,
+        verbose_name=_('Allow the same product to be selected multiple times'),
     )
     position = models.PositiveIntegerField(
         default=0,
@@ -1105,10 +1140,13 @@ class Question(LoggedModel):
             return None
 
         if self.type == Question.TYPE_CHOICE:
-            try:
-                return self.options.get(Q(pk=answer) | Q(identifier=answer))
-            except:
+            q = Q(identifier=answer)
+            if isinstance(answer, int) or answer.isdigit():
+                q |= Q(pk=answer)
+            o = self.options.filter(q).first()
+            if not o:
                 raise ValidationError(_('Invalid option selected.'))
+            return o
         elif self.type == Question.TYPE_CHOICE_MULTIPLE:
             if isinstance(answer, str):
                 l_ = list(self.options.filter(
@@ -1318,6 +1356,16 @@ class Quota(LoggedModel):
     )
     closed = models.BooleanField(default=False)
 
+    release_after_exit = models.BooleanField(
+        verbose_name=_('Allow to sell more tickets once people have checked out'),
+        help_text=_('With this option, quota will be released as soon as people are scanned at an exit of your event. '
+                    'This will only happen if they have been scanned both at an entry and at an exit and the exit '
+                    'is the more recent scan. It does not matter which check-in list either of the scans was on, '
+                    'but check-in lists are ignored if they are set to "Allow re-entering after an exit scan" to '
+                    'prevent accidental overbooking.'),
+        default=False,
+    )
+
     objects = ScopedManager(organizer='event__organizer')
 
     class Meta:
@@ -1335,6 +1383,7 @@ class Quota(LoggedModel):
             self.event.cache.clear()
 
     def save(self, *args, **kwargs):
+        # This is *not* called when the db-level cache is upated, since we use bulk_update there
         clear_cache = kwargs.pop('clear_cache', True)
         super().save(*args, **kwargs)
         if self.event and clear_cache:
@@ -1369,6 +1418,8 @@ class Quota(LoggedModel):
         :returns: a tuple where the first entry is one of the ``Quota.AVAILABILITY_`` constants
                   and the second is the number of available tickets.
         """
+        from ..services.quotas import QuotaAvailability
+
         if allow_cache and self.cache_is_hot() and count_waitinglist:
             return self.cached_availability_state, self.cached_availability_number
 
@@ -1377,140 +1428,15 @@ class Quota(LoggedModel):
 
         if _cache is not None and self.pk in _cache:
             return _cache[self.pk]
-        now_dt = now_dt or now()
-        res = self._availability(now_dt, count_waitinglist)
-        for recv, resp in quota_availability.send(sender=self.event, quota=self, result=res,
-                                                  count_waitinglist=count_waitinglist):
-            res = resp
-
-        if res[0] <= Quota.AVAILABILITY_ORDERED and self.close_when_sold_out and not self.closed:
-            self.closed = True
-            self.save(update_fields=['closed'])
-            self.log_action('pretix.event.quota.closed')
-
-        self.event.cache.delete('item_quota_cache')
-        rewrite_cache = count_waitinglist and (
-            not self.cache_is_hot(now_dt) or res[0] > self.cached_availability_state
-        )
-        if rewrite_cache:
-            self.cached_availability_state = res[0]
-            self.cached_availability_number = res[1]
-            self.cached_availability_time = now_dt
-            if self.size is None:
-                self.cached_availability_paid_orders = self.count_paid_orders()
-            self.save(
-                update_fields=[
-                    'cached_availability_state', 'cached_availability_number', 'cached_availability_time',
-                    'cached_availability_paid_orders'
-                ],
-                clear_cache=False,
-                using='default'
-            )
+        qa = QuotaAvailability(count_waitinglist=count_waitinglist, early_out=False)
+        qa.queue(self)
+        qa.compute(now_dt=now_dt)
+        res = qa.results[self]
 
         if _cache is not None:
             _cache[self.pk] = res
             _cache['_count_waitinglist'] = count_waitinglist
         return res
-
-    def _availability(self, now_dt: datetime=None, count_waitinglist=True, ignore_closed=False):
-        now_dt = now_dt or now()
-        if self.closed and not ignore_closed:
-            return Quota.AVAILABILITY_ORDERED, 0
-
-        size_left = self.size
-        if size_left is None:
-            return Quota.AVAILABILITY_OK, None
-
-        paid_orders = self.count_paid_orders()
-        self.cached_availability_paid_orders = paid_orders
-        size_left -= paid_orders
-        if size_left <= 0:
-            return Quota.AVAILABILITY_GONE, 0
-
-        size_left -= self.count_pending_orders()
-        if size_left <= 0:
-            return Quota.AVAILABILITY_ORDERED, 0
-
-        size_left -= self.count_blocking_vouchers(now_dt)
-        if size_left <= 0:
-            return Quota.AVAILABILITY_ORDERED, 0
-
-        if count_waitinglist:
-            size_left -= self.count_waiting_list_pending()
-            if size_left <= 0:
-                return Quota.AVAILABILITY_ORDERED, 0
-
-        size_left -= self.count_in_cart(now_dt)
-        if size_left <= 0:
-            return Quota.AVAILABILITY_RESERVED, 0
-
-        return Quota.AVAILABILITY_OK, size_left
-
-    def count_blocking_vouchers(self, now_dt: datetime=None) -> int:
-        from pretix.base.models import Voucher
-
-        now_dt = now_dt or now()
-        if 'sqlite3' in settings.DATABASES['default']['ENGINE']:
-            func = 'MAX'
-        else:  # NOQA
-            func = 'GREATEST'
-
-        return Voucher.objects.filter(
-            Q(event=self.event) & Q(subevent=self.subevent) &
-            Q(block_quota=True) &
-            Q(Q(valid_until__isnull=True) | Q(valid_until__gte=now_dt)) &
-            Q(Q(self._position_lookup) | Q(quota=self))
-        ).values('id').aggregate(
-            free=Sum(Func(F('max_usages') - F('redeemed'), 0, function=func))
-        )['free'] or 0
-
-    def count_waiting_list_pending(self) -> int:
-        from pretix.base.models import WaitingListEntry
-        return WaitingListEntry.objects.filter(
-            Q(voucher__isnull=True) & Q(subevent=self.subevent) &
-            self._position_lookup
-        ).distinct().count()
-
-    def count_in_cart(self, now_dt: datetime=None) -> int:
-        from pretix.base.models import CartPosition
-
-        now_dt = now_dt or now()
-        return CartPosition.objects.filter(
-            Q(event=self.event) & Q(subevent=self.subevent) &
-            Q(expires__gte=now_dt) &
-            Q(
-                Q(voucher__isnull=True)
-                | Q(voucher__block_quota=False)
-                | Q(voucher__valid_until__lt=now_dt)
-            ) &
-            self._position_lookup
-        ).count()
-
-    def count_pending_orders(self) -> dict:
-        from pretix.base.models import Order, OrderPosition
-
-        # This query has beeen benchmarked against a Count('id', distinct=True) aggregate and won by a small margin.
-        return OrderPosition.objects.filter(
-            self._position_lookup, order__status=Order.STATUS_PENDING, order__event=self.event, subevent=self.subevent
-        ).count()
-
-    def count_paid_orders(self):
-        from pretix.base.models import Order, OrderPosition
-
-        return OrderPosition.objects.filter(
-            self._position_lookup, order__status=Order.STATUS_PAID, order__event=self.event, subevent=self.subevent
-        ).count()
-
-    @cached_property
-    def _position_lookup(self) -> Q:
-        return (
-            (  # Orders for items which do not have any variations
-               Q(variation__isnull=True) &
-               Q(item_id__in=Quota.items.through.objects.filter(quota_id=self.pk).values_list('item_id', flat=True))
-            ) | (  # Orders for items which do have any variations
-                   Q(variation__in=Quota.variations.through.objects.filter(quota_id=self.pk).values_list('itemvariation_id', flat=True))
-            )
-        )
 
     class QuotaExceededException(Exception):
         pass
@@ -1520,7 +1446,6 @@ class Quota(LoggedModel):
         for variation in (variations or []):
             if variation.item not in items:
                 raise ValidationError(_('All variations must belong to an item contained in the items list.'))
-                break
 
     @staticmethod
     def clean_items(event, items, variations):
@@ -1541,3 +1466,57 @@ class Quota(LoggedModel):
         else:
             if subevent:
                 raise ValidationError(_('The subevent does not belong to this event.'))
+
+
+class ItemMetaProperty(LoggedModel):
+    """
+    An event can have ItemMetaProperty objects attached to define meta information fields
+    for its items. This information can be re-used for example in ticket layouts.
+
+    :param event: The event this property is defined for.
+    :type event: Event
+    :param name: Name
+    :type name: Name of the property, used in various places
+    :param default: Default value
+    :type default: str
+    """
+    event = models.ForeignKey(Event, related_name="item_meta_properties", on_delete=models.CASCADE)
+    name = models.CharField(
+        max_length=50, db_index=True,
+        help_text=_(
+            "Can not contain spaces or special characters except underscores"
+        ),
+        validators=[
+            RegexValidator(
+                regex="^[a-zA-Z0-9_]+$",
+                message=_("The property name may only contain letters, numbers and underscores."),
+            ),
+        ],
+        verbose_name=_("Name"),
+    )
+    default = models.TextField(blank=True)
+
+
+class ItemMetaValue(LoggedModel):
+    """
+    A meta-data value assigned to an item.
+
+    :param item: The item this metadata is valid for
+    :type item: Item
+    :param property: The property this value belongs to
+    :type property: ItemMetaProperty
+    :param value: The actual value
+    :type value: str
+    """
+    item = models.ForeignKey('Item', on_delete=models.CASCADE, related_name='meta_values')
+    property = models.ForeignKey('ItemMetaProperty', on_delete=models.CASCADE, related_name='item_values')
+    value = models.TextField()
+
+    class Meta:
+        unique_together = ('item', 'property')
+
+    def delete(self, *args, **kwargs):
+        super().delete(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)

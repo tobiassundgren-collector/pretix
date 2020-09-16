@@ -14,6 +14,14 @@ function ngettext(singular, plural, count) {
     return plural;
 }
 
+function interpolate(fmt, object, named) {
+    if (named) {
+        return fmt.replace(/%\(\w+\)s/g, function(match){return String(obj[match.slice(2,-2)])});
+    } else {
+        return fmt.replace(/%s/g, function(match){return String(obj.shift())});
+    }
+}
+
 var form_handlers = function (el) {
     el.find(".datetimepicker").each(function () {
         $(this).datetimepicker({
@@ -106,6 +114,15 @@ var form_handlers = function (el) {
         );
     });
 
+    el.find("input[data-exclusive-prefix]").each(function () {
+        var $others = $("input[name^=" + $(this).attr("data-exclusive-prefix") + "]:not([name=" + $(this).attr("name") + "])");
+        $(this).on('click change', function () {
+            if ($(this).prop('checked')) {
+                $others.prop('checked', false);
+            }
+        });
+    });
+
     el.find("input[name*=question], select[name*=question]").change(questions_toggle_dependent);
     questions_toggle_dependent();
 };
@@ -154,27 +171,60 @@ $(function () {
     $(".js-copy-answers").click(function (e) {
         e.preventDefault();
         e.stopPropagation();
-        var idx = $(this).data('id');
-        copy_answers(idx);
+        let idx = $(this).data('id');
+        const addonDivs = $('div[data-idx="' + idx +'"]')
+        addonDivs.each(function (index) {
+            const elements = $(this).find('input, select, textarea');
+
+            const addonIdx = $(this).attr("data-addonidx");
+            const answersDiv = $('div[data-idx="0"][data-addonidx="' + addonIdx + '"]');
+            const answers = answersDiv.find('input, select, textarea');
+
+            copy_answers(elements, answers);
+        })
+        return false;
+    });
+    $(".js-copy-answers-addon").click(function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = $(this).data('id');
+        const addonId = $(this).data('addonid');
+        const addonDiv = $('div[data-idx="' + id +'"][data-addonidx="' + addonId + '"]');
+        const elements = addonDiv.find('input, select, textarea');
+        const answers = $('*[data-idx="' + id + '"] input, *[data-idx="' + id + '"] select, *[data-idx="' + id + '"] textarea');
+        copy_answers(elements, answers);
         return false;
     });
     var copy_to_first_ticket = true;
-    $("input[id*=attendee_name_parts_], input[id*=attendee_email]").each(function () {
+    var attendee_address_fields = $("input[id*=attendee_name_parts_], input[id*=attendee_email], .questions-form" +
+        " input[id$=company], .questions-form[id$=street], .questions-form input[id$=zipcode], .questions-form" +
+        " input[id$=city]");
+    attendee_address_fields.each(function () {
         if ($(this).val()) {
             copy_to_first_ticket = false;
         }
     })
-    $("input[id^=id_name_parts_], #id_email").change(function () {
+    $("select[id^=id_name_parts], input[id^=id_name_parts_], #id_email, #id_street, #id_company, #id_zipcode," +
+        " #id_city, #id_country, #id_state").change(function () {
         if (copy_to_first_ticket) {
             $(".questions-form").first().find("input[id*=attendee_email]").val($("#id_email").val());
-            $(".questions-form").first().find("input[id*=attendee_name_parts]").each(function () {
+            $(".questions-form").first().find("input[id$=company]").val($("#id_company").val());
+            $(".questions-form").first().find("textarea[id$=street]").val($("#id_street").val());
+            $(".questions-form").first().find("input[id$=zipcode]").val($("#id_zipcode").val());
+            $(".questions-form").first().find("input[id$=city]").val($("#id_city").val());
+
+            $(".questions-form").first().find("select[id$=state]").val($("#id_state").val());
+            if ($(".questions-form").first().find("select[id$=country]").val() !== $("#id_country").val()) {
+                $(".questions-form").first().find("select[id$=country]").val($("#id_country").val()).trigger('change');
+            }
+            $(".questions-form").first().find("[id*=attendee_name_parts]").each(function () {
                 var parts = $(this).attr("id").split("_");
                 var num = parts[parts.length - 1];
                 $(this).val($("#id_name_parts_" + num).val());
             });
         }
     });
-    $("input[id*=attendee_name_parts_], input[id*=attendee_email]").change(function () {
+    attendee_address_fields.change(function () {
         copy_to_first_ticket = false;
     });
 
@@ -226,6 +276,12 @@ $(function () {
         $tr.show();
     });
 
+    $(".print-this-page").on("click", function (e) {
+        window.print();
+        e.preventDefault();
+        return true;
+    });
+
     // Invoice address form
     $("input[data-required-if]").each(function () {
         var dependent = $(this),
@@ -242,30 +298,52 @@ $(function () {
         dependency.closest('.form-group').find('input[name=' + dependency.attr("name") + ']').on("dp.change", update);
     });
 
-    $("input[data-display-dependency]").each(function () {
+    $("input[data-display-dependency], div[data-display-dependency]").each(function () {
         var dependent = $(this),
             dependency = $($(this).attr("data-display-dependency")),
             update = function (ev) {
                 var enabled = (dependency.attr("type") === 'checkbox' || dependency.attr("type") === 'radio') ? dependency.prop('checked') : !!dependency.val();
+                var $toggling = dependent;
+                if (dependent.get(0).tagName.toLowerCase() !== "div") {
+                    $toggling = dependent.closest('.form-group');
+                }
                 if (ev) {
                     if (enabled) {
-                        dependent.closest('.form-group').stop().slideDown();
+                        $toggling.stop().slideDown();
                     } else {
-                        dependent.closest('.form-group').stop().slideUp();
+                        $toggling.stop().slideUp();
                     }
                 } else {
-                    dependent.closest('.form-group').toggle(enabled);
+                    $toggling.stop().toggle(enabled);
                 }
             };
         update();
-        dependency.closest('.form-group').find('input[name=' + dependency.attr("name") + ']').on("change", update);
-        dependency.closest('.form-group').find('input[name=' + dependency.attr("name") + ']').on("dp.change", update);
+        dependency.closest('.form-group, form').find('input[name=' + dependency.attr("name") + ']').on("change", update);
+        dependency.closest('.form-group, form').find('input[name=' + dependency.attr("name") + ']').on("dp.change", update);
+    });
+
+    $("input[name$=vat_id][data-countries-in-eu]").each(function () {
+        var dependent = $(this),
+            dependency_country = $(this).closest(".panel-body, form").find('select[name$=country]'),
+            dependency_id_is_business_1 = $(this).closest(".panel-body, form").find('input[id$=id_is_business_1]'),
+            update = function (ev) {
+                if (dependency_id_is_business_1.length && !dependency_id_is_business_1.prop("checked")) {
+                    dependent.closest(".form-group").hide();
+                } else if (dependent.attr('data-countries-in-eu').split(',').includes(dependency_country.val())) {
+                    dependent.closest(".form-group").show();
+                } else {
+                    dependent.closest(".form-group").hide();
+                }
+            };
+        update();
+        dependency_country.on("change", update);
+        dependency_id_is_business_1.on("change", update);
     });
 
     $("select[name$=state]").each(function () {
         var dependent = $(this),
             counter = 0,
-            dependency = $(this).closest("form").find('select[name$=country]'),
+            dependency = $(this).closest(".panel-body, form").find('select[name$=country]'),
             update = function (ev) {
                 counter++;
                 var curCounter = counter;
@@ -300,49 +378,107 @@ $(function () {
 
     form_handlers($("body"));
 
+    var cancel_fee_slider_update = function () {
+        if (typeof django === "undefined") {
+            window.setTimeout(cancel_fee_slider_update, 100);
+            return;
+        }
+        $("#cancel-fee-keep").text(interpolate(
+            gettext("The organizer keeps %(currency)s %(amount)s"),
+            {
+                'currency': $("body").attr("data-currency"),
+                'amount': floatformat(cancel_fee_slider.getValue(), 2)
+            },
+            true
+        ));
+        $("#cancel-fee-refund").text(interpolate(
+            gettext("You get %(currency)s %(amount)s back"),
+            {
+                'currency': $("body").attr("data-currency"),
+                'amount': floatformat((cancel_fee_slider.getAttribute("max") - cancel_fee_slider.getValue()), 2)
+            },
+            true
+        ));
+    }
+    var cancel_fee_slider = $('#cancel-fee-slider').slider({
+    }).on('slide', function () {
+        cancel_fee_slider_update();
+    }).data('slider');
+    if (cancel_fee_slider) {
+        cancel_fee_slider_update();
+        $("#cancel-fee-custom").click(function () {
+            try {
+                var newinp = parseFloat(prompt(gettext("Please enter the amount the organizer can keep."), cancel_fee_slider.getValue().toString()).replace(',', '.'));
+                cancel_fee_slider.setValue(newinp);
+                cancel_fee_slider_update();
+            } catch (e) {
+            }
+        });
+    }
+
+    var local_tz = moment.tz.guess()
+    $("span[data-timezone]").each(function() {
+        var t = moment.tz($(this).attr("data-time"), $(this).attr("data-timezone"))
+        var tz = moment.tz.zone($(this).attr("data-timezone"))
+
+        $(this).tooltip({
+            'title': gettext("Time zone:") + " " + tz.abbr(t)
+        });
+        if (t.tz(tz.name).format() !== t.tz(local_tz).format()) {
+            var $add = $("<span>").addClass("text-muted")
+            $add.append($("<span>").addClass("fa fa-globe"))
+            $add.append(" " + gettext("Your local time:") + " ")
+            if (t.tz(tz.name).format("YYYY-MM-DD") != t.tz(local_tz).format("YYYY-MM-DD")) {
+                $add.append(t.tz(local_tz).format($("body").attr("data-datetimeformat")))
+            } else {
+                $add.append(t.tz(local_tz).format($("body").attr("data-timeformat")))
+            }
+            $add.insertAfter($(this));
+            $add.tooltip({
+                'title': gettext("Time zone:") + " " + moment.tz.zone(local_tz).abbr(t)
+            });
+        }
+    });
+
     // Lightbox
     lightbox.init();
 });
 
-function copy_answers(idx) {
-    var elements = $('*[data-idx="' + idx + '"] input, *[data-idx="' + idx + '"] select, *[data-idx="' + idx + '"] textarea');
-    var firstAnswers = $('*[data-idx="0"] input, *[data-idx="0"] select, *[data-idx="0"] textarea');
-    elements.each(function (index) {
+function copy_answers(elements, answers) {
+   elements.each(function (index) {
         var input = $(this),
             tagName = input.prop('tagName').toLowerCase(),
             attributeType = input.attr('type'),
             suffix = input.attr('name').split('-')[1];
 
-
         switch (tagName) {
             case "textarea":
-                input.val(firstAnswers.filter("[name$=" + suffix + "]").val());
+                input.val(answers.filter("[name$=" + suffix + "]").val());
                 break;
             case "select":
-                input.val(firstAnswers.filter("[name$=" + suffix + "]").find(":selected").val()).change();
+                input.val(answers.filter("[name$=" + suffix + "]").find(":selected").val()).change();
                 break;
             case "input":
                 switch (attributeType) {
                     case "text":
                     case "number":
-                        input.val(firstAnswers.filter("[name$=" + suffix + "]").val());
+                        input.val(answers.filter("[name$=" + suffix + "]").val());
                         break;
                     case "checkbox":
                     case "radio":
                         if (input.attr('value')) {
-                            input.prop("checked", firstAnswers.filter("[name$=" + suffix + "][value=" + input.attr('value') + "]").prop("checked"));
+                            input.prop("checked", answers.filter("[name$=" + suffix + "][value=" + input.attr('value') + "]").prop("checked"));
                         } else {
-                            input.prop("checked", firstAnswers.filter("[name$=" + suffix + "]").prop("checked"));
+                            input.prop("checked", answers.filter("[name$=" + suffix + "]").prop("checked"));
                         }
                         break;
                     default:
-                        input.val(firstAnswers.filter("[name$=" + suffix + "]").val());
+                        input.val(answers.filter("[name$=" + suffix + "]").val());
                 }
                 break;
             default:
-                input.val(firstAnswers.filter("[name$=" + suffix + "]").val());
+                input.val(answers.filter("[name$=" + suffix + "]").val());
         }
     });
     questions_toggle_dependent(true);
 }
-

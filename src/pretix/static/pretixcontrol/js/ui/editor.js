@@ -216,7 +216,9 @@ var editor = {
     },
 
     _get_text_sample: function (key) {
-        if (key.startsWith('meta:')) {
+        if (key.startsWith('itemmeta:')) {
+            return key.substr(9);
+        } else if (key.startsWith('meta:')) {
             return key.substr(5);
         }
         return $('#toolbox-content option[value='+key+']').attr('data-sample') || '';
@@ -320,12 +322,21 @@ var editor = {
     },
 
     _ready: function () {
-        $("#editor-loading").hide();
-        $("#editor-start").removeClass("sr-only");
-        $("#editor-start").click(function () {
+        var isOpera = (!!window.opr && !!opr.addons) || !!window.opera || navigator.userAgent.indexOf(' OPR/') >= 0;
+        var isFirefox = typeof InstallTrigger !== 'undefined';
+        var isChrome = !!window.chrome && (!!window.chrome.webstore || !!window.chrome.runtime);
+        var isEdgeChromium = isChrome && (navigator.userAgent.indexOf("Edg") != -1);
+        if (isChrome || isOpera || isFirefox || isEdgeChromium) {
             $("#loading-container").hide();
             $("#loading-initial").remove();
-        });
+        } else {
+            $("#editor-loading").hide();
+            $("#editor-start").removeClass("sr-only");
+            $("#editor-start").click(function () {
+                $("#loading-container").hide();
+                $("#loading-initial").remove();
+            });
+        }
     },
 
     _update_toolbox_values: function () {

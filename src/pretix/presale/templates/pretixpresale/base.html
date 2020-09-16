@@ -5,14 +5,13 @@
 {% load statici18n %}
 {% load thumb %}
 <!DOCTYPE html>
-<html{% if rtl %} dir="rtl" class="rtl" {% endif %}>
-
-    <head>
-        <title>{% block thetitle %}{% endblock %}</title>
-        {% compress css %}
+<html{% if rtl %} dir="rtl" class="rtl"{% endif %} lang="{{ html_locale }}">
+<head>
+    <title>{% block thetitle %}{% endblock %}</title>
+    {% compress css %}
         <link rel="stylesheet" type="text/x-scss" href="{% static "lightbox/css/lightbox.scss" %}" />
-        {% endcompress %}
-        {% if css_file %}
+    {% endcompress %}
+    {% if css_file %}
         <link rel="stylesheet" type="text/css" href="{{ css_file }}" />
         {% else %}
         {% compress css %}

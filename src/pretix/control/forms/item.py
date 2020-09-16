@@ -1,4 +1,5 @@
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from django import forms
 from django.core.exceptions import ValidationError
@@ -6,7 +7,7 @@ from django.db.models import Max
 from django.forms.formsets import DELETION_FIELD_NAME
 from django.urls import reverse
 from django.utils.translation import (
-    pgettext_lazy, ugettext as __, ugettext_lazy as _,
+    gettext as __, gettext_lazy as _, pgettext_lazy,
 )
 from django_scopes.forms import (
     SafeModelChoiceField, SafeModelMultipleChoiceField,
@@ -18,7 +19,7 @@ from pretix.base.forms import I18nFormSet, I18nModelForm
 from pretix.base.models import (
     Item, ItemCategory, ItemVariation, Question, QuestionOption, Quota,
 )
-from pretix.base.models.items import ItemAddOn, ItemBundle
+from pretix.base.models.items import ItemAddOn, ItemBundle, ItemMetaValue
 from pretix.base.signals import item_copy_data
 from pretix.control.forms import SplitDateTimeField, SplitDateTimePickerWidget
 from pretix.control.forms.widgets import Select2
@@ -185,7 +186,8 @@ class QuotaForm(I18nModelForm):
             'name',
             'size',
             'subevent',
-            'close_when_sold_out'
+            'close_when_sold_out',
+            'release_after_exit',
         ]
         field_classes = {
             'subevent': SafeModelChoiceField,
@@ -293,19 +295,31 @@ class ItemCreateForm(I18nModelForm):
 
     def save(self, *args, **kwargs):
         if self.cleaned_data.get('copy_from'):
-            self.instance.description = self.cleaned_data['copy_from'].description
-            self.instance.active = self.cleaned_data['copy_from'].active
-            self.instance.available_from = self.cleaned_data['copy_from'].available_from
-            self.instance.available_until = self.cleaned_data['copy_from'].available_until
-            self.instance.require_voucher = self.cleaned_data['copy_from'].require_voucher
-            self.instance.hide_without_voucher = self.cleaned_data['copy_from'].hide_without_voucher
-            self.instance.allow_cancel = self.cleaned_data['copy_from'].allow_cancel
-            self.instance.min_per_order = self.cleaned_data['copy_from'].min_per_order
-            self.instance.max_per_order = self.cleaned_data['copy_from'].max_per_order
-            self.instance.checkin_attention = self.cleaned_data['copy_from'].checkin_attention
-            self.instance.free_price = self.cleaned_data['copy_from'].free_price
-            self.instance.original_price = self.cleaned_data['copy_from'].original_price
-            self.instance.sales_channels = self.cleaned_data['copy_from'].sales_channels
+            fields = (
+                'description',
+                'active',
+                'available_from',
+                'available_until',
+                'require_voucher',
+                'hide_without_voucher',
+                'allow_cancel',
+                'min_per_order',
+                'max_per_order',
+                'generate_tickets',
+                'checkin_attention',
+                'free_price',
+                'original_price',
+                'sales_channels',
+                'issue_giftcard',
+                'require_approval',
+                'allow_waitinglist',
+                'show_quota_left',
+                'hidden_if_available',
+                'require_bundling',
+                'checkin_attention',
+            )
+            for f in fields:
+                setattr(self.instance, f, getattr(self.cleaned_data['copy_from'], f))
         else:
             # Add to all sales channels by default
             self.instance.sales_channels = [k for k in get_all_sales_channels().keys()]
@@ -338,7 +352,8 @@ class ItemCreateForm(I18nModelForm):
             if self.cleaned_data.get('copy_from') and self.cleaned_data.get('copy_from').has_variations:
                 for variation in self.cleaned_data['copy_from'].variations.all():
                     ItemVariation.objects.create(item=instance, value=variation.value, active=variation.active,
-                                                 position=variation.position, default_price=variation.default_price)
+                                                 position=variation.position, default_price=variation.default_price,
+                                                 description=variation.description, original_price=variation.original_price)
             else:
                 ItemVariation.objects.create(
                     item=instance, value=__('Standard')
@@ -422,6 +437,7 @@ class ItemUpdateForm(I18nModelForm):
         self.fields['description'].widget.attrs['rows'] = '4'
         self.fields['sales_channels'] = forms.MultipleChoiceField(
             label=_('Sales channels'),
+            required=False,
             choices=(
                 (c.identifier, c.verbose_name) for c in get_all_sales_channels().values()
             ),
@@ -646,7 +662,8 @@ class ItemAddOnForm(I18nModelForm):
             'addon_category',
             'min_count',
             'max_count',
-            'price_included'
+            'price_included',
+            'multi_allowed',
         ]
         help_texts = {
             'min_count': _('Be aware that setting a minimal number makes it impossible to buy this product if all '
@@ -682,6 +699,27 @@ class ItemBundleFormSet(I18nFormSet):
         )
         self.add_fields(form, None)
         return form
+
+    def clean(self):
+        super().clean()
+        ivs = set()
+        for i in range(0, self.total_form_count()):
+            form = self.forms[i]
+            if self.can_delete:
+                if self._should_delete_form(form):
+                    # This form is going to be deleted so any of its errors
+                    # should not cause the entire formset to be invalid.
+                    try:
+                        ivs.remove(form.cleaned_data['itemvar'])
+                    except KeyError:
+                        pass
+                    continue
+
+            if 'itemvar' in form.cleaned_data:
+                if form.cleaned_data['itemvar'] in ivs:
+                    raise ValidationError(_('You added the same bundled product twice.'))
+
+                ivs.add(form.cleaned_data['itemvar'])
 
 
 class ItemBundleForm(I18nModelForm):
@@ -756,3 +794,27 @@ class ItemBundleForm(I18nModelForm):
             'count',
             'designated_price',
         ]
+
+
+class ItemMetaValueForm(forms.ModelForm):
+
+    def __init__(self, *args, **kwargs):
+        self.property = kwargs.pop('property')
+        super().__init__(*args, **kwargs)
+        self.fields['value'].required = False
+        self.fields['value'].widget.attrs['placeholder'] = self.property.default
+        self.fields['value'].widget.attrs['data-typeahead-url'] = (
+            reverse('control:event.items.meta.typeahead', kwargs={
+                'organizer': self.property.event.organizer.slug,
+                'event': self.property.event.slug
+            }) + '?' + urlencode({
+                'property': self.property.name,
+            })
+        )
+
+    class Meta:
+        model = ItemMetaValue
+        fields = ['value']
+        widgets = {
+            'value': forms.TextInput()
+        }

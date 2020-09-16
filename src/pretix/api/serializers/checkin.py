@@ -1,4 +1,4 @@
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
@@ -14,7 +14,19 @@ class CheckinListSerializer(I18nAwareModelSerializer):
     class Meta:
         model = CheckinList
         fields = ('id', 'name', 'all_products', 'limit_products', 'subevent', 'checkin_count', 'position_count',
-                  'include_pending', 'auto_checkin_sales_channels')
+                  'include_pending', 'auto_checkin_sales_channels', 'allow_multiple_entries', 'allow_entry_after_exit',
+                  'rules')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        for exclude_field in self.context['request'].query_params.getlist('exclude'):
+            p = exclude_field.split('.')
+            if p[0] in self.fields:
+                if len(p) == 1:
+                    del self.fields[p[0]]
+                elif len(p) == 2:
+                    self.fields[p[0]].child.fields.pop(p[1])
 
     def validate(self, data):
         data = super().validate(data)
@@ -28,9 +40,7 @@ class CheckinListSerializer(I18nAwareModelSerializer):
                 raise ValidationError(_('One or more items do not belong to this event.'))
 
         if event.has_subevents:
-            if not full_data.get('subevent'):
-                raise ValidationError(_('Subevent cannot be null for event series.'))
-            if event != full_data.get('subevent').event:
+            if full_data.get('subevent') and event != full_data.get('subevent').event:
                 raise ValidationError(_('The subevent does not belong to this event.'))
         else:
             if full_data.get('subevent'):

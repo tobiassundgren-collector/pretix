@@ -6,7 +6,7 @@ from django.db import models
 from django.urls import reverse
 from django.utils.functional import cached_property
 from django.utils.html import escape
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 
 from pretix.base.signals import logentry_object_link
 
@@ -22,7 +22,7 @@ class LogEntry(models.Model):
     in the database. This uses django.contrib.contenttypes to allow a
     relation to an arbitrary database object.
 
-    :param datatime: The timestamp of the logged action
+    :param datetime: The timestamp of the logged action
     :type datetime: datetime
     :param user: The user that performed the action
     :type user: User
@@ -75,7 +75,10 @@ class LogEntry(models.Model):
 
     @cached_property
     def display_object(self):
-        from . import Order, Voucher, Quota, Item, ItemCategory, Question, Event, TaxRule, SubEvent
+        from . import (
+            Event, Item, ItemCategory, Order, Question, Quota, SubEvent,
+            TaxRule, Voucher,
+        )
 
         try:
             if self.content_type.model_class() is Event:

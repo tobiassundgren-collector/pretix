@@ -268,6 +268,16 @@ subclass of pretix.base.exporter.BaseExporter
 As with all event-plugin signals, the ``sender`` keyword argument will contain the event.
 """
 
+register_multievent_data_exporters = django.dispatch.Signal(
+    providing_args=["event"]
+)
+"""
+This signal is sent out to get all known data exporters, which support exporting data for
+multiple events. Receivers should return a subclass of pretix.base.exporter.BaseExporter
+
+The ``sender`` keyword argument will contain an organizer.
+"""
+
 validate_order = EventPluginSignal(
     providing_args=["payment_provider", "positions", "email", "locale", "invoice_address",
                     "meta_info"]
@@ -299,7 +309,7 @@ validate_cart_addons = EventPluginSignal(
 """
 This signal is sent when a user tries to select a combination of addons. In contrast to
  ``validate_cart``, this is executed before the cart is actually modified. You are passed
-an argument ``addons`` containing a set of ``(item, variation or None)`` tuples as well
+an argument ``addons`` containing a dict of ``(item, variation or None) → count`` tuples as well
 as the ``ItemAddOn`` object as the argument ``iao`` and the base cart position as
 ``base_position``.
 The response of receivers will be ignored, but you can raise a CartError with an
@@ -336,6 +346,16 @@ order_canceled = EventPluginSignal(
 )
 """
 This signal is sent out every time an order is canceled. The order object is given
+as the first argument.
+
+As with all event-plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
+order_reactivated = EventPluginSignal(
+    providing_args=["order"]
+)
+"""
+This signal is sent out every time a canceled order is reactivated. The order object is given
 as the first argument.
 
 As with all event-plugin signals, the ``sender`` keyword argument will contain the event.
@@ -472,7 +492,7 @@ As with all event-plugin signals, the ``sender`` keyword argument will contain t
 """
 
 event_copy_data = EventPluginSignal(
-    providing_args=["other", "tax_map", "category_map", "item_map", "question_map", "variation_map"]
+    providing_args=["other", "tax_map", "category_map", "item_map", "question_map", "variation_map", "checkin_list_map"]
 )
 """
 This signal is sent out when a new event is created as a clone of an existing event, i.e.
@@ -484,9 +504,9 @@ but you might need to modify that data.
 
 The ``sender`` keyword argument will contain the event of the **new** event. The ``other``
 keyword argument will contain the event to **copy from**. The keyword arguments
-``tax_map``, ``category_map``, ``item_map``, ``question_map``, and ``variation_map`` contain
-mappings from object IDs in the original event to objects in the new event of the respective
-types.
+``tax_map``, ``category_map``, ``item_map``, ``question_map``, ``variation_map`` and
+``checkin_list_map`` contain mappings from object IDs in the original event to objects
+in the new event of the respective types.
 """
 
 item_copy_data = EventPluginSignal(
@@ -517,7 +537,7 @@ an OrderedDict of (setting name, form field).
 """
 
 order_fee_calculation = EventPluginSignal(
-    providing_args=['positions', 'invoice_address', 'meta_info', 'total']
+    providing_args=['positions', 'invoice_address', 'meta_info', 'total', 'gift_cards']
 )
 """
 This signals allows you to add fees to an order while it is being created. You are expected to
@@ -528,7 +548,8 @@ As with all plugin signals, the ``sender`` keyword argument will contain the eve
 argument will contain the cart positions and ``invoice_address`` the invoice address (useful for
 tax calculation). The argument ``meta_info`` contains the order's meta dictionary. The ``total``
 keyword argument will contain the total cart sum without any fees. You should not rely on this
-``total`` value for fee calculations as other fees might interfere.
+``total`` value for fee calculations as other fees might interfere. The ``gift_cards`` argument lists
+the gift cards in use.
 """
 
 order_fee_type_name = EventPluginSignal(

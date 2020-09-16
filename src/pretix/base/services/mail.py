@@ -20,7 +20,7 @@ from django.core.mail import (
 )
 from django.core.mail.message import SafeMIMEText
 from django.template.loader import get_template
-from django.utils.translation import pgettext, ugettext as _
+from django.utils.translation import gettext as _, pgettext
 from django_scopes import scope, scopes_disabled
 from i18nfield.strings import LazyI18nString
 
@@ -126,9 +126,12 @@ def mail(email: str, subject: str, template: Union[str, LazyI18nString],
         renderer = ClassicMailRenderer(None)
         content_plain = body_plain = render_mail(template, context)
         subject = str(subject).format_map(TolerantDict(context))
-        sender = sender or (event.settings.get('mail_from') if event else settings.MAIL_FROM)
+        sender = sender or (event.settings.get('mail_from') if event else settings.MAIL_FROM) or settings.MAIL_FROM
         if event:
-            sender_name = event.settings.mail_from_name or str(event.name)
+            sender_name = str(event.name)
+            if len(sender_name) > 75:
+                sender_name = sender_name[:75] + "..."
+            sender_name = event.settings.mail_from_name or sender_name
             sender = formataddr((sender_name, sender))
         else:
             sender = formataddr((settings.PRETIX_INSTANCE_NAME, sender))
@@ -250,7 +253,7 @@ class CustomEmail(EmailMultiAlternatives):
         return super()._create_mime_attachment(content, mimetype)
 
 
-@app.task(base=TransactionAwareTask, bind=True)
+@app.task(base=TransactionAwareTask, bind=True, acks_late=True)
 def mail_send_task(self, *args, to: List[str], subject: str, body: str, html: str, sender: str,
                    event: int=None, position: int=None, headers: dict=None, bcc: List[str]=None,
                    invoices: List[int]=None, order: int=None, attach_tickets=False, user=None,
@@ -276,6 +279,61 @@ def mail_send_task(self, *args, to: List[str], subject: str, body: str, html: st
         cm = lambda: scopes_disabled()  # noqa
 
     with cm():
+        if event:
+            if order:
+                try:
+                    order = event.orders.get(pk=order)
+                except Order.DoesNotExist:
+                    order = None
+                else:
+                    with language(order.locale):
+                        if position:
+                            try:
+                                position = order.positions.get(pk=position)
+                            except OrderPosition.DoesNotExist:
+                                attach_tickets = False
+                        if attach_tickets:
+                            args = []
+                            attach_size = 0
+                            for name, ct in get_tickets_for_order(order, base_position=position):
+                                content = ct.file.read()
+                                args.append((name, content, ct.type))
+                                attach_size += len(content)
+
+                            if attach_size < 4 * 1024 * 1024:
+                                # Do not attach more than 4MB, it will bounce way to often.
+                                for a in args:
+                                    try:
+                                        email.attach(*a)
+                                    except:
+                                        pass
+                            else:
+                                order.log_action(
+                                    'pretix.event.order.email.attachments.skipped',
+                                    data={
+                                        'subject': 'Attachments skipped',
+                                        'message': 'Attachment have not been send because {} bytes are likely too large to arrive.'.format(attach_size),
+                                        'recipient': '',
+                                        'invoices': [],
+                                    }
+                                )
+                        if attach_ical:
+                            ical_events = set()
+                            if event.has_subevents:
+                                if position:
+                                    ical_events.add(position.subevent)
+                                else:
+                                    for p in order.positions.all():
+                                        ical_events.add(p.subevent)
+                            else:
+                                ical_events.add(order.event)
+
+                            for i, e in enumerate(ical_events):
+                                cal = get_ical([e])
+                                email.attach('event-{}.ics'.format(i), cal.serialize(), 'text/calendar')
+
+            email = email_filter.send_chained(event, 'message', message=email, order=order, user=user)
+
         if invoices:
             invoices = Invoice.objects.filter(pk__in=invoices)
             for inv in invoices:
@@ -290,59 +348,6 @@ def mail_send_task(self, *args, to: List[str], subject: str, body: str, html: st
                     except:
                         logger.exception('Could not attach invoice to email')
                         pass
-        if event:
-            if order:
-                try:
-                    order = event.orders.get(pk=order)
-                except Order.DoesNotExist:
-                    order = None
-                else:
-                    if position:
-                        try:
-                            position = order.positions.get(pk=position)
-                        except OrderPosition.DoesNotExist:
-                            attach_tickets = False
-                    if attach_tickets:
-                        args = []
-                        attach_size = 0
-                        for name, ct in get_tickets_for_order(order, base_position=position):
-                            content = ct.file.read()
-                            args.append((name, content, ct.type))
-                            attach_size += len(content)
-
-                        if attach_size < 4 * 1024 * 1024:
-                            # Do not attach more than 4MB, it will bounce way to often.
-                            for a in args:
-                                try:
-                                    email.attach(*a)
-                                except:
-                                    pass
-                        else:
-                            order.log_action(
-                                'pretix.event.order.email.attachments.skipped',
-                                data={
-                                    'subject': 'Attachments skipped',
-                                    'message': 'Attachment have not been send because {} bytes are likely too large to arrive.'.format(attach_size),
-                                    'recipient': '',
-                                    'invoices': [],
-                                }
-                            )
-                    if attach_ical:
-                        ical_events = set()
-                        if event.has_subevents:
-                            if position:
-                                ical_events.add(position.subevent)
-                            else:
-                                for p in order.positions.all():
-                                    ical_events.add(p.subevent)
-                        else:
-                            ical_events.add(order.event)
-
-                        for i, e in enumerate(ical_events):
-                            cal = get_ical([e])
-                            email.attach('event-{}.ics'.format(i), cal.serialize(), 'text/calendar')
-
-            email = email_filter.send_chained(event, 'message', message=email, order=order, user=user)
 
         email = global_email_filter.send_chained(event, 'message', message=email, user=user, order=order)
 
@@ -412,7 +417,7 @@ def replace_images_with_cid_paths(body_html):
 
             image['src'] = "cid:%s" % cid_id
 
-        return email.prettify(), cid_images
+        return str(email), cid_images
     else:
         return body_html, []
 

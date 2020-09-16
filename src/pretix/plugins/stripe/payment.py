@@ -11,14 +11,14 @@ from django import forms
 from django.conf import settings
 from django.contrib import messages
 from django.core import signing
+from django.db import transaction
 from django.http import HttpRequest
 from django.template.loader import get_template
 from django.urls import reverse
 from django.utils.crypto import get_random_string
-from django.utils.http import urlquote
 from django.utils.safestring import mark_safe
 from django.utils.timezone import now
-from django.utils.translation import pgettext, ugettext, ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _, pgettext
 from django_countries import countries
 
 from pretix import __version__
@@ -61,7 +61,7 @@ class StripeSettingsHolder(BasePaymentProvider):
         ).format(
             self.settings.connect_client_id,
             request.session['payment_stripe_oauth_token'],
-            urlquote(build_global_uri('plugins:stripe:oauth.return')),
+            urllib.parse.quote(build_global_uri('plugins:stripe:oauth.return')),
         )
 
     def settings_content_render(self, request):
@@ -172,7 +172,7 @@ class StripeSettingsHolder(BasePaymentProvider):
                  forms.ChoiceField(
                      choices=allcountries,
                      label=_('Merchant country'),
-                     help_text=_('The country in which your Stripe-account is registred in. Usually, this is your '
+                     help_text=_('The country in which your Stripe-account is registered in. Usually, this is your '
                                  'country of residence.'),
                  )),
             ]
@@ -406,6 +406,20 @@ class StripeMethod(BasePaymentProvider):
             })
             raise PaymentException(_('Stripe reported an error with your card: %s') % err['message'])
 
+        # This is not an error we normally expect, however some payment methods like iDEAL will redirect
+        # the user back to our confirmation page at the same time from two devices: the web browser the
+        # purchase is executed from and the online banking app the payment is authorized from.
+        # In this case we will just log the idempotency error but not expose it to the user and just
+        # forward them back to their order page. There is a good chance that by the time the user hits
+        # the order page, the other request has gone through and the payment is confirmed.
+        except stripe.error.IdempotencyError as e:
+            if e.json_body and 'error' in e.json_body:
+                err = e.json_body['error']
+                logger.exception('Stripe error: %s' % str(err))
+            else:
+                logger.exception('Stripe error: %s' % str(e))
+            return
+
         except stripe.error.StripeError as e:
             if e.json_body and 'error' in e.json_body:
                 err = e.json_body['error']
@@ -492,10 +506,12 @@ class StripeMethod(BasePaymentProvider):
         }
         return template.render(ctx)
 
+    @transaction.atomic()
     def execute_refund(self, refund: OrderRefund):
         self._init_api()
 
         payment_info = refund.payment.info_data
+        OrderPayment.objects.select_for_update().get(pk=refund.payment.pk)
 
         if not payment_info:
             raise PaymentException(_('No payment information found.'))
@@ -883,7 +899,7 @@ class StripeGiropay(StripeMethod):
                     'code': payment.order.code
                 },
                 owner={
-                    'name': request.session.get('payment_stripe_giropay_account') or ugettext('unknown name')
+                    'name': request.session.get('payment_stripe_giropay_account') or gettext('unknown name')
                 },
                 statement_descriptor=self.statement_descriptor(payment, 35),
                 redirect={
@@ -1034,7 +1050,7 @@ class StripeBancontact(StripeMethod):
                     'code': payment.order.code
                 },
                 owner={
-                    'name': request.session.get('payment_stripe_bancontact_account') or ugettext('unknown name')
+                    'name': request.session.get('payment_stripe_bancontact_account') or gettext('unknown name')
                 },
                 statement_descriptor=self.statement_descriptor(payment, 35),
                 redirect={
@@ -1167,7 +1183,7 @@ class StripeEPS(StripeMethod):
                     'code': payment.order.code
                 },
                 owner={
-                    'name': request.session.get('payment_stripe_eps_account') or ugettext('unknown name')
+                    'name': request.session.get('payment_stripe_eps_account') or gettext('unknown name')
                 },
                 statement_descriptor=self.statement_descriptor(payment),
                 redirect={

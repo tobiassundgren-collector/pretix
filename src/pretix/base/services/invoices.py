@@ -15,7 +15,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.formats import date_format
 from django.utils.timezone import now
-from django.utils.translation import pgettext, ugettext as _
+from django.utils.translation import gettext as _, pgettext
 from django_countries.fields import Country
 from django_scopes import scope, scopes_disabled
 from i18nfield.strings import LazyI18nString
@@ -24,7 +24,7 @@ from pretix.base.i18n import language
 from pretix.base.models import (
     Invoice, InvoiceAddress, InvoiceLine, Order, OrderFee,
 )
-from pretix.base.models.tax import EU_CURRENCIES
+from pretix.base.models.tax import EU_COUNTRIES, EU_CURRENCIES
 from pretix.base.services.tasks import TransactionAwareTask
 from pretix.base.settings import GlobalSettingsObject
 from pretix.base.signals import invoice_line_text, periodic_task
@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 @transaction.atomic
 def build_invoice(invoice: Invoice) -> Invoice:
+    invoice.locale = invoice.event.settings.get('invoice_language', invoice.event.settings.locale)
+    if invoice.locale == '__user__':
+        invoice.locale = invoice.order.locale or invoice.event.settings.locale
+
     lp = invoice.order.payments.last()
 
     with language(invoice.locale):
@@ -85,6 +89,7 @@ def build_invoice(invoice: Invoice) -> Invoice:
                 ).split("\n") if a.strip()
             )
             invoice.internal_reference = ia.internal_reference
+            invoice.custom_field = ia.custom_field
             invoice.invoice_to_company = ia.company
             invoice.invoice_to_name = ia.name
             invoice.invoice_to_street = ia.street
@@ -100,7 +105,7 @@ def build_invoice(invoice: Invoice) -> Invoice:
 
             cc = str(ia.country)
 
-            if cc in EU_CURRENCIES and EU_CURRENCIES[cc] != invoice.event.currency:
+            if cc in EU_CURRENCIES and EU_CURRENCIES[cc] != invoice.event.currency and invoice.event.settings.invoice_eu_currencies:
                 invoice.foreign_currency_display = EU_CURRENCIES[cc]
 
                 if settings.FETCH_ECB_RATES:
@@ -176,11 +181,17 @@ def build_invoice(invoice: Invoice) -> Invoice:
         if reverse_charge:
             if invoice.additional_text:
                 invoice.additional_text += "<br /><br />"
-            invoice.additional_text += pgettext(
-                "invoice",
-                "Reverse Charge: According to Article 194, 196 of Council Directive 2006/112/EEC, VAT liability "
-                "rests with the service recipient."
-            )
+            if str(invoice.invoice_to_country) in EU_COUNTRIES:
+                invoice.additional_text += pgettext(
+                    "invoice",
+                    "Reverse Charge: According to Article 194, 196 of Council Directive 2006/112/EEC, VAT liability "
+                    "rests with the service recipient."
+                )
+            else:
+                invoice.additional_text += pgettext(
+                    "invoice",
+                    "VAT liability rests with the service recipient."
+                )
             invoice.reverse_charge = True
             invoice.save()
 
@@ -229,6 +240,14 @@ def generate_cancellation(invoice: Invoice, trigger_pdf=True):
     cancellation.date = timezone.now().date()
     cancellation.payment_provider_text = ''
     cancellation.file = None
+    with language(invoice.locale):
+        cancellation.invoice_from = invoice.event.settings.get('invoice_address_from')
+        cancellation.invoice_from_name = invoice.event.settings.get('invoice_address_from_name')
+        cancellation.invoice_from_zipcode = invoice.event.settings.get('invoice_address_from_zipcode')
+        cancellation.invoice_from_city = invoice.event.settings.get('invoice_address_from_city')
+        cancellation.invoice_from_country = invoice.event.settings.get('invoice_address_from_country')
+        cancellation.invoice_from_tax_id = invoice.event.settings.get('invoice_address_from_tax_id')
+        cancellation.invoice_from_vat_id = invoice.event.settings.get('invoice_address_from_vat_id')
     cancellation.save()
 
     cancellation = build_cancellation(cancellation)
@@ -249,17 +268,11 @@ def regenerate_invoice(invoice: Invoice):
 
 
 def generate_invoice(order: Order, trigger_pdf=True):
-    locale = order.event.settings.get('invoice_language', order.event.settings.locale)
-    if locale:
-        if locale == '__user__':
-            locale = order.locale or order.event.settings.locale
-
     invoice = Invoice(
         order=order,
         event=order.event,
         organizer=order.event.organizer,
         date=timezone.now().date(),
-        locale=locale
     )
     invoice = build_invoice(invoice)
     if trigger_pdf:
@@ -313,7 +326,7 @@ def build_preview_invoice_pdf(event):
 
     with rolledback_transaction(), language(locale):
         order = event.orders.create(status=Order.STATUS_PENDING, datetime=timezone.now(),
-                                    expires=timezone.now(), code="PREVIEW", total=119)
+                                    expires=timezone.now(), code="PREVIEW", total=100 * event.tax_rules.count())
         invoice = Invoice(
             order=order, event=event, invoice_no="PREVIEW",
             date=timezone.now().date(), locale=locale, organizer=event.organizer
@@ -351,7 +364,7 @@ def build_preview_invoice_pdf(event):
 
         if event.tax_rules.exists():
             for i, tr in enumerate(event.tax_rules.all()):
-                tax = tr.tax(Decimal('100.00'))
+                tax = tr.tax(Decimal('100.00'), base_price_is='gross')
                 InvoiceLine.objects.create(
                     invoice=invoice, description=_("Sample product {}").format(i + 1),
                     gross_value=tax.gross, tax_value=tax.tax,

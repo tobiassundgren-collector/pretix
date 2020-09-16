@@ -12,6 +12,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.dispatch import Signal
 from django.templatetags.static import static as _static
+from django.utils.timezone import now
 from django_scopes import scope
 
 from pretix.base.models import Event, Event_SettingsStore, Organizer
@@ -19,7 +20,9 @@ from pretix.base.services.tasks import (
     TransactionAwareProfiledEventTask, TransactionAwareTask,
 )
 from pretix.celery_app import app
-from pretix.multidomain.urlreverse import get_domain
+from pretix.multidomain.urlreverse import (
+    get_event_domain, get_organizer_domain,
+)
 from pretix.presale.signals import sass_postamble, sass_preamble
 
 logger = logging.getLogger('pretix.presale.style')
@@ -32,7 +35,10 @@ def compile_scss(object, file="main.scss", fonts=True):
     def static(path):
         sp = _static(path)
         if not settings.MEDIA_URL.startswith("/") and sp.startswith("/"):
-            domain = get_domain(object.organizer if isinstance(object, Event) else object)
+            if isinstance(object, Event):
+                domain = get_event_domain(object, fallback=True)
+            else:
+                domain = get_organizer_domain(object)
             if domain:
                 siteurlsplit = urlsplit(settings.SITE_URL)
                 if siteurlsplit.port and siteurlsplit.port not in (80, 443):
@@ -49,6 +55,12 @@ def compile_scss(object, file="main.scss", fonts=True):
         sassrules.append('$brand-success: {};'.format(object.settings.get('theme_color_success')))
     if object.settings.get('theme_color_danger'):
         sassrules.append('$brand-danger: {};'.format(object.settings.get('theme_color_danger')))
+    if object.settings.get('theme_color_background'):
+        sassrules.append('$body-bg: {};'.format(object.settings.get('theme_color_background')))
+    if not object.settings.get('theme_round_borders'):
+        sassrules.append('$border-radius-base: 0;')
+        sassrules.append('$border-radius-large: 0;')
+        sassrules.append('$border-radius-small: 0;')
 
     font = object.settings.get('primary_font')
     if font != 'Open Sans' and fonts:
@@ -72,7 +84,8 @@ def compile_scss(object, file="main.scss", fonts=True):
     sasssrc = "\n".join(sassrules)
     srcchecksum = hashlib.sha1(sasssrc.encode('utf-8')).hexdigest()
 
-    css = cache.get('sass_compile_{}'.format(srcchecksum))
+    cp = cache.get_or_set('sass_compile_prefix', now().isoformat())
+    css = cache.get('sass_compile_{}_{}'.format(cp, srcchecksum))
     if not css:
         cf = dict(django_libsass.CUSTOM_FUNCTIONS)
         cf['static'] = static
@@ -83,7 +96,7 @@ def compile_scss(object, file="main.scss", fonts=True):
         )
         cssf = CSSCompressorFilter(css)
         css = cssf.output()
-        cache.set('sass_compile_{}'.format(srcchecksum), css, 3600)
+        cache.set('sass_compile_{}_{}'.format(cp, srcchecksum), css, 600)
 
     checksum = hashlib.sha1(css.encode('utf-8')).hexdigest()
     return css, checksum
@@ -196,5 +209,6 @@ def get_font_stylesheet(font_name):
         if "truetype" in formats:
             srcs.append("url(static('{}')) format('truetype')".format(formats['truetype']))
         stylesheet.append("src: {};".format(", ".join(srcs)))
+        stylesheet.append("font-display: swap;")
         stylesheet.append("}")
     return "\n".join(stylesheet)

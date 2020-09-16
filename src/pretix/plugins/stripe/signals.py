@@ -5,8 +5,9 @@ from django import forms
 from django.dispatch import receiver
 from django.template.loader import get_template
 from django.urls import resolve, reverse
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
+from pretix.base.forms import SecretKeySettingsField
 from pretix.base.settings import settings_hierarkey
 from pretix.base.signals import (
     logentry_display, register_global_settings, register_payment_providers,
@@ -20,8 +21,9 @@ from pretix.presale.signals import html_head
 @receiver(register_payment_providers, dispatch_uid="payment_stripe")
 def register_payment_provider(sender, **kwargs):
     from .payment import (
-        StripeSettingsHolder, StripeCC, StripeGiropay, StripeIdeal, StripeAlipay, StripeBancontact,
-        StripeSofort, StripeEPS, StripeMultibanco, StripePrzelewy24, StripeWeChatPay
+        StripeAlipay, StripeBancontact, StripeCC, StripeEPS, StripeGiropay,
+        StripeIdeal, StripeMultibanco, StripePrzelewy24, StripeSettingsHolder,
+        StripeSofort, StripeWeChatPay,
     )
 
     return [
@@ -98,7 +100,7 @@ def register_global_settings(sender, **kwargs):
                 StripeKeyValidator('ca_'),
             ),
         )),
-        ('payment_stripe_connect_secret_key', forms.CharField(
+        ('payment_stripe_connect_secret_key', SecretKeySettingsField(
             label=_('Stripe Connect: Secret key'),
             required=False,
             validators=(
@@ -112,7 +114,7 @@ def register_global_settings(sender, **kwargs):
                 StripeKeyValidator('pk_live_'),
             ),
         )),
-        ('payment_stripe_connect_test_secret_key', forms.CharField(
+        ('payment_stripe_connect_test_secret_key', SecretKeySettingsField(
             label=_('Stripe Connect: Secret key (test)'),
             required=False,
             validators=(

@@ -1,4 +1,4 @@
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from django import forms
 from django.conf import settings
@@ -10,7 +10,7 @@ from django.urls import reverse
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django.utils.timezone import get_current_timezone_name
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _, pgettext_lazy
 from django_countries import Countries
 from django_countries.fields import LazyTypedChoiceField
 from i18nfield.forms import (
@@ -32,6 +32,7 @@ from pretix.control.forms import (
     SplitDateTimeField, SplitDateTimePickerWidget,
 )
 from pretix.control.forms.widgets import Select2
+from pretix.multidomain.models import KnownDomain
 from pretix.multidomain.urlreverse import build_absolute_uri
 from pretix.plugins.banktransfer.payment import BankTransfer
 from pretix.presale.style import get_fonts
@@ -46,11 +47,6 @@ class EventWizardFoundationForm(forms.Form):
     )
     has_subevents = forms.BooleanField(
         label=_("This is an event series"),
-        help_text=_('Only recommended for advanced users. If this feature is enabled, this will not only be a '
-                    'single event but a series of very similar events that are handled within a single shop. '
-                    'The single events inside the series can only differ in date, time, location, prices and '
-                    'quotas, but not in other settings, and buying tickets across multiple of these events at '
-                    'the same time is possible. You cannot change this setting for this event later.'),
         required=False,
     )
 
@@ -158,6 +154,7 @@ class EventWizardBasicsForm(I18nModelForm):
         if self.has_subevents:
             del self.fields['presale_start']
             del self.fields['presale_end']
+            del self.fields['date_to']
 
         if self.has_control_rights(self.user, self.organizer):
             del self.fields['team']
@@ -205,7 +202,7 @@ class EventWizardBasicsForm(I18nModelForm):
         return user.teams.filter(
             organizer=organizer, all_events=True, can_change_event_settings=True, can_change_items=True,
             can_change_orders=True, can_change_vouchers=True
-        ).exists()
+        ).exists() or user.is_staff
 
 
 class EventChoiceMixin:
@@ -291,6 +288,15 @@ class EventUpdateForm(I18nModelForm):
 
     def __init__(self, *args, **kwargs):
         self.change_slug = kwargs.pop('change_slug', False)
+        self.domain = kwargs.pop('domain', False)
+
+        kwargs.setdefault('initial', {})
+        self.instance = kwargs['instance']
+        if self.domain and self.instance:
+            initial_domain = self.instance.domains.first()
+            if initial_domain:
+                kwargs['initial'].setdefault('domain', initial_domain.domainname)
+
         super().__init__(*args, **kwargs)
         if not self.change_slug:
             self.fields['slug'].widget.attrs['readonly'] = 'readonly'
@@ -298,6 +304,47 @@ class EventUpdateForm(I18nModelForm):
         self.fields['location'].widget.attrs['placeholder'] = _(
             'Sample Conference Center\nHeidelberg, Germany'
         )
+        if self.domain:
+            self.fields['domain'] = forms.CharField(
+                max_length=255,
+                label=_('Custom domain'),
+                required=False,
+                help_text=_('You need to configure the custom domain in the webserver beforehand.')
+            )
+
+    def clean_domain(self):
+        d = self.cleaned_data['domain']
+        if d:
+            if d == urlparse(settings.SITE_URL).hostname:
+                raise ValidationError(
+                    _('You cannot choose the base domain of this installation.')
+                )
+            if KnownDomain.objects.filter(domainname=d).exclude(event=self.instance.pk).exists():
+                raise ValidationError(
+                    _('This domain is already in use for a different event or organizer.')
+                )
+        return d
+
+    def save(self, commit=True):
+        instance = super().save(commit)
+
+        if self.domain:
+            current_domain = instance.domains.first()
+            if self.cleaned_data['domain']:
+                if current_domain and current_domain.domainname != self.cleaned_data['domain']:
+                    current_domain.delete()
+                    KnownDomain.objects.create(
+                        organizer=instance.organizer, event=instance, domainname=self.cleaned_data['domain']
+                    )
+                elif not current_domain:
+                    KnownDomain.objects.create(
+                        organizer=instance.organizer, event=instance, domainname=self.cleaned_data['domain']
+                    )
+            elif current_domain:
+                current_domain.delete()
+            instance.cache.clear()
+
+        return instance
 
     def clean_slug(self):
         if self.change_slug:
@@ -345,7 +392,7 @@ class EventSettingsForm(SettingsForm):
     name_scheme = forms.ChoiceField(
         label=_("Name format"),
         help_text=_("This defines how pretix will ask for human names. Changing this after you already received "
-                    "orders might lead to unexpected behaviour when sorting or changing names."),
+                    "orders might lead to unexpected behavior when sorting or changing names."),
         required=True,
     )
     name_scheme_titles = forms.ChoiceField(
@@ -355,16 +402,30 @@ class EventSettingsForm(SettingsForm):
         required=False,
     )
     logo_image = ExtFileField(
-        label=_('Logo image'),
+        label=_('Header image'),
         ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
         required=False,
-        help_text=_('If you provide a logo image, we will by default not show your events name and date '
-                    'in the page header. We will show your logo with a maximal height of 120 pixels.')
+        max_size=10 * 1024 * 1024,
+        help_text=_('If you provide a logo image, we will by default not show your event name and date '
+                    'in the page header. By default, we show your logo with a size of up to 1140x120 pixels. You '
+                    'can increase the size with the setting below. We recommend not using small details on the picture '
+                    'as it will be resized on smaller screens.')
+    )
+    logo_image_large = forms.BooleanField(
+        label=_('Use header image in its full size'),
+        help_text=_('We recommend to upload a picture at least 1170 pixels wide.'),
+        required=False,
+    )
+    logo_show_title = forms.BooleanField(
+        label=_('Show event title even if a header image is present'),
+        help_text=_('The title will only be shown on the event front page.'),
+        required=False,
     )
     og_image = ExtFileField(
         label=_('Social media image'),
         ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
         required=False,
+        max_size=10 * 1024 * 1024,
         help_text=_('This picture will be used as a preview if you post links to your ticket shop on social media. '
                     'Facebook advises to use a picture size of 1200 x 630 pixels, however some platforms like '
                     'WhatsApp and Reddit only show a square preview, so we recommend to make sure it still looks good '
@@ -399,6 +460,20 @@ class EventSettingsForm(SettingsForm):
         ],
         widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
     )
+    theme_color_background = forms.CharField(
+        label=_("Page background color"),
+        required=False,
+        validators=[
+            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
+                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
+
+        ],
+        widget=forms.TextInput(attrs={'class': 'colorpickerfield no-contrast'})
+    )
+    theme_round_borders = forms.BooleanField(
+        label=_("Use round edges"),
+        required=False,
+    )
     primary_font = forms.ChoiceField(
         label=_('Font'),
         choices=[
@@ -413,6 +488,7 @@ class EventSettingsForm(SettingsForm):
         'checkout_email_helptext',
         'presale_has_ended_text',
         'voucher_explanation_text',
+        'show_dates_on_frontpage',
         'show_date_to',
         'show_times',
         'show_items_outside_presale_period',
@@ -432,12 +508,18 @@ class EventSettingsForm(SettingsForm):
         'meta_noindex',
         'redirect_to_checkout_directly',
         'frontpage_subevent_ordering',
+        'event_list_type',
         'frontpage_text',
         'attendee_names_asked',
         'attendee_names_required',
         'attendee_emails_asked',
         'attendee_emails_required',
-        'confirm_text',
+        'attendee_company_asked',
+        'attendee_company_required',
+        'attendee_addresses_asked',
+        'attendee_addresses_required',
+        'banner_text',
+        'banner_text_bottom',
         'order_email_asked_twice',
         'last_order_modification_date',
     ]
@@ -452,11 +534,6 @@ class EventSettingsForm(SettingsForm):
     def __init__(self, *args, **kwargs):
         self.event = kwargs['obj']
         super().__init__(*args, **kwargs)
-        self.fields['confirm_text'].widget.attrs['rows'] = '3'
-        self.fields['confirm_text'].widget.attrs['placeholder'] = _(
-            'e.g. I hereby confirm that I have read and agree with the event organizer\'s terms of service '
-            'and agree with them.'
-        )
         self.fields['name_scheme'].choices = (
             (k, _('Ask for {fields}, display like {example}').format(
                 fields=' + '.join(str(vv[1]) for vv in v['fields']),
@@ -473,6 +550,7 @@ class EventSettingsForm(SettingsForm):
         ]
         if not self.event.has_subevents:
             del self.fields['frontpage_subevent_ordering']
+            del self.fields['event_list_type']
         self.fields['primary_font'].choices += [
             (a, {"title": a, "data": v}) for a, v in get_fonts().items()
         ]
@@ -487,14 +565,30 @@ class CancelSettingsForm(SettingsForm):
         'cancel_allow_user_paid_keep',
         'cancel_allow_user_paid_keep_fees',
         'cancel_allow_user_paid_keep_percentage',
+        'cancel_allow_user_paid_adjust_fees',
+        'cancel_allow_user_paid_adjust_fees_explanation',
+        'cancel_allow_user_paid_refund_as_giftcard',
+        'cancel_allow_user_paid_require_approval',
+        'change_allow_user_variation',
+        'change_allow_user_price',
+        'change_allow_user_until',
     ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.obj.settings.giftcard_expiry_years is not None:
+            self.fields['cancel_allow_user_paid_refund_as_giftcard'].help_text = gettext(
+                'You have configured gift cards to be valid {} years plus the year the gift card is issued in.'
+            ).format(self.obj.settings.giftcard_expiry_years)
 
 
 class PaymentSettingsForm(SettingsForm):
     auto_fields = [
+        'payment_term_mode',
         'payment_term_days',
-        'payment_term_last',
         'payment_term_weekdays',
+        'payment_term_minutes',
+        'payment_term_last',
         'payment_term_expire_automatically',
         'payment_term_accept_late',
         'payment_explanation',
@@ -506,6 +600,18 @@ class PaymentSettingsForm(SettingsForm):
         help_text=_("The tax rule that applies for additional fees you configured for single payment methods. This "
                     "will set the tax rate and reverse charge rules, other settings of the tax rule are ignored.")
     )
+
+    def clean_payment_term_days(self):
+        value = self.cleaned_data.get('payment_term_days')
+        if self.cleaned_data.get('payment_term_mode') == 'days' and value is None:
+            raise ValidationError(_("This field is required."))
+        return value
+
+    def clean_payment_term_minutes(self):
+        value = self.cleaned_data.get('payment_term_minutes')
+        if self.cleaned_data.get('payment_term_mode') == 'minutes' and value is None:
+            raise ValidationError(_("This field is required."))
+        return value
 
     def clean(self):
         data = super().clean()
@@ -567,6 +673,7 @@ class InvoiceSettingsForm(SettingsForm):
         'invoice_address_vatid',
         'invoice_address_company_required',
         'invoice_address_beneficiary',
+        'invoice_address_custom_field',
         'invoice_name_required',
         'invoice_address_not_asked_free',
         'invoice_include_free',
@@ -578,6 +685,7 @@ class InvoiceSettingsForm(SettingsForm):
         'invoice_numbers_consecutive',
         'invoice_numbers_prefix',
         'invoice_numbers_prefix_cancellations',
+        'invoice_numbers_counter_length',
         'invoice_address_explanation_text',
         'invoice_email_attachment',
         'invoice_address_from_name',
@@ -590,7 +698,7 @@ class InvoiceSettingsForm(SettingsForm):
         'invoice_introductory_text',
         'invoice_additional_text',
         'invoice_footer_text',
-
+        'invoice_eu_currencies',
     ]
 
     invoice_generate_sales_channels = forms.MultipleChoiceField(
@@ -614,6 +722,7 @@ class InvoiceSettingsForm(SettingsForm):
         label=_('Logo image'),
         ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
         required=False,
+        max_size=10 * 1024 * 1024,
         help_text=_('We will show your logo with a maximal height and width of 2.5 cm.')
     )
 
@@ -649,6 +758,11 @@ def multimail_validate(val):
     return s
 
 
+def contains_web_channel_validate(val):
+    if "web" not in val:
+        raise ValidationError(_("The online shop must be selected to receive these emails."))
+
+
 class MailSettingsForm(SettingsForm):
     auto_fields = [
         'mail_prefix',
@@ -656,6 +770,27 @@ class MailSettingsForm(SettingsForm):
         'mail_from_name',
         'mail_attach_ical',
     ]
+
+    mail_sales_channel_placed_paid = forms.MultipleChoiceField(
+        choices=lambda: [(ident, sc.verbose_name) for ident, sc in get_all_sales_channels().items()],
+        label=_('Sales channels for checkout emails'),
+        help_text=_('The order placed and paid emails will only be send to orders from these sales channels. '
+                    'The online shop must be enabled.'),
+        widget=forms.CheckboxSelectMultiple(
+            attrs={'class': 'scrolling-multiple-choice'}
+        ),
+        validators=[contains_web_channel_validate],
+    )
+
+    mail_sales_channel_download_reminder = forms.MultipleChoiceField(
+        choices=lambda: [(ident, sc.verbose_name) for ident, sc in get_all_sales_channels().items()],
+        label=_('Sales channels'),
+        help_text=_('This email will only be send to orders from these sales channels. The online shop must be enabled.'),
+        widget=forms.CheckboxSelectMultiple(
+            attrs={'class': 'scrolling-multiple-choice'}
+        ),
+        validators=[contains_web_channel_validate],
+    )
 
     mail_bcc = forms.CharField(
         label=_("Bcc address"),
@@ -808,6 +943,13 @@ class MailSettingsForm(SettingsForm):
         required=False,
         widget=I18nTextarea,
         help_text=_("This will only be sent out for non-free orders. Free orders will receive the free order "
+                    "template from below instead."),
+    )
+    mail_text_order_approved_free = I18nFormField(
+        label=_("Approved free order"),
+        required=False,
+        widget=I18nTextarea,
+        help_text=_("This will only be sent out for free orders. Non-free orders will receive the non-free order "
                     "template from above instead."),
     )
     mail_text_order_denied = I18nFormField(
@@ -857,6 +999,7 @@ class MailSettingsForm(SettingsForm):
         'mail_text_order_placed_attendee': ['event', 'order', 'position'],
         'mail_text_order_placed_require_approval': ['event', 'order'],
         'mail_text_order_approved': ['event', 'order'],
+        'mail_text_order_approved_free': ['event', 'order'],
         'mail_text_order_denied': ['event', 'order', 'comment'],
         'mail_text_order_paid': ['event', 'order', 'payment_info'],
         'mail_text_order_paid_attendee': ['event', 'order', 'position'],
@@ -988,6 +1131,11 @@ class TaxRuleLineForm(forms.Form):
             ('reverse', _('Reverse charge')),
             ('no', _('No VAT')),
         ],
+    )
+    rate = forms.DecimalField(
+        label=_('Deviating tax rate'),
+        max_digits=10, decimal_places=2,
+        required=False
     )
 
 
@@ -1161,7 +1309,7 @@ class QuickSetupForm(I18nForm):
 
 class QuickSetupProductForm(I18nForm):
     name = I18nFormField(
-        max_length=255,
+        max_length=200,  # Max length of Quota.name
         label=_("Product name"),
         widget=I18nTextInput
     )
@@ -1201,4 +1349,34 @@ QuickSetupProductFormSet = formset_factory(
     QuickSetupProductForm,
     formset=BaseQuickSetupProductFormSet,
     can_order=False, can_delete=True, extra=0
+)
+
+
+class ItemMetaPropertyForm(forms.ModelForm):
+    class Meta:
+        fields = ['name', 'default']
+        widgets = {
+            'default': forms.TextInput()
+        }
+
+
+class ConfirmTextForm(I18nForm):
+    text = I18nFormField(
+        widget=I18nTextarea,
+        widget_kwargs={'attrs': {'rows': '2'}},
+    )
+
+
+class BaseConfirmTextFormSet(I18nFormSetMixin, forms.BaseFormSet):
+    def __init__(self, *args, **kwargs):
+        event = kwargs.pop('event', None)
+        if event:
+            kwargs['locales'] = event.settings.get('locales')
+        super().__init__(*args, **kwargs)
+
+
+ConfirmTextFormset = formset_factory(
+    ConfirmTextForm,
+    formset=BaseConfirmTextFormSet,
+    can_order=True, can_delete=True, extra=0
 )

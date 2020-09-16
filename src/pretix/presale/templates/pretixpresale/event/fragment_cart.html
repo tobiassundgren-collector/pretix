@@ -1,10 +1,11 @@
 {% load i18n %}
 {% load eventurl %}
 {% load safelink %}
+{% load rich_text %}
 {% load money %}
 {% blocktrans asvar s_taxes %}taxes{% endblocktrans %}
 {% for line in cart.positions %}
-    <div class="row cart-row {% if download %}has-downloads{% endif %}">
+    <div class="row cart-row {% if download %}has-downloads{% endif %}{% if editable %}editable{% endif %}">
         <div class="product">
             {% if line.addon_to %}
                 <span class="addon-signifier">+</span>
@@ -43,12 +44,54 @@
             {% if line.has_questions %}
                 <dl>
                     {% if line.item.admission and event.settings.attendee_names_asked %}
-                        <dt>{% trans "Attendee name" %}</dt>
-                        <dd>{% if line.attendee_name %}{{ line.attendee_name }}{% else %}<em>{% trans "not answered" %}</em>{% endif %}</dd>
+                        <dt class="sr-only">
+                            {% trans "Attendee name" %}
+                        </dt>
+                        <dd class="toplevel">
+                            <span data-toggle="tooltip" title="{% trans "Attendee name" %}">
+                                {% if line.attendee_name %}{{ line.attendee_name }}{% else %}<em>{% trans "not answered" %}</em>{% endif %}
+                            </span>
+                        </dd>
                     {% endif %}
                     {% if line.item.admission and event.settings.attendee_emails_asked %}
-                        <dt>{% trans "Attendee email" %}</dt>
-                        <dd>{% if line.attendee_email %}{{ line.attendee_email }}{% else %}<em>{% trans "not answered" %}</em>{% endif %}</dd>
+                        <dt class="sr-only">
+                            {% trans "Attendee email" %}
+                        </dt>
+                        <dd class="toplevel">
+                            <span data-toggle="tooltip" title="{% trans "Attendee email" %}">
+                                {% if line.attendee_email %}{{ line.attendee_email }}{% else %}<em>{% trans "not answered" %}</em>{% endif %}
+                            </span>
+                        </dd>
+                    {% endif %}
+                    {% if line.item.admission and event.settings.attendee_addresses_asked %}
+                        <br>
+                    {% endif %}
+                    {% if line.item.admission and event.settings.attendee_company_asked %}
+                        <dt class="sr-only">
+                            {% trans "Attendee company" %}
+                        </dt>
+                        <dd class="toplevel">
+                            <span data-toggle="tooltip" title="{% trans "Attendee company" %}">
+                                {% if line.company %}{{ line.company }}{% else %}<em>{% trans "not answered" %}</em>{% endif %}
+                            </span>
+                        </dd>
+                    {% endif %}
+                    {% if line.item.admission and event.settings.attendee_addresses_asked %}
+                        <dt class="sr-only">
+                            {% trans "Attendee address" %}
+                        </dt>
+                        <dd class="toplevel">
+                            <span data-toggle="tooltip" title="{% trans "Attendee address" %}">
+                                {% if line.street or line.zipcode or line.city or line.country %}
+                                    {{ line.street|default_if_none:""|linebreaksbr }}<br>
+                                    {{ line.zipcode|default_if_none:"" }} {{ line.city|default_if_none:"" }}<br>
+                                    {{ line.country.name|default_if_none:"" }}
+                                    {% if line.state %}<br>{{ line.state }}{% endif %}
+                                {% else %}
+                                    <em>{% trans "not answered" %}</em>
+                                {% endif %}
+                            </span>
+                        </dd>
                     {% endif %}
                     {% for q in line.questions %}
                         <dt>{{ q.question }}</dt>
@@ -59,6 +102,8 @@
                                     <a href="{{ q.answer.frontend_file_url }}?token={% answer_token request q.answer %}">
                                         {{ q.answer.file_name }}
                                     </a>
+                                {% elif q.type == "M" %}
+                                    {{ q.answer|rich_text_snippet }}
                                 {% else %}
                                     {{ q.answer|linebreaksbr }}
                                 {% endif %}
@@ -128,12 +173,12 @@
                         <input type="hidden" name="variation_{{ line.item.id }}_{{ line.variation.id }}"
                             value="1" />
                         <input type="hidden" name="price_{{ line.item.id }}_{{ line.variation.id }}"
-                                value="{{ line.price }}" />
+                                value="{% if event.settings.display_net_prices %}{{ line.bundle_sum_net }}{% else %}{{ line.bundle_sum }}{% endif %}" />
                     {% else %}
                         <input type="hidden" name="item_{{ line.item.id }}"
                                 value="1" />
                         <input type="hidden" name="price_{{ line.item.id }}"
-                                value="{% if event.settings.display_net_prices %}{{ line.net_price }}{% else %}{{ line.price }}{% endif %}" />
+                                value="{% if event.settings.display_net_prices %}{{ line.bundle_sum_net }}{% else %}{{ line.bundle_sum }}{% endif %}" />
                     {% endif %}
                     <button class="btn btn-mini btn-link {% if line.seat %}btn-invisible{% endif %}" title="{% trans "Add one more" %}" {% if line.seat %}disabled{% endif %}>
                         <i class="fa fa-plus"></i>
@@ -172,22 +217,6 @@
                 {% endif %}
             {% endif %}
         </div>
-        {% if download %}
-            <div class="download-mobile">
-                {% if line.generate_ticket %}
-                {% for b in download_buttons %}
-                    <form action="{% if position_page and line.addon_to %}{% eventurl event "presale:event.order.position.download" secret=line.addon_to.web_secret order=order.code output=b.identifier pid=line.pk position=line.addon_to.positionid %}{% elif position_page %}{% eventurl event "presale:event.order.position.download" secret=line.web_secret order=order.code output=b.identifier pid=line.pk position=line.positionid %}{% else %}{% eventurl event "presale:event.order.download" secret=order.secret order=order.code output=b.identifier position=line.pk %}{% endif %}"
-                        method="post" data-asynctask data-asynctask-download class="download-btn-form">
-                        {% csrf_token %}
-                        <button type="submit"
-                           class="btn btn-sm {% if b.identifier == "pdf" %}btn-primary{% else %}btn-default{% endif %}">
-                            <span class="fa {{ b.icon }}"></span> {{ b.text }}
-                        </button>
-                    </form>
-                {% endfor %}
-                {% endif %}
-            </div>
-        {% endif %}
         <div class="clearfix"></div>
     </div>
 {% endfor %}
@@ -244,13 +273,27 @@
 {% endif %}
 <div class="row cart-row total">
     <div class="product">
-        <strong>{% trans "Total" %}</strong>
+        <strong>{% trans "Total" %}</strong><br>
+        <span class="text-muted">
+            {% blocktrans trimmed count num=cart.itemcount %}
+                One product
+            {% plural %}
+                {{ num }} products
+            {% endblocktrans %}
+        </span>
     </div>
     <div class="count hidden-xs hidden-sm">
-        <strong>{{ cart.itemcount }}</strong>
     </div>
     <div class="col-md-3 col-xs-6 col-md-offset-3 price">
         <strong>{{ cart.total|money:event.currency }}</strong>
+
+        {% if not event.settings.display_net_prices and cart.tax_total and not editable %}
+            <small class="text-muted">
+                {% blocktrans trimmed with tax_sum=cart.tax_total|money:event.currency %}
+                    incl. {{ tax_sum }} taxes
+                {% endblocktrans %}
+            </small>
+        {% endif %}
 
         {% if editable and vouchers_exist and not cart.all_with_voucher %}
             <br>

@@ -1,8 +1,11 @@
 from decimal import Decimal
 
+import django_filters
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils.functional import cached_property
+from django_filters.rest_framework import DjangoFilterBackend, FilterSet
+from django_scopes import scopes_disabled
 from rest_framework import filters, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import MethodNotAllowed, PermissionDenied
@@ -55,7 +58,7 @@ class SeatingPlanViewSet(viewsets.ModelViewSet):
     write_permission = 'can_change_organizer_settings'
 
     def get_queryset(self):
-        return self.request.organizer.seating_plans.all()
+        return self.request.organizer.seating_plans.order_by('name')
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -98,14 +101,29 @@ class SeatingPlanViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
+with scopes_disabled():
+    class GiftCardFilter(FilterSet):
+        secret = django_filters.CharFilter(field_name='secret', lookup_expr='iexact')
+
+        class Meta:
+            model = GiftCard
+            fields = ['secret', 'testmode']
+
+
 class GiftCardViewSet(viewsets.ModelViewSet):
     serializer_class = GiftCardSerializer
     queryset = GiftCard.objects.none()
     permission = 'can_manage_gift_cards'
     write_permission = 'can_manage_gift_cards'
+    filter_backends = (DjangoFilterBackend,)
+    filterset_class = GiftCardFilter
 
     def get_queryset(self):
-        return self.request.organizer.issued_gift_cards.all()
+        if self.request.GET.get('include_accepted') == 'true':
+            qs = self.request.organizer.accepted_gift_cards
+        else:
+            qs = self.request.organizer.issued_gift_cards.all()
+        return qs
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -126,6 +144,8 @@ class GiftCardViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic()
     def perform_update(self, serializer):
+        if 'include_accepted' in self.request.GET:
+            raise PermissionDenied("Accepted gift cards cannot be updated, use transact instead.")
         GiftCard.objects.select_for_update().get(pk=self.get_object().pk)
         old_value = serializer.instance.value
         value = serializer.validated_data.pop('value')
@@ -148,16 +168,19 @@ class GiftCardViewSet(viewsets.ModelViewSet):
         value = serializers.DecimalField(max_digits=10, decimal_places=2).to_internal_value(
             request.data.get('value')
         )
+        text = serializers.CharField(allow_blank=True, allow_null=True).to_internal_value(
+            request.data.get('text', '')
+        )
         if gc.value + value < Decimal('0.00'):
             return Response({
                 'value': ['The gift card does not have sufficient credit for this operation.']
             }, status=status.HTTP_409_CONFLICT)
-        gc.transactions.create(value=value)
+        gc.transactions.create(value=value, text=text)
         gc.log_action(
             'pretix.giftcards.transaction.manual',
             user=self.request.user,
             auth=self.request.auth,
-            data={'value': value}
+            data={'value': value, 'text': text}
         )
         return Response(GiftCardSerializer(gc).data, status=status.HTTP_200_OK)
 
@@ -172,7 +195,7 @@ class TeamViewSet(viewsets.ModelViewSet):
     write_permission = 'can_change_teams'
 
     def get_queryset(self):
-        return self.request.organizer.teams.all()
+        return self.request.organizer.teams.order_by('pk')
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -245,7 +268,7 @@ class TeamInviteViewSet(CreateModelMixin, DestroyModelMixin, viewsets.ReadOnlyMo
         return get_object_or_404(self.request.organizer.teams, pk=self.kwargs.get('team'))
 
     def get_queryset(self):
-        return self.team.invites.all()
+        return self.team.invites.order_by('email')
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -282,7 +305,7 @@ class TeamAPITokenViewSet(CreateModelMixin, DestroyModelMixin, viewsets.ReadOnly
         return get_object_or_404(self.request.organizer.teams, pk=self.kwargs.get('team'))
 
     def get_queryset(self):
-        return self.team.tokens.all()
+        return self.team.tokens.order_by('name')
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()

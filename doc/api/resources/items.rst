@@ -104,6 +104,7 @@ addons                                list of objects            Definition of a
 ├ min_count                           integer                    The minimal number of add-ons that need to be chosen.
 ├ max_count                           integer                    The maximal number of add-ons that can be chosen.
 ├ position                            integer                    An integer, used for sorting
+├ multi_allowed                       boolean                    Adding the same item multiple times is allowed
 └ price_included                      boolean                    Adding this add-on to the item is free
 bundles                               list of objects            Definition of bundles that are included in this item.
                                                                  Only writable during creation,
@@ -114,6 +115,7 @@ bundles                               list of objects            Definition of b
 └ designated_price                    money (string)             Designated price of the bundled product. This will be
                                                                  used to split the price of the base item e.g. for mixed
                                                                  taxation. This is not added to the price.
+meta_data                             object                     Values set for event-specific meta data parameters.
 ===================================== ========================== =======================================================
 
 .. versionchanged:: 2.7
@@ -153,6 +155,14 @@ bundles                               list of objects            Definition of b
 .. versionchanged:: 3.0
 
    The ``show_quota_left``, ``allow_waitinglist``, and ``hidden_if_available`` attributes have been added.
+
+.. versionchanged:: 3.7
+
+   The attribute ``meta_data`` has been added.
+
+.. versionchanged:: 3.10
+
+   The attribute ``multi_allowed`` has been added to ``addons``.
 
 Notes
 -----
@@ -208,6 +218,7 @@ Endpoints
             "tax_rule": 1,
             "admission": false,
             "issue_giftcard": false,
+            "meta_data": {},
             "position": 0,
             "picture": null,
             "available_from": null,
@@ -303,6 +314,7 @@ Endpoints
         "tax_rule": 1,
         "admission": false,
         "issue_giftcard": false,
+        "meta_data": {},
         "position": 0,
         "picture": null,
         "available_from": null,
@@ -379,6 +391,7 @@ Endpoints
         "tax_rule": 1,
         "admission": false,
         "issue_giftcard": false,
+        "meta_data": {},
         "position": 0,
         "picture": null,
         "available_from": null,
@@ -442,6 +455,7 @@ Endpoints
         "tax_rule": 1,
         "admission": false,
         "issue_giftcard": false,
+        "meta_data": {},
         "position": 0,
         "picture": null,
         "available_from": null,
@@ -537,6 +551,7 @@ Endpoints
         "tax_rule": 1,
         "admission": false,
         "issue_giftcard": false,
+        "meta_data": {},
         "position": 0,
         "picture": null,
         "available_from": null,

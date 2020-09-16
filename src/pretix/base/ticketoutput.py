@@ -6,7 +6,7 @@ from zipfile import ZipFile
 
 from django import forms
 from django.http import HttpRequest
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from pretix.base.models import Event, Order, OrderPosition
 from pretix.base.settings import SettingsSandbox
@@ -142,7 +142,7 @@ class BaseTicketOutput:
         return OrderedDict([
             ('_enabled',
              forms.BooleanField(
-                 label=_('Enable output'),
+                 label=_('Enable ticket format'),
                  required=False,
              )),
         ])
@@ -161,6 +161,20 @@ class BaseTicketOutput:
         The text on the download button in the frontend.
         """
         return _('Download ticket')
+
+    @property
+    def long_download_button_text(self) -> str:
+        """
+        The text on the large download button in the frontend.
+        """
+        return self.download_button_text
+
+    @property
+    def multi_download_button_text(self) -> str:
+        """
+        The text on the multi download button in the frontend.
+        """
+        return self.download_button_text
 
     @property
     def download_button_icon(self) -> str:

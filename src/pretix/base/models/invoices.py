@@ -9,10 +9,10 @@ from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.utils.functional import cached_property
 from django.utils.translation import pgettext
-from django_countries.fields import CountryField
 from django_scopes import ScopedManager
 
 from pretix.base.settings import COUNTRIES_WITH_STATE_IN_ADDRESS
+from pretix.helpers.countries import FastCountryField
 
 
 def invoice_filename(instance, filename: str) -> str:
@@ -84,7 +84,7 @@ class Invoice(models.Model):
     invoice_from_name = models.CharField(max_length=190, null=True)
     invoice_from_zipcode = models.CharField(max_length=190, null=True)
     invoice_from_city = models.CharField(max_length=190, null=True)
-    invoice_from_country = CountryField(null=True)
+    invoice_from_country = FastCountryField(null=True)
     invoice_from_tax_id = models.CharField(max_length=190, null=True)
     invoice_from_vat_id = models.CharField(max_length=190, null=True)
     invoice_to = models.TextField()
@@ -94,7 +94,7 @@ class Invoice(models.Model):
     invoice_to_zipcode = models.CharField(max_length=190, null=True)
     invoice_to_city = models.TextField(null=True)
     invoice_to_state = models.CharField(max_length=190, null=True)
-    invoice_to_country = CountryField(null=True)
+    invoice_to_country = FastCountryField(null=True)
     invoice_to_vat_id = models.TextField(null=True)
     invoice_to_beneficiary = models.TextField(null=True)
     date = models.DateField(default=today)
@@ -111,22 +111,29 @@ class Invoice(models.Model):
 
     file = models.FileField(null=True, blank=True, upload_to=invoice_filename, max_length=255)
     internal_reference = models.TextField(blank=True)
+    custom_field = models.CharField(max_length=255, null=True)
 
     objects = ScopedManager(organizer='event__organizer')
 
     @staticmethod
-    def _to_numeric_invoice_number(number):
-        return '{:05d}'.format(int(number))
+    def _to_numeric_invoice_number(number, places):
+        return ('{:0%dd}' % places).format(int(number))
 
     @property
     def full_invoice_from(self):
+        taxidrow = ""
+        if self.invoice_from_tax_id:
+            if str(self.invoice_from_country) == "AU":
+                taxidrow = "ABN: %s" % self.invoice_from_tax_id
+            else:
+                taxidrow = pgettext("invoice", "Tax ID: %s") % self.invoice_from_tax_id
         parts = [
             self.invoice_from_name,
             self.invoice_from,
             (self.invoice_from_zipcode or "") + " " + (self.invoice_from_city or ""),
             self.invoice_from_country.name if self.invoice_from_country else "",
             pgettext("invoice", "VAT-ID: %s") % self.invoice_from_vat_id if self.invoice_from_vat_id else "",
-            pgettext("invoice", "Tax ID: %s") % self.invoice_from_tax_id if self.invoice_from_tax_id else "",
+            taxidrow,
         ]
         return '\n'.join([p.strip() for p in parts if p and p.strip()])
 
@@ -150,9 +157,12 @@ class Invoice(models.Model):
             state_name = self.invoice_to_state
             if str(self.invoice_to_country) in COUNTRIES_WITH_STATE_IN_ADDRESS:
                 if COUNTRIES_WITH_STATE_IN_ADDRESS[str(self.invoice_to_country)][1] == 'long':
-                    state_name = pycountry.subdivisions.get(
-                        code='{}-{}'.format(self.invoice_to_country, self.invoice_to_state)
-                    ).name
+                    try:
+                        state_name = pycountry.subdivisions.get(
+                            code='{}-{}'.format(self.invoice_to_country, self.invoice_to_state)
+                        ).name
+                    except:
+                        pass
 
         parts = [
             self.invoice_to_company,
@@ -163,7 +173,7 @@ class Invoice(models.Model):
         ]
         return '\n'.join([p.strip() for p in parts if p and p.strip()])
 
-    def _get_numeric_invoice_number(self):
+    def _get_numeric_invoice_number(self, c_length):
         numeric_invoices = Invoice.objects.filter(
             event__organizer=self.event.organizer,
             prefix=self.prefix,
@@ -172,7 +182,7 @@ class Invoice(models.Model):
         ).aggregate(
             max=Max('numeric_number')
         )['max'] or 0
-        return self._to_numeric_invoice_number(numeric_invoices + 1)
+        return self._to_numeric_invoice_number(numeric_invoices + 1, c_length)
 
     def _get_invoice_number_from_order(self):
         return '{order}-{count}'.format(
@@ -199,7 +209,7 @@ class Invoice(models.Model):
                 self.prefix += 'TEST-'
             for i in range(10):
                 if self.event.settings.get('invoice_numbers_consecutive'):
-                    self.invoice_no = self._get_numeric_invoice_number()
+                    self.invoice_no = self._get_numeric_invoice_number(self.event.settings.invoice_numbers_counter_length)
                 else:
                     self.invoice_no = self._get_invoice_number_from_order()
                 try:

@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 from django import forms
@@ -7,37 +8,43 @@ from django.contrib import messages
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files import File
 from django.db import transaction
-from django.db.models import (
-    Count, DecimalField, Max, Min, Prefetch, ProtectedError, Sum,
-)
+from django.db.models import Count, Max, Min, Prefetch, ProtectedError, Sum
 from django.db.models.functions import Coalesce, Greatest
-from django.forms import inlineformset_factory
+from django.forms import DecimalField, inlineformset_factory
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext_lazy as _
+from django.utils.timezone import now
+from django.utils.translation import gettext_lazy as _
 from django.views import View
 from django.views.generic import (
-    CreateView, DeleteView, DetailView, FormView, ListView, UpdateView,
+    CreateView, DeleteView, DetailView, FormView, ListView, TemplateView,
+    UpdateView,
 )
 
 from pretix.api.models import WebHook
 from pretix.base.auth import get_auth_backends
 from pretix.base.models import (
-    Device, GiftCard, Organizer, Team, TeamInvite, User,
+    CachedFile, Device, GiftCard, LogEntry, OrderPayment, Organizer, Team,
+    TeamInvite, User,
 )
 from pretix.base.models.event import Event, EventMetaProperty, EventMetaValue
 from pretix.base.models.giftcards import gen_giftcard_secret
 from pretix.base.models.organizer import TeamAPIToken
+from pretix.base.payment import PaymentException
+from pretix.base.services.export import multiexport
 from pretix.base.services.mail import SendMailException, mail
+from pretix.base.signals import register_multievent_data_exporters
+from pretix.base.views.tasks import AsyncAction
 from pretix.control.forms.filter import (
     EventFilterForm, GiftCardFilterForm, OrganizerFilterForm,
 )
+from pretix.control.forms.orders import ExporterForm
 from pretix.control.forms.organizer import (
-    DeviceForm, EventMetaPropertyForm, GiftCardCreateForm, OrganizerDeleteForm,
-    OrganizerForm, OrganizerSettingsForm, OrganizerUpdateForm, TeamForm,
-    WebHookForm,
+    DeviceForm, EventMetaPropertyForm, GiftCardCreateForm, GiftCardUpdateForm,
+    OrganizerDeleteForm, OrganizerForm, OrganizerSettingsForm,
+    OrganizerUpdateForm, TeamForm, WebHookForm,
 )
 from pretix.control.permissions import (
     AdministratorPermissionRequiredMixin, OrganizerPermissionRequiredMixin,
@@ -278,6 +285,7 @@ class OrganizerUpdate(OrganizerPermissionRequiredMixin, UpdateView):
             )
             display_properties = (
                 'primary_color', 'theme_color_success', 'theme_color_danger', 'primary_font',
+                'theme_color_background', 'theme_round_borders'
             )
             if any(p in self.sform.changed_data for p in display_properties):
                 change_css = True
@@ -723,6 +731,33 @@ class DeviceCreateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixi
         return super().form_invalid(form)
 
 
+class DeviceLogView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixin, ListView):
+    template_name = 'pretixcontrol/organizers/device_logs.html'
+    permission = 'can_change_organizer_settings'
+    model = LogEntry
+    context_object_name = 'logs'
+    paginate_by = 20
+
+    @cached_property
+    def device(self):
+        return get_object_or_404(Device, organizer=self.request.organizer, pk=self.kwargs.get('device'))
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['device'] = self.device
+        return ctx
+
+    def get_queryset(self):
+        qs = LogEntry.objects.filter(
+            device_id=self.device
+        ).select_related(
+            'user', 'content_type', 'api_token', 'oauth_application',
+        ).prefetch_related(
+            'device', 'event'
+        ).order_by('-datetime')
+        return qs
+
+
 class DeviceUpdateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixin, UpdateView):
     model = Device
     template_name = 'pretixcontrol/organizers/device_edit.html'
@@ -934,7 +969,7 @@ class GiftCardListView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixi
     def get_queryset(self):
         qs = self.request.organizer.issued_gift_cards.annotate(
             cached_value=Coalesce(Sum('transactions__value'), Decimal('0.00'))
-        )
+        ).order_by('-issuance')
         if self.filter_form.is_valid():
             qs = self.filter_form.filter_qs(qs)
         return qs
@@ -999,9 +1034,38 @@ class GiftCardDetailView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMi
     @transaction.atomic()
     def post(self, request, *args, **kwargs):
         self.object = GiftCard.objects.select_for_update().get(pk=self.get_object().pk)
-        if 'value' in request.POST:
+        if 'revert' in request.POST:
+            t = get_object_or_404(self.object.transactions.all(), pk=request.POST.get('revert'), order__isnull=False)
+            if self.object.value - t.value < Decimal('0.00'):
+                messages.error(request, _('Gift cards are not allowed to have negative values.'))
+            elif t.value > 0:
+                r = t.order.payments.create(
+                    order=t.order,
+                    state=OrderPayment.PAYMENT_STATE_CREATED,
+                    amount=t.value,
+                    provider='giftcard',
+                    info=json.dumps({
+                        'gift_card': self.object.pk,
+                        'retry': True,
+                    })
+                )
+                try:
+                    r.payment_provider.execute_payment(None, r)
+                except PaymentException as e:
+                    with transaction.atomic():
+                        r.state = OrderPayment.PAYMENT_STATE_FAILED
+                        r.save()
+                        t.order.log_action('pretix.event.order.payment.failed', {
+                            'local_id': r.local_id,
+                            'provider': r.provider,
+                            'error': str(e)
+                        })
+                    messages.error(request, _('The transaction could not be reversed.'))
+                else:
+                    messages.success(request, _('The transaction has been reversed.'))
+        elif 'value' in request.POST:
             try:
-                value = DecimalField().to_python(request.POST.get('value'))
+                value = DecimalField(localize=True).to_python(request.POST.get('value'))
             except ValidationError:
                 messages.error(request, _('Your input was invalid, please try again.'))
             else:
@@ -1009,12 +1073,14 @@ class GiftCardDetailView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMi
                     messages.error(request, _('Gift cards are not allowed to have negative values.'))
                 else:
                     self.object.transactions.create(
-                        value=value
+                        value=value,
+                        text=request.POST.get('text') or None,
                     )
                     self.object.log_action(
                         'pretix.giftcards.transaction.manual',
                         data={
-                            'value': value
+                            'value': value,
+                            'text': request.POST.get('text')
                         },
                         user=self.request.user,
                     )
@@ -1068,3 +1134,127 @@ class GiftCardCreateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMi
                 'giftcard': self.object.pk
             }
         ))
+
+
+class GiftCardUpdateView(OrganizerDetailViewMixin, OrganizerPermissionRequiredMixin, UpdateView):
+    template_name = 'pretixcontrol/organizers/giftcard_edit.html'
+    permission = 'can_manage_gift_cards'
+    form_class = GiftCardUpdateForm
+    success_url = 'invalid'
+    context_object_name = 'card'
+    model = GiftCard
+
+    def get_object(self, queryset=None) -> Organizer:
+        return get_object_or_404(
+            self.request.organizer.issued_gift_cards,
+            pk=self.kwargs.get('giftcard')
+        )
+
+    @transaction.atomic()
+    def form_valid(self, form):
+        messages.success(self.request, _('The gift card has been changed.'))
+        super().form_valid(form)
+        form.instance.log_action('pretix.giftcards.modified', user=self.request.user, data=dict(form.cleaned_data))
+        return redirect(reverse(
+            'control:organizer.giftcard',
+            kwargs={
+                'organizer': self.request.organizer.slug,
+                'giftcard': self.object.pk
+            }
+        ))
+
+
+class ExportMixin:
+    @cached_property
+    def exporters(self):
+        exporters = []
+        events = self.request.user.get_events_with_permission('can_view_orders', request=self.request).filter(
+            organizer=self.request.organizer
+        )
+        responses = register_multievent_data_exporters.send(self.request.organizer)
+        for ex in sorted([response(events) for r, response in responses if response], key=lambda ex: str(ex.verbose_name)):
+            if self.request.GET.get("identifier") and ex.identifier != self.request.GET.get("identifier"):
+                continue
+
+            # Use form parse cycle to generate useful defaults
+            test_form = ExporterForm(data=self.request.GET, prefix=ex.identifier)
+            test_form.fields = ex.export_form_fields
+            test_form.is_valid()
+            initial = {
+                k: v for k, v in test_form.cleaned_data.items() if ex.identifier + "-" + k in self.request.GET
+            }
+
+            ex.form = ExporterForm(
+                data=(self.request.POST if self.request.method == 'POST' else None),
+                prefix=ex.identifier,
+                initial=initial
+            )
+            ex.form.fields = ex.export_form_fields
+            ex.form.fields.update([
+                ('events',
+                 forms.ModelMultipleChoiceField(
+                     queryset=events,
+                     initial=events,
+                     widget=forms.CheckboxSelectMultiple(
+                         attrs={'class': 'scrolling-multiple-choice'}
+                     ),
+                     label=_('Events'),
+                     required=True
+                 )),
+            ])
+            exporters.append(ex)
+        return exporters
+
+
+class ExportDoView(OrganizerPermissionRequiredMixin, ExportMixin, AsyncAction, View):
+    known_errortypes = ['ExportError']
+    task = multiexport
+
+    def get_success_message(self, value):
+        return None
+
+    def get_success_url(self, value):
+        return reverse('cachedfile.download', kwargs={'id': str(value)})
+
+    def get_error_url(self):
+        return reverse('control:organizer.export', kwargs={
+            'organizer': self.request.organizer.slug
+        })
+
+    @cached_property
+    def exporter(self):
+        for ex in self.exporters:
+            if ex.identifier == self.request.POST.get("exporter"):
+                return ex
+
+    def post(self, request, *args, **kwargs):
+        if not self.exporter:
+            messages.error(self.request, _('The selected exporter was not found.'))
+            return redirect('control:organizer.export', kwargs={
+                'organizer': self.request.organizer.slug
+            })
+
+        if not self.exporter.form.is_valid():
+            messages.error(self.request, _('There was a problem processing your input. See below for error details.'))
+            return self.get(request, *args, **kwargs)
+
+        cf = CachedFile()
+        cf.date = now()
+        cf.expires = now() + timedelta(days=3)
+        cf.save()
+        return self.do(
+            organizer=self.request.organizer.id,
+            user=self.request.user.id,
+            fileid=str(cf.id),
+            provider=self.exporter.identifier,
+            form_data=self.exporter.form.cleaned_data
+        )
+
+
+class ExportView(OrganizerPermissionRequiredMixin, ExportMixin, TemplateView):
+    template_name = 'pretixcontrol/organizers/export.html'
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['exporters'] = self.exporters
+        return ctx

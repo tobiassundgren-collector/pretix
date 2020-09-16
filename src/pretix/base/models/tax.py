@@ -4,13 +4,13 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.formats import localize
-from django.utils.translation import ugettext_lazy as _
-from django_countries.fields import CountryField
+from django.utils.translation import gettext_lazy as _
 from i18nfield.fields import I18nCharField
 
 from pretix.base.decimal import round_decimal
 from pretix.base.models.base import LoggedModel
 from pretix.base.templatetags.money import money_filter
+from pretix.helpers.countries import FastCountryField
 
 
 class TaxedPrice:
@@ -116,7 +116,7 @@ class TaxRule(LoggedModel):
                     "ID. Only enable this option after consulting a tax counsel. No warranty given for correct tax "
                     "calculation. USE AT YOUR OWN RISK.")
     )
-    home_country = CountryField(
+    home_country = FastCountryField(
         verbose_name=_('Merchant country'),
         blank=True,
         help_text=_('Your country of residence. This is the country the EU reverse charge rule will not apply in, '
@@ -164,16 +164,39 @@ class TaxRule(LoggedModel):
     def has_custom_rules(self):
         return self.custom_rules and self.custom_rules != '[]'
 
-    def tax(self, base_price, base_price_is='auto', currency=None):
+    def tax_rate_for(self, invoice_address):
+        if not self._tax_applicable(invoice_address):
+            return Decimal('0.00')
+        if self.has_custom_rules:
+            rule = self.get_matching_rule(invoice_address)
+            if rule.get('action', 'vat') == 'vat' and rule.get('rate') is not None:
+                return Decimal(rule.get('rate'))
+        return Decimal(self.rate)
+
+    def tax(self, base_price, base_price_is='auto', currency=None, override_tax_rate=None, invoice_address=None,
+            subtract_from_gross=Decimal('0.00')):
         from .event import Event
         try:
             currency = currency or self.event.currency
         except Event.DoesNotExist:
             pass
-        if self.rate == Decimal('0.00'):
+
+        rate = Decimal(self.rate)
+        if override_tax_rate is not None:
+            rate = override_tax_rate
+        elif invoice_address:
+            adjust_rate = self.tax_rate_for(invoice_address)
+            if adjust_rate != rate:
+                normal_price = self.tax(base_price, base_price_is, currency, subtract_from_gross=subtract_from_gross)
+                base_price = normal_price.net
+                base_price_is = 'net'
+                subtract_from_gross = Decimal('0.00')
+                rate = adjust_rate
+
+        if rate == Decimal('0.00'):
             return TaxedPrice(
-                net=base_price, gross=base_price, tax=Decimal('0.00'),
-                rate=self.rate, name=self.name
+                net=base_price - subtract_from_gross, gross=base_price - subtract_from_gross, tax=Decimal('0.00'),
+                rate=rate, name=self.name
             )
 
         if base_price_is == 'auto':
@@ -183,19 +206,27 @@ class TaxRule(LoggedModel):
                 base_price_is = 'net'
 
         if base_price_is == 'gross':
-            gross = base_price
-            net = round_decimal(gross - (base_price * (1 - 100 / (100 + self.rate))),
+            if base_price >= Decimal('0.00'):
+                # For positive prices, make sure they don't go negative because of bundles
+                gross = max(Decimal('0.00'), base_price - subtract_from_gross)
+            else:
+                # If the price is already negative, we don't really care any more
+                gross = base_price - subtract_from_gross
+            net = round_decimal(gross - (gross * (1 - 100 / (100 + rate))),
                                 currency)
         elif base_price_is == 'net':
             net = base_price
-            gross = round_decimal((net * (1 + self.rate / 100)),
-                                  currency)
+            gross = round_decimal((net * (1 + rate / 100)), currency)
+            if subtract_from_gross:
+                gross -= subtract_from_gross
+                net = round_decimal(gross - (gross * (1 - 100 / (100 + rate))),
+                                    currency)
         else:
             raise ValueError('Unknown base price type: {}'.format(base_price_is))
 
         return TaxedPrice(
             net=net, gross=gross, tax=gross - net,
-            rate=self.rate, name=self.name
+            rate=rate, name=self.name
         )
 
     @property
@@ -243,7 +274,7 @@ class TaxRule(LoggedModel):
 
         return False
 
-    def tax_applicable(self, invoice_address):
+    def _tax_applicable(self, invoice_address):
         if self._custom_rules:
             rule = self.get_matching_rule(invoice_address)
             return rule.get('action', 'vat') == 'vat'

@@ -1,12 +1,12 @@
 import json
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from json.decoder import JSONDecodeError
 
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.core.files import File
 from django.db import transaction
-from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q
+from django.db.models import Count, Exists, F, OuterRef, Prefetch, Q
 from django.forms.models import inlineformset_factory
 from django.http import (
     Http404, HttpResponse, HttpResponseBadRequest, HttpResponseRedirect,
@@ -15,7 +15,7 @@ from django.shortcuts import redirect
 from django.urls import resolve, reverse
 from django.utils.functional import cached_property
 from django.utils.timezone import now
-from django.utils.translation import ugettext, ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _
 from django.views.generic import ListView
 from django.views.generic.detail import DetailView, SingleObjectMixin
 from django.views.generic.edit import DeleteView
@@ -30,13 +30,15 @@ from pretix.base.models import (
     QuestionAnswer, QuestionOption, Quota, Voucher,
 )
 from pretix.base.models.event import SubEvent
-from pretix.base.models.items import ItemAddOn, ItemBundle
+from pretix.base.models.items import ItemAddOn, ItemBundle, ItemMetaValue
+from pretix.base.services.quotas import QuotaAvailability
 from pretix.base.services.tickets import invalidate_cache
 from pretix.base.signals import quota_availability
 from pretix.control.forms.item import (
     CategoryForm, ItemAddOnForm, ItemAddOnsFormSet, ItemBundleForm,
-    ItemBundleFormSet, ItemCreateForm, ItemUpdateForm, ItemVariationForm,
-    ItemVariationsFormSet, QuestionForm, QuestionOptionForm, QuotaForm,
+    ItemBundleFormSet, ItemCreateForm, ItemMetaValueForm, ItemUpdateForm,
+    ItemVariationForm, ItemVariationsFormSet, QuestionForm, QuestionOptionForm,
+    QuotaForm,
 )
 from pretix.control.permissions import (
     EventPermissionRequiredMixin, event_permission_required,
@@ -277,7 +279,12 @@ def category_move_down(request, organizer, event, category):
                     event=request.event.slug)
 
 
-class QuestionList(PaginationMixin, ListView):
+FakeQuestion = namedtuple(
+    'FakeQuestion', 'id question position required'
+)
+
+
+class QuestionList(ListView):
     model = Question
     context_object_name = 'questions'
     template_name = 'pretixcontrol/items/questions.html'
@@ -285,96 +292,123 @@ class QuestionList(PaginationMixin, ListView):
     def get_queryset(self):
         return self.request.event.questions.prefetch_related('items')
 
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['questions'] = list(ctx['questions'])
+
+        if self.request.event.settings.attendee_names_asked:
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='attendee_name_parts',
+                    question=_('Attendee name'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'attendee_name_parts', 0
+                    ),
+                    required=self.request.event.settings.attendee_names_required,
+                )
+            )
+
+        if self.request.event.settings.attendee_emails_asked:
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='attendee_email',
+                    question=_('Attendee email'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'attendee_email', 0
+                    ),
+                    required=self.request.event.settings.attendee_emails_required,
+                )
+            )
+
+        if self.request.event.settings.attendee_emails_asked:
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='company',
+                    question=_('Company'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'company', 0
+                    ),
+                    required=self.request.event.settings.attendee_company_required,
+                )
+            )
+
+        if self.request.event.settings.attendee_addresses_asked:
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='street',
+                    question=_('Street'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'street', 0
+                    ),
+                    required=self.request.event.settings.attendee_addresses_required,
+                )
+            )
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='zipcode',
+                    question=_('ZIP code'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'zipcode', 0
+                    ),
+                    required=self.request.event.settings.attendee_addresses_required,
+                )
+            )
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='city',
+                    question=_('City'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'city', 0
+                    ),
+                    required=self.request.event.settings.attendee_addresses_required,
+                )
+            )
+            ctx['questions'].append(
+                FakeQuestion(
+                    id='country',
+                    question=_('Country'),
+                    position=self.request.event.settings.system_question_order.get(
+                        'country', 0
+                    ),
+                    required=self.request.event.settings.attendee_addresses_required,
+                )
+            )
+
+        ctx['questions'].sort(key=lambda q: q.position)
+        return ctx
+
 
 @transaction.atomic
 @event_permission_required("can_change_items")
 def reorder_questions(request, organizer, event):
     try:
-        ids = [int(id) for id in json.loads(request.body.decode('utf-8'))['ids']]
+        ids = json.loads(request.body.decode('utf-8'))['ids']
     except (JSONDecodeError, KeyError, ValueError):
         return HttpResponseBadRequest("expected JSON: {ids:[]}")
 
-    input_questions = request.event.questions.filter(id__in=ids)
+    input_questions = request.event.questions.filter(id__in=[i for i in ids if i.isdigit()])
 
-    if input_questions.count() != len(ids):
+    if input_questions.count() != len([i for i in ids if i.isdigit()]):
         raise Http404(_("Some of the provided question ids are invalid."))
 
-    first = input_questions.first()
-    last = input_questions.last()
-    original_lowest_score = (first.position, first.id)
-    original_highest_score = (last.position, last.id)
+    if input_questions.count() != request.event.questions.count():
+        raise Http404(_("Not all questions have been selected."))
 
-    if request.event.questions.filter(
-            Q(Q(position__gt=original_lowest_score[0])
-              | Q(Q(position=original_lowest_score[0]) & Q(pk__gt=original_lowest_score[1])))
-            &
-            Q(Q(position__lt=original_highest_score[0])
-              | Q(Q(position=original_highest_score[0]) & Q(pk__lt=original_highest_score[1])))
-    ).exclude(id__in=ids).exists():
-        return HttpResponseBadRequest("ids need to be from a consecutive range of questions")
-
-    highest_position_on_previous_page = request.event.questions.filter(
-        Q(position__lt=original_lowest_score[0])
-        | Q(Q(position=original_lowest_score[0]) & Q(pk__lt=original_lowest_score[1]))
-    ).aggregate(m=Max('position'))['m'] or 0
-
-    questions_on_later_pages = request.event.questions.filter(
-        Q(position__gt=original_highest_score[0])
-        | Q(Q(position=original_highest_score[0]) & Q(pk__gt=original_highest_score[1]))
-    )
-
-    ordered_questions = sorted(input_questions, key=lambda k: ids.index(k.pk))
-
-    for i, q in enumerate(ordered_questions + list(questions_on_later_pages)):
-        pos = highest_position_on_previous_page + 1 + i
+    for q in input_questions:
+        pos = ids.index(str(q.pk))
         if pos != q.position:  # Save unneccessary UPDATE queries
             q.position = pos
             q.save(update_fields=['position'])
 
+    system_question_order = {}
+    for s in ('attendee_name_parts', 'attendee_email', 'company', 'street', 'zipcode', 'city', 'country'):
+        if s in ids:
+            system_question_order[s] = ids.index(s)
+        else:
+            system_question_order[s] = -1
+    request.event.settings.system_question_order = system_question_order
+
     return HttpResponse()
-
-
-def question_move(request, question, up=True):
-    """
-    This is a helper function to avoid duplicating code in question_move_up and
-    question_move_down. It takes a question and a direction and then tries to bring
-    all items for this question in a new order.
-    """
-    try:
-        question = request.event.questions.get(
-            id=question
-        )
-    except Question.DoesNotExist:
-        raise Http404(_("The selected question does not exist."))
-    questions = list(request.event.questions.order_by("position"))
-
-    index = questions.index(question)
-    if index != 0 and up:
-        questions[index - 1], questions[index] = questions[index], questions[index - 1]
-    elif index != len(questions) - 1 and not up:
-        questions[index + 1], questions[index] = questions[index], questions[index + 1]
-
-    for i, qt in enumerate(questions):
-        if qt.position != i:
-            qt.position = i
-            qt.save()
-    messages.success(request, _('The order of questions has been updated.'))
-
-
-@event_permission_required("can_change_items")
-def question_move_up(request, organizer, event, question):
-    question_move(request, question, up=True)
-    return redirect('control:event.items.questions',
-                    organizer=request.event.organizer.slug,
-                    event=request.event.slug)
-
-
-@event_permission_required("can_change_items")
-def question_move_down(request, organizer, event, question):
-    question_move(request, question, up=False)
-    return redirect('control:event.items.questions',
-                    organizer=request.event.organizer.slug,
-                    event=request.event.slug)
 
 
 class QuestionDelete(EventPermissionRequiredMixin, DeleteView):
@@ -498,7 +532,7 @@ class QuestionView(EventPermissionRequiredMixin, QuestionMixin, ChartContainingV
         if self.object.type == Question.TYPE_FILE:
             qs = [
                 {
-                    'answer': ugettext('File uploaded'),
+                    'answer': gettext('File uploaded'),
                     'count': qs.filter(file__isnull=False).count(),
                 }
             ]
@@ -522,14 +556,18 @@ class QuestionView(EventPermissionRequiredMixin, QuestionMixin, ChartContainingV
             if self.object.type == Question.TYPE_BOOLEAN:
                 for a in qs:
                     a['alink'] = a['answer']
-                    a['answer'] = ugettext('Yes') if a['answer'] == 'True' else ugettext('No')
                     a['answer_bool'] = a['answer'] == 'True'
+                    a['answer'] = gettext('Yes') if a['answer'] == 'True' else gettext('No')
             elif self.object.type == Question.TYPE_COUNTRYCODE:
                 for a in qs:
                     a['alink'] = a['answer']
                     a['answer'] = Country(a['answer']).name or a['answer']
 
-        return list(qs)
+        r = list(qs)
+        total = sum(a['count'] for a in r)
+        for a in r:
+            a['percentage'] = (a['count'] / total * 100.) if total else 0
+        return r
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data()
@@ -642,9 +680,7 @@ class QuotaList(PaginationMixin, ListView):
     template_name = 'pretixcontrol/items/quotas.html'
 
     def get_queryset(self):
-        qs = Quota.objects.filter(
-            event=self.request.event
-        ).prefetch_related(
+        qs = self.request.event.quotas.prefetch_related(
             Prefetch(
                 "items",
                 queryset=Item.objects.annotate(
@@ -653,12 +689,27 @@ class QuotaList(PaginationMixin, ListView):
                 to_attr="cached_items"
             ),
             "variations",
-            "variations__item"
+            "variations__item",
+            Prefetch(
+                "subevent",
+                queryset=self.request.event.subevents.all()
+            )
         )
         if self.request.GET.get("subevent", "") != "":
             s = self.request.GET.get("subevent", "")
             qs = qs.filter(subevent_id=s)
         return qs
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data()
+
+        qa = QuotaAvailability()
+        qa.queue(*ctx['quotas'])
+        qa.compute()
+        for quota in ctx['quotas']:
+            quota.cached_avail = qa.results[quota]
+
+        return ctx
 
 
 class QuotaCreate(EventPermissionRequiredMixin, CreateView):
@@ -718,56 +769,70 @@ class QuotaView(ChartContainingView, DetailView):
     def get_context_data(self, *args, **kwargs):
         ctx = super().get_context_data()
 
-        avail = self.object.availability()
-        ctx['avail'] = avail
+        qa = QuotaAvailability(full_results=True)
+        qa.queue(self.object)
+        qa.compute()
+        ctx['avail'] = qa.results[self.object]
 
         data = [
             {
-                'label': ugettext('Paid orders'),
-                'value': self.object.count_paid_orders(),
+                'label': gettext('Paid orders'),
+                'value': qa.count_paid_orders[self.object],
                 'sum': True,
             },
             {
-                'label': ugettext('Pending orders'),
-                'value': self.object.count_pending_orders(),
+                'label': gettext('Pending orders'),
+                'value': qa.count_pending_orders[self.object],
+                'sum': True,
+            },
+        ]
+        if self.object.release_after_exit:
+            data.append({
+                'label': gettext('Exit scans'),
+                'value': -1 * qa.count_exited_orders[self.object],
+                'sum': True,
+            })
+
+        data += [
+            {
+                'label': gettext('Vouchers and waiting list reservations'),
+                'value': qa.count_vouchers[self.object],
                 'sum': True,
             },
             {
-                'label': ugettext('Vouchers and waiting list reservations'),
-                'value': self.object.count_blocking_vouchers(),
-                'sum': True,
-            },
-            {
-                'label': ugettext('Current user\'s carts'),
-                'value': self.object.count_in_cart(),
+                'label': gettext('Current user\'s carts'),
+                'value': qa.count_cart[self.object],
                 'sum': True,
             },
         ]
 
         sum_values = sum([d['value'] for d in data if d['sum']])
-        s = self.object.size - sum_values if self.object.size is not None else ugettext('Infinite')
+        s = self.object.size - sum_values if self.object.size is not None else gettext('Infinite')
 
         data.append({
-            'label': ugettext('Available quota'),
+            'label': gettext('Available quota'),
             'value': s,
             'sum': False,
             'strong': True
         })
         data.append({
-            'label': ugettext('Waiting list (pending)'),
-            'value': self.object.count_waiting_list_pending(),
+            'label': gettext('Waiting list (pending)'),
+            'value': qa.count_waitinglist[self.object],
             'sum': False,
         })
 
         if self.object.size is not None:
             data.append({
-                'label': ugettext('Currently for sale'),
-                'value': avail[1],
+                'label': gettext('Currently for sale'),
+                'value': ctx['avail'][1],
                 'sum': False,
                 'strong': True
             })
 
-        ctx['quota_chart_data'] = json.dumps([r for r in data if r.get('sum')])
+        for d in data:
+            if isinstance(d.get('value', 0), int) and d.get('value', 0) < 0:
+                d['value_abs'] = abs(d['value'])
+        ctx['quota_chart_data'] = json.dumps([r for r in data if r.get('sum') and r['value'] >= 0])
         ctx['quota_table_rows'] = list(data)
         ctx['quota_overbooked'] = sum_values - self.object.size if self.object.size is not None else 0
 
@@ -785,11 +850,24 @@ class QuotaView(ChartContainingView, DetailView):
         ctx['has_ignore_vouchers'] = Voucher.objects.filter(
             Q(allow_ignore_quota=True) &
             Q(Q(valid_until__isnull=True) | Q(valid_until__gte=now())) &
-            Q(Q(self.object._position_lookup) | Q(quota=self.object)) &
+            Q(
+                (
+                    (  # Orders for items which do not have any variations
+                        Q(variation__isnull=True) &
+                        Q(item_id__in=Quota.items.through.objects.filter(quota_id=self.object.pk).values_list('item_id', flat=True))
+                    ) | (  # Orders for items which do have any variations
+                        Q(variation__in=Quota.variations.through.objects.filter(quota_id=self.object.pk).values_list(
+                            'itemvariation_id', flat=True))
+                    )
+                ) | Q(quota=self.object)
+            ) &
             Q(redeemed__lt=F('max_usages'))
         ).exists()
         if self.object.closed:
-            ctx['closed_and_sold_out'] = self.object._availability(ignore_closed=True)[0] <= Quota.AVAILABILITY_ORDERED
+            qa = QuotaAvailability(ignore_closed=True)
+            qa.queue(self.object)
+            qa.compute()
+            ctx['closed_and_sold_out'] = qa.results[self.object][0] <= Quota.AVAILABILITY_ORDERED
 
         return ctx
 
@@ -939,6 +1017,41 @@ class ItemDetailMixin(SingleObjectMixin):
             raise Http404(_("The requested item does not exist."))
 
 
+class MetaDataEditorMixin:
+    meta_form = ItemMetaValueForm
+    meta_model = ItemMetaValue
+
+    @cached_property
+    def meta_forms(self):
+        if hasattr(self, 'object') and self.object:
+            val_instances = {
+                v.property_id: v for v in self.object.meta_values.all()
+            }
+        else:
+            val_instances = {}
+
+        formlist = []
+
+        for p in self.request.event.item_meta_properties.all():
+            formlist.append(self._make_meta_form(p, val_instances))
+        return formlist
+
+    def _make_meta_form(self, p, val_instances):
+        return self.meta_form(
+            prefix='prop-{}'.format(p.pk),
+            property=p,
+            instance=val_instances.get(p.pk, self.meta_model(property=p, item=self.object)),
+            data=(self.request.POST if self.request.method == "POST" else None)
+        )
+
+    def save_meta(self):
+        for f in self.meta_forms:
+            if f.cleaned_data.get('value'):
+                f.save()
+            elif f.instance and f.instance.pk:
+                f.instance.delete()
+
+
 class ItemCreate(EventPermissionRequiredMixin, CreateView):
     form_class = ItemCreateForm
     template_name = 'pretixcontrol/item/create.html'
@@ -951,11 +1064,27 @@ class ItemCreate(EventPermissionRequiredMixin, CreateView):
             'item': self.object.id,
         })
 
+    @cached_property
+    def copy_from(self):
+        if self.request.GET.get("copy_from") and not getattr(self, 'object', None):
+            try:
+                return self.request.event.items.get(pk=self.request.GET.get("copy_from"))
+            except Item.DoesNotExist:
+                pass
+
     def get_initial(self):
         initial = super().get_initial()
         trs = list(self.request.event.tax_rules.all())
         if len(trs) == 1:
             initial['tax_rule'] = trs[0]
+
+        if self.copy_from:
+            fields = ('name', 'internal_name', 'category', 'admission', 'default_price', 'tax_rule')
+            for f in fields:
+                initial[f] = getattr(self.copy_from, f)
+            initial['copy_from'] = self.copy_from
+            initial['has_variations'] = self.copy_from.variations.exists()
+
         return initial
 
     @transaction.atomic
@@ -985,7 +1114,7 @@ class ItemCreate(EventPermissionRequiredMixin, CreateView):
         return super().form_invalid(form)
 
 
-class ItemUpdateGeneral(ItemDetailMixin, EventPermissionRequiredMixin, UpdateView):
+class ItemUpdateGeneral(ItemDetailMixin, EventPermissionRequiredMixin, MetaDataEditorMixin, UpdateView):
     form_class = ItemUpdateForm
     template_name = 'pretixcontrol/item/index.html'
     permission = 'can_change_items'
@@ -1038,7 +1167,7 @@ class ItemUpdateGeneral(ItemDetailMixin, EventPermissionRequiredMixin, UpdateVie
     def post(self, request, *args, **kwargs):
         self.get_object()
         form = self.get_form()
-        if self.is_valid(form):
+        if self.is_valid(form) and all([f.is_valid() for f in self.meta_forms]):
             return self.form_valid(form)
         else:
             return self.form_invalid(form)
@@ -1088,6 +1217,7 @@ class ItemUpdateGeneral(ItemDetailMixin, EventPermissionRequiredMixin, UpdateVie
 
     @transaction.atomic
     def form_valid(self, form):
+        self.save_meta()
         messages.success(self.request, _('Your changes have been saved.'))
         if form.has_changed() or any(f.has_changed() for f in self.plugin_forms):
             data = {
@@ -1137,6 +1267,7 @@ class ItemUpdateGeneral(ItemDetailMixin, EventPermissionRequiredMixin, UpdateVie
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data()
         ctx['plugin_forms'] = self.plugin_forms
+        ctx['meta_forms'] = self.meta_forms
         ctx['formsets'] = self.formsets
 
         if not ctx['item'].active and ctx['item'].bundled_with.count() > 0:

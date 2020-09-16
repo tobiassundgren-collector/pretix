@@ -8,12 +8,12 @@ from django.db.models.functions import Coalesce, ExtractWeekDay
 from django.urls import reverse, reverse_lazy
 from django.utils.functional import cached_property
 from django.utils.timezone import get_current_timezone, make_aware, now
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 
 from pretix.base.forms.widgets import DatePickerWidget
 from pretix.base.models import (
-    Checkin, Event, EventMetaProperty, EventMetaValue, Invoice, Item, Order,
-    OrderPayment, OrderPosition, OrderRefund, Organizer, Question,
+    Checkin, Event, EventMetaProperty, EventMetaValue, Invoice, InvoiceAddress,
+    Item, Order, OrderPayment, OrderPosition, OrderRefund, Organizer, Question,
     QuestionAnswer, SubEvent,
 )
 from pretix.base.signals import register_payment_providers
@@ -78,7 +78,7 @@ class FilterForm(forms.Form):
 
     def get_order_by(self):
         o = self.cleaned_data.get('ordering')
-        if o.startswith('-'):
+        if o.startswith('-') and o not in self.orders:
             return '-' + self.orders[o[1:]]
         else:
             return self.orders[o]
@@ -111,6 +111,13 @@ class OrderFilterForm(FilterForm):
             (Order.STATUS_EXPIRED, _('Expired')),
             (Order.STATUS_PENDING + Order.STATUS_EXPIRED, _('Pending or expired')),
             (Order.STATUS_CANCELED, _('Canceled')),
+            ('cp', _('Canceled (or with paid fee)')),
+            ('pa', _('Approval pending')),
+            ('overpaid', _('Overpaid')),
+            ('underpaid', _('Underpaid')),
+            ('pendingpaid', _('Pending (but fully paid)')),
+            ('testmode', _('Test mode')),
+            ('rc', _('Cancellation requested')),
         ),
         required=False,
     )
@@ -132,26 +139,34 @@ class OrderFilterForm(FilterForm):
                 | Q(invoice_no__iexact=u.zfill(5))
                 | Q(full_invoice_no__iexact=u)
             ).values_list('order_id', flat=True)
-
             matching_positions = OrderPosition.objects.filter(
-                Q(order=OuterRef('pk')) & Q(
+                Q(
                     Q(attendee_name_cached__icontains=u) | Q(attendee_email__icontains=u)
-                    | Q(secret__istartswith=u) | Q(voucher__code__icontains=u)
+                    | Q(secret__istartswith=u)
+                    | Q(pseudonymization_id__istartswith=u)
                 )
-            ).values('id')
-
-            mainq = (
+            ).values_list('order_id', flat=True)
+            matching_invoice_addresses = InvoiceAddress.objects.filter(
+                Q(
+                    Q(name_cached__icontains=u) | Q(company__icontains=u)
+                )
+            ).values_list('order_id', flat=True)
+            matching_orders = Order.objects.filter(
                 code
                 | Q(email__icontains=u)
-                | Q(invoice_address__name_cached__icontains=u)
-                | Q(invoice_address__company__icontains=u)
-                | Q(pk__in=matching_invoices)
                 | Q(comment__icontains=u)
-                | Q(has_pos=True)
+            ).values_list('id', flat=True)
+
+            mainq = (
+                Q(pk__in=matching_orders)
+                | Q(pk__in=matching_invoices)
+                | Q(pk__in=matching_positions)
+                | Q(pk__in=matching_invoice_addresses)
+                | Q(pk__in=matching_invoices)
             )
             for recv, q in order_search_filter_q.send(sender=getattr(self, 'event', None), query=u):
                 mainq = mainq | q
-            qs = qs.annotate(has_pos=Exists(matching_positions)).filter(
+            qs = qs.filter(
                 mainq
             )
 
@@ -165,6 +180,46 @@ class OrderFilterForm(FilterForm):
                 qs = qs.filter(status__in=[Order.STATUS_PENDING, Order.STATUS_EXPIRED])
             elif s in ('p', 'n', 'e', 'c', 'r'):
                 qs = qs.filter(status=s)
+            elif s == 'overpaid':
+                qs = Order.annotate_overpayments(qs, refunds=False, results=False, sums=True)
+                qs = qs.filter(
+                    Q(~Q(status=Order.STATUS_CANCELED) & Q(pending_sum_t__lt=0))
+                    | Q(Q(status=Order.STATUS_CANCELED) & Q(pending_sum_rc__lt=0))
+                )
+            elif s == 'rc':
+                qs = qs.filter(
+                    cancellation_requests__isnull=False
+                )
+            elif s == 'pendingpaid':
+                qs = Order.annotate_overpayments(qs, refunds=False, results=False, sums=True)
+                qs = qs.filter(
+                    Q(status__in=(Order.STATUS_EXPIRED, Order.STATUS_PENDING)) & Q(pending_sum_t__lte=0)
+                    & Q(require_approval=False)
+                )
+            elif s == 'underpaid':
+                qs = Order.annotate_overpayments(qs, refunds=False, results=False, sums=True)
+                qs = qs.filter(
+                    status=Order.STATUS_PAID,
+                    pending_sum_t__gt=0
+                )
+            elif s == 'pa':
+                qs = qs.filter(
+                    status=Order.STATUS_PENDING,
+                    require_approval=True
+                )
+            elif s == 'testmode':
+                qs = qs.filter(
+                    testmode=True
+                )
+            elif s == 'cp':
+                s = OrderPosition.objects.filter(
+                    order=OuterRef('pk')
+                )
+                qs = qs.annotate(
+                    has_pc=Exists(s)
+                ).filter(
+                    Q(status=Order.STATUS_PAID, has_pc=False) | Q(status=Order.STATUS_CANCELED)
+                )
 
         if fdata.get('ordering'):
             qs = qs.order_by(self.get_order_by())
@@ -202,26 +257,6 @@ class EventOrderFilterForm(OrderFilterForm):
     )
     answer = forms.CharField(
         required=False
-    )
-    status = forms.ChoiceField(
-        label=_('Order status'),
-        choices=(
-            ('', _('All orders')),
-            (Order.STATUS_PAID, _('Paid (or canceled with paid fee)')),
-            (Order.STATUS_PENDING, _('Pending')),
-            ('o', _('Pending (overdue)')),
-            (Order.STATUS_PENDING + Order.STATUS_PAID, _('Pending or paid')),
-            (Order.STATUS_EXPIRED, _('Expired')),
-            (Order.STATUS_PENDING + Order.STATUS_EXPIRED, _('Pending or expired')),
-            (Order.STATUS_CANCELED, _('Canceled')),
-            ('cp', _('Canceled (or with paid fee)')),
-            ('pa', _('Approval pending')),
-            ('overpaid', _('Overpaid')),
-            ('underpaid', _('Underpaid')),
-            ('pendingpaid', _('Pending (but fully paid)')),
-            ('testmode', _('Test mode')),
-        ),
-        required=False,
     )
 
     def __init__(self, *args, **kwargs):
@@ -299,43 +334,6 @@ class EventOrderFilterForm(OrderFilterForm):
                 )
                 qs = qs.annotate(has_answer=Exists(answers)).filter(has_answer=True)
 
-        if fdata.get('status') == 'overpaid':
-            qs = Order.annotate_overpayments(qs, refunds=False, results=False, sums=True)
-            qs = qs.filter(
-                Q(~Q(status=Order.STATUS_CANCELED) & Q(pending_sum_t__lt=0))
-                | Q(Q(status=Order.STATUS_CANCELED) & Q(pending_sum_rc__lt=0))
-            )
-        elif fdata.get('status') == 'pendingpaid':
-            qs = Order.annotate_overpayments(qs, refunds=False, results=False, sums=True)
-            qs = qs.filter(
-                Q(status__in=(Order.STATUS_EXPIRED, Order.STATUS_PENDING)) & Q(pending_sum_t__lte=0)
-                & Q(require_approval=False)
-            )
-        elif fdata.get('status') == 'underpaid':
-            qs = Order.annotate_overpayments(qs, refunds=False, results=False, sums=True)
-            qs = qs.filter(
-                status=Order.STATUS_PAID,
-                pending_sum_t__gt=0
-            )
-        elif fdata.get('status') == 'pa':
-            qs = qs.filter(
-                status=Order.STATUS_PENDING,
-                require_approval=True
-            )
-        elif fdata.get('status') == 'testmode':
-            qs = qs.filter(
-                testmode=True
-            )
-        elif fdata.get('status') == 'cp':
-            s = OrderPosition.objects.filter(
-                order=OuterRef('pk')
-            )
-            qs = qs.annotate(
-                has_pc=Exists(s)
-            ).filter(
-                Q(status=Order.STATUS_PAID, has_pc=False) | Q(status=Order.STATUS_CANCELED)
-            )
-
         return qs
 
 
@@ -359,15 +357,33 @@ class OrderSearchFilterForm(OrderFilterForm):
     )
 
     def __init__(self, *args, **kwargs):
-        request = kwargs.pop('request')
+        self.request = kwargs.pop('request')
         super().__init__(*args, **kwargs)
-        if request.user.has_active_staff_session(request.session.session_key):
+        if self.request.user.has_active_staff_session(self.request.session.session_key):
             self.fields['organizer'].queryset = Organizer.objects.all()
         else:
             self.fields['organizer'].queryset = Organizer.objects.filter(
-                pk__in=request.user.teams.values_list('organizer', flat=True)
+                pk__in=self.request.user.teams.values_list('organizer', flat=True)
             )
         self.fields['provider'].choices += get_all_payment_providers()
+
+        seen = set()
+        for p in self.meta_properties.all():
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            self.fields['meta_{}'.format(p.name)] = forms.CharField(
+                label=p.name,
+                required=False,
+                widget=forms.TextInput(
+                    attrs={
+                        'data-typeahead-url': reverse('control:events.meta.typeahead') + '?' + urlencode({
+                            'property': p.name,
+                            'organizer': ''
+                        })
+                    }
+                )
+            )
 
     def filter_qs(self, qs):
         fdata = self.cleaned_data
@@ -376,7 +392,41 @@ class OrderSearchFilterForm(OrderFilterForm):
         if fdata.get('organizer'):
             qs = qs.filter(event__organizer=fdata.get('organizer'))
 
+        filters_by_property_name = {}
+        for i, p in enumerate(self.meta_properties):
+            d = fdata.get('meta_{}'.format(p.name))
+            if d:
+                emv_with_value = EventMetaValue.objects.filter(
+                    event=OuterRef('event_id'),
+                    property__pk=p.pk,
+                    value=d
+                )
+                emv_with_any_value = EventMetaValue.objects.filter(
+                    event=OuterRef('event_id'),
+                    property__pk=p.pk,
+                )
+                qs = qs.annotate(**{'attr_{}'.format(i): Exists(emv_with_value)})
+                if p.name in filters_by_property_name:
+                    filters_by_property_name[p.name] |= Q(**{'attr_{}'.format(i): True})
+                else:
+                    filters_by_property_name[p.name] = Q(**{'attr_{}'.format(i): True})
+                if p.default == d:
+                    qs = qs.annotate(**{'attr_{}_any'.format(i): Exists(emv_with_any_value)})
+                    filters_by_property_name[p.name] |= Q(**{
+                        'attr_{}_any'.format(i): False, 'event__organizer_id': p.organizer_id
+                    })
+        for f in filters_by_property_name.values():
+            qs = qs.filter(f)
+
         return qs
+
+    @cached_property
+    def meta_properties(self):
+        # We ignore superuser permissions here. This is intentional – we do not want to show super
+        # users a form with all meta properties ever assigned.
+        return EventMetaProperty.objects.filter(
+            organizer_id__in=self.request.user.teams.values_list('organizer', flat=True)
+        )
 
 
 class SubEventFilterForm(FilterForm):
@@ -525,6 +575,33 @@ class OrganizerFilterForm(FilterForm):
 
 
 class GiftCardFilterForm(FilterForm):
+    orders = {
+        'issuance': 'issuance',
+        'expires': F('expires').asc(nulls_last=True),
+        '-expires': F('expires').desc(nulls_first=True),
+        'secret': 'secret',
+        'value': 'cached_value',
+    }
+    testmode = forms.ChoiceField(
+        label=_('Test mode'),
+        choices=(
+            ('', _('All')),
+            ('yes', _('Test mode')),
+            ('no', _('Live')),
+        ),
+        required=False
+    )
+    state = forms.ChoiceField(
+        label=_('Empty'),
+        choices=(
+            ('', _('All')),
+            ('empty', _('Empty')),
+            ('valid_value', _('Valid and with value')),
+            ('expired_value', _('Expired and with value')),
+            ('expired', _('Expired')),
+        ),
+        required=False
+    )
     query = forms.CharField(
         label=_('Search query'),
         widget=forms.TextInput(attrs={
@@ -543,8 +620,30 @@ class GiftCardFilterForm(FilterForm):
 
         if fdata.get('query'):
             query = fdata.get('query')
-            qs = qs.filter(secret__icontains=query)
-        return qs
+            qs = qs.filter(
+                Q(secret__icontains=query)
+                | Q(transactions__text__icontains=query)
+                | Q(transactions__order__code__icontains=query)
+            )
+        if fdata.get('testmode') == 'yes':
+            qs = qs.filter(testmode=True)
+        elif fdata.get('testmode') == 'no':
+            qs = qs.filter(testmode=False)
+        if fdata.get('state') == 'empty':
+            qs = qs.filter(cached_value=0)
+        elif fdata.get('state') == 'valid_value':
+            qs = qs.exclude(cached_value=0).filter(Q(expires__isnull=True) | Q(expires__gte=now()))
+        elif fdata.get('state') == 'expired_value':
+            qs = qs.exclude(cached_value=0).filter(expires__lt=now())
+        elif fdata.get('state') == 'expired':
+            qs = qs.filter(expires__lt=now())
+
+        if fdata.get('ordering'):
+            qs = qs.order_by(self.get_order_by())
+        else:
+            qs = qs.order_by('-issuance')
+
+        return qs.distinct()
 
 
 class EventFilterForm(FilterForm):
@@ -632,10 +731,12 @@ class EventFilterForm(FilterForm):
         elif fdata.get('status') == 'running':
             qs = qs.filter(
                 live=True
+            ).annotate(
+                p_end=Coalesce(F('presale_end'), F('date_to'), F('date_from'))
             ).filter(
                 Q(presale_start__isnull=True) | Q(presale_start__lte=now())
             ).filter(
-                Q(presale_end__isnull=True) | Q(presale_end__gte=now())
+                Q(p_end__gte=now())
             )
         elif fdata.get('status') == 'notlive':
             qs = qs.filter(live=False)
@@ -718,10 +819,10 @@ class CheckInFilterForm(FilterForm):
         '-code': ('-order__code', '-item__name'),
         'email': ('order__email', 'item__name'),
         '-email': ('-order__email', '-item__name'),
-        'status': (FixedOrderBy(F('last_checked_in'), nulls_first=True, descending=True), 'order__code'),
-        '-status': (FixedOrderBy(F('last_checked_in'), nulls_last=True), '-order__code'),
-        'timestamp': (FixedOrderBy(F('last_checked_in'), nulls_first=True), 'order__code'),
-        '-timestamp': (FixedOrderBy(F('last_checked_in'), nulls_last=True, descending=True), '-order__code'),
+        'status': (FixedOrderBy(F('last_entry'), nulls_first=True, descending=True), 'order__code'),
+        '-status': (FixedOrderBy(F('last_entry'), nulls_last=True), '-order__code'),
+        'timestamp': (FixedOrderBy(F('last_entry'), nulls_first=True), 'order__code'),
+        '-timestamp': (FixedOrderBy(F('last_entry'), nulls_last=True, descending=True), '-order__code'),
         'item': ('item__name', 'variation__value', 'order__code'),
         '-item': ('-item__name', '-variation__value', '-order__code'),
         'seat': ('seat__sorting_rank', 'seat__guid'),
@@ -744,6 +845,8 @@ class CheckInFilterForm(FilterForm):
         label=_('Check-in status'),
         choices=(
             ('', _('All attendees')),
+            ('3', pgettext_lazy('checkin state', 'Checked in but left')),
+            ('2', pgettext_lazy('checkin state', 'Present')),
             ('1', _('Checked in')),
             ('0', _('Not checked in')),
         ),
@@ -773,6 +876,7 @@ class CheckInFilterForm(FilterForm):
             qs = qs.filter(
                 Q(order__code__istartswith=u)
                 | Q(secret__istartswith=u)
+                | Q(pseudonymization_id__istartswith=u)
                 | Q(order__email__icontains=u)
                 | Q(attendee_name_cached__icontains=u)
                 | Q(attendee_email__icontains=u)
@@ -784,9 +888,17 @@ class CheckInFilterForm(FilterForm):
         if fdata.get('status'):
             s = fdata.get('status')
             if s == '1':
-                qs = qs.filter(last_checked_in__isnull=False)
+                qs = qs.filter(last_entry__isnull=False)
+            elif s == '2':
+                qs = qs.filter(last_entry__isnull=False).filter(
+                    Q(last_exit__isnull=True) | Q(last_exit__lt=F('last_entry'))
+                )
+            elif s == '3':
+                qs = qs.filter(last_entry__isnull=False).filter(
+                    Q(last_exit__isnull=False) & Q(last_exit__gte=F('last_entry'))
+                )
             elif s == '0':
-                qs = qs.filter(last_checked_in__isnull=True)
+                qs = qs.filter(last_entry__isnull=True)
 
         if fdata.get('ordering'):
             ob = self.orders[fdata.get('ordering')]

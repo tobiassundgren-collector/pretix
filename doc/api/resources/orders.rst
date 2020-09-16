@@ -151,6 +151,18 @@ last_modified                         datetime                   Last modificati
 
    The ``order.fees.canceled`` attribute has been added.
 
+.. versionchanged:: 3.8
+
+   The ``reactivate`` operation has been added.
+
+.. versionchanged:: 3.10
+
+   The ``search`` query parameter has been added.
+
+.. versionchanged:: 3.11
+
+   The ``exclude`` and ``subevent_after`` query parameter has been added.
+
 
 .. _order-position-resource:
 
@@ -173,6 +185,13 @@ price                                 money (string)             Price of this p
 attendee_name                         string                     Specified attendee name for this position (or ``null``)
 attendee_name_parts                   object of strings          Decomposition of attendee name (i.e. given name, family name)
 attendee_email                        string                     Specified attendee email address for this position (or ``null``)
+company                               string                     Attendee company name (or ``null``)
+street                                string                     Attendee street (or ``null``)
+zipcode                               string                     Attendee ZIP code (or ``null``)
+city                                  string                     Attendee city (or ``null``)
+country                               string                     Attendee country code (or ``null``)
+state                                 string                     Attendee state (ISO 3166-2 code). Only supported in
+                                                                 AU, BR, CA, CN, MY, MX, and US, otherwise ``null``.
 voucher                               integer                    Internal ID of the voucher used for this position (or ``null``)
 tax_rate                              decimal (string)           VAT rate applied for this position
 tax_value                             money (string)             VAT included in this position
@@ -184,6 +203,7 @@ pseudonymization_id                   string                     A random ID, e.
 checkins                              list of objects            List of check-ins with this ticket
 ├ list                                integer                    Internal ID of the check-in list
 ├ datetime                            datetime                   Time of check-in
+├ type                                string                     Type of scan (defaults to ``entry``)
 └ auto_checked_in                     boolean                    Indicates if this check-in been performed automatically by the system
 downloads                             list of objects            List of ticket download options
 ├ output                              string                     Ticket output provider (e.g. ``pdf``, ``passbook``)
@@ -235,6 +255,14 @@ pdf_data                              object                     Data object req
 .. versionchanged:: 3.5
 
   The attribute ``canceled`` has been added.
+
+.. versionchanged:: 3.8
+
+  The attributes ``company``, ``street``, ``zipcode``, ``city``, ``country``, and ``state`` have been added.
+
+.. versionchanged:: 3.9
+
+  The ``checkin.type`` attribute has been added.
 
 .. _order-payment-resource:
 
@@ -380,6 +408,12 @@ List of all orders
                   "full_name": "Peter",
                 },
                 "attendee_email": null,
+                "company": "Sample company",
+                "street": "Test street 12",
+                "zipcode": "12345",
+                "city": "Testington",
+                "country": "DE",
+                "state": null,
                 "voucher": null,
                 "tax_rate": "0.00",
                 "tax_value": "0.00",
@@ -392,6 +426,7 @@ List of all orders
                 "checkins": [
                   {
                     "list": 44,
+                    "type": "entry",
                     "datetime": "2017-12-25T12:45:23Z",
                     "auto_checked_in": false
                   }
@@ -441,6 +476,7 @@ List of all orders
                            ``last_modified``, and ``status``. Default: ``datetime``
    :query string code: Only return orders that match the given order code
    :query string status: Only return orders in the given order status (see above)
+   :query string search: Only return orders matching a given search query
    :query boolean testmode: Only return orders with ``testmode`` set to ``true`` or ``false``
    :query boolean require_approval: If set to ``true`` or ``false``, only categories with this value for the field
                                     ``require_approval`` will be returned.
@@ -453,6 +489,8 @@ List of all orders
        recommend using this in combination with ``testmode=false``, since test mode orders can vanish at any time and
        you will not notice it using this method.
    :query datetime created_since: Only return orders that have been created since the given date.
+   :query datetime subevent_after: Only return orders that contain a ticket for a subevent taking place after the given date.
+   :query string exclude: Exclude a field from the output, e.g. ``fees`` or ``positions.downloads``. Can be used as a performance optimization. Can be passed multiple times.
    :param organizer: The ``slug`` field of the organizer to fetch
    :param event: The ``slug`` field of the event to fetch
    :resheader X-Page-Generated: The server time at the beginning of the operation. If you're using this API to fetch
@@ -536,6 +574,12 @@ Fetching individual orders
               "full_name": "Peter",
             },
             "attendee_email": null,
+            "company": "Sample company",
+            "street": "Test street 12",
+            "zipcode": "12345",
+            "city": "Testington",
+            "country": "DE",
+            "state": null,
             "voucher": null,
             "tax_rate": "0.00",
             "tax_rule": null,
@@ -548,6 +592,7 @@ Fetching individual orders
             "checkins": [
               {
                 "list": 44,
+                "type": "entry",
                 "datetime": "2017-12-25T12:45:23Z",
                 "auto_checked_in": false
               }
@@ -816,9 +861,9 @@ Creating orders
    * ``consume_carts`` (optional) – A list of cart IDs. All cart positions with these IDs will be deleted if the
      order creation is successful. Any quotas or seats that become free by this operation will be credited to your order
      creation.
-   * ``email``
+   * ``email`` (optional)
    * ``locale``
-   * ``sales_channel``
+   * ``sales_channel`` (optional)
    * ``payment_provider`` (optional) – The identifier of the payment provider set for this order. This needs to be an
      existing payment provider. You should use ``"free"`` for free orders, and we strongly advise to use ``"manual"``
      for all orders you create as paid. This field is optional when the order status is ``"n"`` or the order total is
@@ -851,15 +896,21 @@ Creating orders
 
       * ``positionid`` (optional, see below)
       * ``item``
-      * ``variation``
+      * ``variation`` (optional)
       * ``price`` (optional, if set to ``null`` or missing the price will be computed from the given product)
       * ``seat`` (The ``seat_guid`` attribute of a seat. Required when the specified ``item`` requires a seat, otherwise must be ``null``.)
-      * ``attendee_name`` **or** ``attendee_name_parts``
+      * ``attendee_name`` **or** ``attendee_name_parts`` (optional)
       * ``voucher`` (optional, the ``code`` attribute of a valid voucher)
-      * ``attendee_email``
+      * ``attendee_email`` (optional)
+      * ``company`` (optional)
+      * ``street`` (optional)
+      * ``zipcode`` (optional)
+      * ``city`` (optional)
+      * ``country`` (optional)
+      * ``state`` (optional)
       * ``secret`` (optional)
       * ``addon_to`` (optional, see below)
-      * ``subevent``
+      * ``subevent`` (optional)
       * ``answers``
 
         * ``question``
@@ -883,13 +934,21 @@ Creating orders
         during order generation and is not respected automatically when the order changes later.)
 
    * ``force`` (optional). If set to ``true``, quotas will be ignored.
-   * ``send_mail`` (optional). If set to ``true``, the same emails will be sent as for a regular order. Defaults to
+   * ``send_mail`` (optional). If set to ``true``, the same emails will be sent as for a regular order, regardless of
+     whether these emails are enabled for certain sales channels. Defaults to
      ``false``.
 
    If you want to use add-on products, you need to set the ``positionid`` fields of all positions manually
    to incrementing integers starting with ``1``. Then, you can reference one of these
    IDs in the ``addon_to`` field of another position. Note that all add_ons for a specific position need to come
    immediately after the position itself.
+
+   Starting with pretix 3.7, you can add ``"simulate": true`` to the body to do a "dry run" of your order. This will
+   validate your order and return you an order object with the resulting prices, but will not create an actual order.
+   You can use this for testing or to look up prices. In this case, some attributes are ignored, such as whether
+   to send an email or what payment provider will be used. Note that some returned fields will contain empty values
+   (e.g. all ``id`` fields of positions will be zero) and some will contain fake values (e.g. the order code will
+   always be ``PREVIEW``). pretix plugins will not be triggered, so some special behavior might be missing as well.
 
    **Example request**:
 
@@ -1046,6 +1105,42 @@ Order state operations
    :param code: The ``code`` field of the order to modify
    :statuscode 200: no error
    :statuscode 400: The order cannot be marked as canceled since the current order status does not allow it.
+   :statuscode 401: Authentication failure
+   :statuscode 403: The requested organizer/event does not exist **or** you have no permission to view this resource.
+   :statuscode 404: The requested order does not exist.
+
+.. http:post:: /api/v1/organizers/(organizer)/events/(event)/orders/(code)/reactivate/
+
+   Reactivates a canceled order. This will set the order to pending or paid state. Only possible if all products are
+   still available.
+
+   **Example request**:
+
+   .. sourcecode:: http
+
+      POST /api/v1/organizers/bigevents/events/sampleconf/orders/ABC12/reactivate/ HTTP/1.1
+      Host: pretix.eu
+      Accept: application/json, text/javascript
+
+   **Example response**:
+
+   .. sourcecode:: http
+
+      HTTP/1.1 200 OK
+      Vary: Accept
+      Content-Type: application/json
+
+      {
+        "code": "ABC12",
+        "status": "n",
+        ...
+      }
+
+   :param organizer: The ``slug`` field of the organizer to modify
+   :param event: The ``slug`` field of the event to modify
+   :param code: The ``code`` field of the order to modify
+   :statuscode 200: no error
+   :statuscode 400: The order cannot be reactivated
    :statuscode 401: Authentication failure
    :statuscode 403: The requested organizer/event does not exist **or** you have no permission to view this resource.
    :statuscode 404: The requested order does not exist.
@@ -1395,6 +1490,7 @@ List of all order positions
             "checkins": [
               {
                 "list": 44,
+                "type": "entry",
                 "datetime": "2017-12-25T12:45:23Z",
                 "auto_checked_in": false
               }
@@ -1500,6 +1596,7 @@ Fetching individual positions
         "checkins": [
           {
             "list": 44,
+            "type": "entry",
             "datetime": "2017-12-25T12:45:23Z",
             "auto_checked_in": false
           }

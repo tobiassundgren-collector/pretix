@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+from decimal import Decimal
 
 from django.conf import settings
 from django.contrib import messages
@@ -14,7 +15,7 @@ from django.utils.decorators import method_decorator
 from django.utils.functional import cached_property
 from django.utils.http import is_safe_url
 from django.utils.timezone import now
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.generic import TemplateView, View
 from django_scopes import scopes_disabled
@@ -23,7 +24,7 @@ from pretix.base.models import (
     CartPosition, InvoiceAddress, QuestionAnswer, SubEvent, Voucher,
 )
 from pretix.base.services.cart import (
-    CartError, add_items_to_cart, apply_voucher, clear_cart,
+    CartError, add_items_to_cart, apply_voucher, clear_cart, error_messages,
     remove_cart_position,
 )
 from pretix.base.views.tasks import AsyncAction
@@ -159,6 +160,8 @@ class CartActionMixin:
             pass
 
         items = []
+        if 'raw' in self.request.POST:
+            items += json.loads(self.request.POST.get("raw"))
         for key, values in req_items:
             for value in values:
                 try:
@@ -429,7 +432,9 @@ class CartAdd(EventViewMixin, CartActionMixin, AsyncAction, View):
         else:
             if 'ajax' in self.request.GET or 'ajax' in self.request.POST:
                 return JsonResponse({
-                    'redirect': self.get_error_url()
+                    'redirect': self.get_error_url(),
+                    'success': False,
+                    'message': _(error_messages['empty'])
                 })
             else:
                 return redirect(self.get_error_url())
@@ -455,11 +460,21 @@ class RedeemView(NoSearchIndexViewMixin, EventViewMixin, TemplateView):
         context['options'] = sum([(len(item.available_variations) if item.has_variations else 1)
                                   for item in items])
 
+        context['allfree'] = all(
+            item.display_price.gross == Decimal('0.00') for item in items if not item.has_variations
+        ) and all(
+            all(
+                var.display_price.gross == Decimal('0.00')
+                for var in item.available_variations
+            )
+            for item in items if item.has_variations
+        )
+
         # Regroup those by category
         context['items_by_category'] = item_group_by_category(items)
 
         context['subevent'] = self.subevent
-        context['seating_available'] = self.voucher.seating_available(self.subevent)
+        context['seating_available'] = self.request.event.settings.seating_choice and self.voucher.seating_available(self.subevent)
 
         context['new_tab'] = (
             'require_cookie' in self.request.GET and

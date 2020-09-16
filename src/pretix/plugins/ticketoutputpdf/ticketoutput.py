@@ -9,7 +9,7 @@ from django.core.files.storage import default_storage
 from django.http import HttpRequest
 from django.template.loader import get_template
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from PyPDF2 import PdfFileMerger
 
 from pretix.base.i18n import language
@@ -28,6 +28,8 @@ class PdfTicketOutput(BaseTicketOutput):
     identifier = 'pdf'
     verbose_name = _('PDF output')
     download_button_text = _('PDF')
+    multi_download_button_text = _('Download tickets (PDF)')
+    long_download_button_text = _('Download ticket (PDF)')
 
     def __init__(self, event, override_layout=None, override_background=None):
         self.override_layout = override_layout
@@ -114,8 +116,8 @@ class PdfTicketOutput(BaseTicketOutput):
         return 'order%s%s.pdf' % (self.event.slug, order.code), 'application/pdf', outbuffer.read()
 
     def _create_canvas(self, buffer):
-        from reportlab.pdfgen import canvas
         from reportlab.lib import pagesizes
+        from reportlab.pdfgen import canvas
 
         # Doesn't matter as we'll overpaint it over a background later
         pagesize = pagesizes.A4
@@ -156,7 +158,7 @@ class PdfTicketOutput(BaseTicketOutput):
              "text": "John Doe", "align": "left"},
             {"type": "textarea", "left": "17.50", "bottom": "242.10", "fontsize": "13.0", "color": [0, 0, 0, 1],
              "fontfamily": "Open Sans", "bold": False, "italic": False, "width": "110.00",
-             "content": "event_date_range", "text": "May 31st, 2017", "align": "left"},
+             "content": "event_begin", "text": "2017-05-31 20:00", "align": "left"},
             {"type": "textarea", "left": "17.50", "bottom": "204.80", "fontsize": "13.0", "color": [0, 0, 0, 1],
              "fontfamily": "Open Sans", "bold": False, "italic": False, "width": "110.00", "content": "event_location",
              "text": "Random City", "align": "left"},

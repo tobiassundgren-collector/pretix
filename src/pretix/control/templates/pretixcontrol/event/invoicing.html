@@ -19,6 +19,7 @@
                 {% bootstrap_field form.invoice_numbers_consecutive layout="control" %}
                 {% bootstrap_field form.invoice_numbers_prefix layout="control" %}
                 {% bootstrap_field form.invoice_numbers_prefix_cancellations layout="control" %}
+                {% bootstrap_field form.invoice_numbers_counter_length layout="control" %}
             </fieldset>
             <fieldset>
                 <legend>{% trans "Address form" %}</legend>
@@ -29,6 +30,7 @@
                 {% bootstrap_field form.invoice_address_vatid layout="control" %}
                 {% bootstrap_field form.invoice_address_beneficiary layout="control" %}
                 {% bootstrap_field form.invoice_address_not_asked_free layout="control" %}
+                {% bootstrap_field form.invoice_address_custom_field layout="control" %}
             </fieldset>
             <fieldset>
                 <legend>{% trans "Issuer details" %}</legend>
@@ -50,6 +52,7 @@
                 {% bootstrap_field form.invoice_footer_text layout="control" %}
                 {% bootstrap_field form.invoice_logo_image layout="control" %}
                 {% bootstrap_field form.invoice_address_explanation_text layout="control" %}
+                {% bootstrap_field form.invoice_eu_currencies layout="control" %}
             </fieldset>
         </div>
         <div class="form-group submit-group">

@@ -5,7 +5,7 @@ from decimal import Decimal
 import pycountry
 from django.db.models import F, Q
 from django.utils.timezone import now
-from django.utils.translation import ugettext_lazy
+from django.utils.translation import gettext_lazy
 from django_countries.fields import Country
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -25,6 +25,7 @@ from pretix.base.models.orders import (
 )
 from pretix.base.pdf import get_variables
 from pretix.base.services.cart import error_messages
+from pretix.base.services.locking import NoLockManager
 from pretix.base.services.pricing import get_price
 from pretix.base.settings import COUNTRIES_WITH_STATE_IN_ADDRESS
 from pretix.base.signals import register_ticket_outputs
@@ -38,7 +39,7 @@ class CompatibleCountryField(serializers.Field):
     def to_representation(self, instance: InvoiceAddress):
         if instance.country:
             return str(instance.country)
-        else:
+        elif hasattr(instance, 'country_old'):
             return instance.country_old
 
 
@@ -67,7 +68,7 @@ class InvoiceAddressSerializer(I18nAwareModelSerializer):
             data['name_parts']['_scheme'] = self.context['request'].event.settings.name_scheme
 
         if data.get('country'):
-            if not pycountry.countries.get(alpha_2=data.get('country')):
+            if not pycountry.countries.get(alpha_2=data.get('country').code):
                 raise ValidationError(
                     {'country': ['Invalid country code.']}
                 )
@@ -96,6 +97,11 @@ class AnswerQuestionOptionsIdentifierField(serializers.Field):
         return [o.identifier for o in instance.options.all()]
 
 
+class AnswerQuestionOptionsField(serializers.Field):
+    def to_representation(self, instance: QuestionAnswer):
+        return [o.pk for o in instance.options.all()]
+
+
 class InlineSeatSerializer(I18nAwareModelSerializer):
 
     class Meta:
@@ -106,6 +112,7 @@ class InlineSeatSerializer(I18nAwareModelSerializer):
 class AnswerSerializer(I18nAwareModelSerializer):
     question_identifier = AnswerQuestionIdentifierField(source='*', read_only=True)
     option_identifiers = AnswerQuestionOptionsIdentifierField(source='*', read_only=True)
+    options = AnswerQuestionOptionsField(source='*', read_only=True)
 
     class Meta:
         model = QuestionAnswer
@@ -115,7 +122,7 @@ class AnswerSerializer(I18nAwareModelSerializer):
 class CheckinSerializer(I18nAwareModelSerializer):
     class Meta:
         model = Checkin
-        fields = ('datetime', 'list', 'auto_checked_in')
+        fields = ('datetime', 'list', 'auto_checked_in', 'type')
 
 
 class OrderDownloadsField(serializers.Field):
@@ -189,6 +196,11 @@ class PdfDataSerializer(serializers.Field):
             for k, v in ev._cached_meta_data.items():
                 res['meta:' + k] = v
 
+            if not hasattr(instance.item, '_cached_meta_data'):
+                instance.item._cached_meta_data = instance.item.meta_data
+            for k, v in instance.item._cached_meta_data.items():
+                res['itemmeta:' + k] = v
+
         return res
 
 
@@ -199,10 +211,12 @@ class OrderPositionSerializer(I18nAwareModelSerializer):
     order = serializers.SlugRelatedField(slug_field='code', read_only=True)
     pdf_data = PdfDataSerializer(source='*')
     seat = InlineSeatSerializer(read_only=True)
+    country = CompatibleCountryField(source='*')
 
     class Meta:
         model = OrderPosition
         fields = ('id', 'order', 'positionid', 'item', 'variation', 'price', 'attendee_name', 'attendee_name_parts',
+                  'company', 'street', 'zipcode', 'city', 'country', 'state',
                   'attendee_email', 'voucher', 'tax_rate', 'tax_value', 'secret', 'addon_to', 'subevent', 'checkins',
                   'downloads', 'answers', 'tax_rule', 'pseudonymization_id', 'pdf_data', 'seat', 'canceled')
 
@@ -256,8 +270,9 @@ class CheckinListOrderPositionSerializer(OrderPositionSerializer):
     class Meta:
         model = OrderPosition
         fields = ('id', 'order', 'positionid', 'item', 'variation', 'price', 'attendee_name', 'attendee_name_parts',
+                  'company', 'street', 'zipcode', 'city', 'country', 'state',
                   'attendee_email', 'voucher', 'tax_rate', 'tax_value', 'secret', 'addon_to', 'subevent', 'checkins',
-                  'downloads', 'answers', 'tax_rule', 'pseudonymization_id', 'pdf_data', 'require_attention',
+                  'downloads', 'answers', 'tax_rule', 'pseudonymization_id', 'pdf_data', 'seat', 'require_attention',
                   'order__status')
 
 
@@ -362,6 +377,14 @@ class OrderSerializer(I18nAwareModelSerializer):
         if not self.context['request'].query_params.get('pdf_data', 'false') == 'true':
             self.fields['positions'].child.fields.pop('pdf_data')
 
+        for exclude_field in self.context['request'].query_params.getlist('exclude'):
+            p = exclude_field.split('.')
+            if p[0] in self.fields:
+                if len(p) == 1:
+                    del self.fields[p[0]]
+                elif len(p) == 2:
+                    self.fields[p[0]].child.fields.pop(p[1])
+
     def validate_locale(self, l):
         if l not in set(k for k in self.instance.event.settings.locales):
             raise ValidationError('"{}" is not a supported locale for this event.'.format(l))
@@ -402,16 +425,26 @@ class OrderSerializer(I18nAwareModelSerializer):
         return instance
 
 
+class SimulatedOrderPositionSerializer(OrderPositionSerializer):
+    addon_to = serializers.SlugRelatedField(read_only=True, slug_field='positionid')
+
+
+class SimulatedOrderSerializer(OrderSerializer):
+    positions = SimulatedOrderPositionSerializer(many=True, read_only=True)
+
+
 class PriceCalcSerializer(serializers.Serializer):
     item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.none(), required=False, allow_null=True)
     variation = serializers.PrimaryKeyRelatedField(queryset=ItemVariation.objects.none(), required=False, allow_null=True)
     subevent = serializers.PrimaryKeyRelatedField(queryset=SubEvent.objects.none(), required=False, allow_null=True)
+    tax_rule = serializers.PrimaryKeyRelatedField(queryset=TaxRule.objects.none(), required=False, allow_null=True)
     locale = serializers.CharField(allow_null=True, required=False)
 
     def __init__(self, *args, **kwargs):
         event = kwargs.pop('event')
         super().__init__(*args, **kwargs)
         self.fields['item'].queryset = event.items.all()
+        self.fields['tax_rule'].queryset = event.tax_rules.all()
         self.fields['variation'].queryset = ItemVariation.objects.filter(item__event=event)
         if event.has_subevents:
             self.fields['subevent'].queryset = event.subevents.all()
@@ -504,11 +537,21 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
                                      max_digits=10)
     voucher = serializers.SlugRelatedField(slug_field='code', queryset=Voucher.objects.none(),
                                            required=False, allow_null=True)
+    country = CompatibleCountryField(source='*')
 
     class Meta:
         model = OrderPosition
         fields = ('positionid', 'item', 'variation', 'price', 'attendee_name', 'attendee_name_parts', 'attendee_email',
+                  'company', 'street', 'zipcode', 'city', 'country', 'state',
                   'secret', 'addon_to', 'subevent', 'answers', 'seat', 'voucher')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for k, v in self.fields.items():
+            if k in ('company', 'street', 'zipcode', 'city', 'country', 'state'):
+                v.required = False
+                v.allow_blank = True
+                v.allow_null = True
 
     def validate_secret(self, secret):
         if secret and OrderPosition.all.filter(order__event=self.context['event'], secret=secret).exists():
@@ -564,6 +607,24 @@ class OrderPositionCreateSerializer(I18nAwareModelSerializer):
             )
         if data.get('attendee_name_parts') and '_scheme' not in data.get('attendee_name_parts'):
             data['attendee_name_parts']['_scheme'] = self.context['request'].event.settings.name_scheme
+
+        if data.get('country'):
+            if not pycountry.countries.get(alpha_2=data.get('country').code):
+                raise ValidationError(
+                    {'country': ['Invalid country code.']}
+                )
+
+        if data.get('state'):
+            cc = str(data.get('country') or self.instance.country or '')
+            if cc not in COUNTRIES_WITH_STATE_IN_ADDRESS:
+                raise ValidationError(
+                    {'state': ['States are not supported in country "{}".'.format(cc)]}
+                )
+            if not pycountry.subdivisions.get(code=cc + '-' + data.get('state')):
+                raise ValidationError(
+                    {'state': ['"{}" is not a known subdivision of the country "{}".'.format(data.get('state'), cc)]}
+                )
+
         return data
 
 
@@ -578,6 +639,28 @@ class CompatibleJSONField(serializers.JSONField):
         if value:
             return json.loads(value)
         return value
+
+
+class WrappedList:
+    def __init__(self, data):
+        self._data = data
+
+    def all(self):
+        return self._data
+
+
+class WrappedModel:
+    def __init__(self, model):
+        self._wrapped = model
+
+    def __getattr__(self, item):
+        return getattr(self._wrapped, item)
+
+    def save(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def delete(self, *args, **kwargs):
+        raise NotImplementedError
 
 
 class OrderCreateSerializer(I18nAwareModelSerializer):
@@ -600,6 +683,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
     force = serializers.BooleanField(default=False, required=False)
     payment_date = serializers.DateTimeField(required=False, allow_null=True)
     send_mail = serializers.BooleanField(default=False, required=False)
+    simulate = serializers.BooleanField(default=False, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -609,7 +693,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
         model = Order
         fields = ('code', 'status', 'testmode', 'email', 'locale', 'payment_provider', 'fees', 'comment', 'sales_channel',
                   'invoice_address', 'positions', 'checkin_attention', 'payment_info', 'payment_date', 'consume_carts',
-                  'force', 'send_mail')
+                  'force', 'send_mail', 'simulate')
 
     def validate_payment_provider(self, pp):
         if pp is None:
@@ -686,7 +770,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                 sales_channel = get_all_sales_channels()[self.initial_data['sales_channel']]
 
                 if testmode and not sales_channel.testmode_supported:
-                    raise ValidationError('This sales channel does not provide support for testmode.')
+                    raise ValidationError('This sales channel does not provide support for test mode.')
             except KeyError:
                 # We do not need to raise a ValidationError here, since there is another check to validate the
                 # sales_channel
@@ -701,6 +785,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
         payment_info = validated_data.pop('payment_info', '{}')
         payment_date = validated_data.pop('payment_date', now())
         force = validated_data.pop('force', False)
+        simulate = validated_data.pop('simulate', False)
         self._send_mail = validated_data.pop('send_mail', False)
 
         if 'invoice_address' in validated_data:
@@ -714,7 +799,10 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
         else:
             ia = None
 
-        with self.context['event'].lock() as now_dt:
+        lockfn = self.context['event'].lock
+        if simulate:
+            lockfn = NoLockManager
+        with lockfn() as now_dt:
             free_seats = set()
             seats_seen = set()
             consume_carts = validated_data.pop('consume_carts', [])
@@ -823,7 +911,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                     else:
                         pos_data['seat'] = seat
                         if (seat not in free_seats and not seat.is_available(sales_channel=validated_data.get('sales_channel', 'web'))) or seat in seats_seen:
-                            errs[i]['seat'] = [ugettext_lazy('The selected seat "{seat}" is not available.').format(seat=seat.name)]
+                            errs[i]['seat'] = [gettext_lazy('The selected seat "{seat}" is not available.').format(seat=seat.name)]
                         seats_seen.add(seat)
                 elif seated:
                     errs[i]['seat'] = ['The specified product requires to choose a seat.']
@@ -834,11 +922,24 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                         if pos_data['voucher'].allow_ignore_quota or pos_data['voucher'].block_quota:
                             continue
 
+                    if pos_data.get('subevent'):
+                        if pos_data.get('item').pk in pos_data['subevent'].item_overrides and pos_data['subevent'].item_overrides[pos_data['item'].pk].disabled:
+                            errs[i]['item'] = [gettext_lazy('The product "{}" is not available on this date.').format(
+                                str(pos_data.get('item'))
+                            )]
+                        if (
+                                pos_data.get('variation') and pos_data['variation'].pk in pos_data['subevent'].var_overrides and
+                                pos_data['subevent'].var_overrides[pos_data['variation'].pk].disabled
+                        ):
+                            errs[i]['item'] = [gettext_lazy('The product "{}" is not available on this date.').format(
+                                str(pos_data.get('item'))
+                            )]
+
                     new_quotas = (pos_data.get('variation').quotas.filter(subevent=pos_data.get('subevent'))
                                   if pos_data.get('variation')
                                   else pos_data.get('item').quotas.filter(subevent=pos_data.get('subevent')))
                     if len(new_quotas) == 0:
-                        errs[i]['item'] = [ugettext_lazy('The product "{}" is not assigned to a quota.').format(
+                        errs[i]['item'] = [gettext_lazy('The product "{}" is not assigned to a quota.').format(
                             str(pos_data.get('item'))
                         )]
                     else:
@@ -850,7 +951,7 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                                 quota_avail_cache[quota][1] -= 1
                                 if quota_avail_cache[quota][1] < 0:
                                     errs[i]['item'] = [
-                                        ugettext_lazy('There is not enough quota available on quota "{}" to perform the operation.').format(
+                                        gettext_lazy('There is not enough quota available on quota "{}" to perform the operation.').format(
                                             quota.name
                                         )
                                     ]
@@ -864,11 +965,20 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
             order.set_expires(subevents=[p.get('subevent') for p in positions_data])
             order.meta_info = "{}"
             order.total = Decimal('0.00')
-            order.save()
+            if simulate:
+                order = WrappedModel(order)
+                order.last_modified = now()
+                order.code = 'PREVIEW'
+            else:
+                order.save()
 
             if ia:
-                ia.order = order
-                ia.save()
+                if not simulate:
+                    ia.order = order
+                    ia.save()
+                else:
+                    order.invoice_address = ia
+                    ia.last_modified = now()
 
             pos_map = {}
             for pos_data in positions_data:
@@ -880,9 +990,15 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                         '_legacy': attendee_name
                     }
                 pos = OrderPosition(**pos_data)
-                pos.order = order
+                if simulate:
+                    pos.order = order._wrapped
+                else:
+                    pos.order = order
                 if addon_to:
-                    pos.addon_to = pos_map[addon_to]
+                    if simulate:
+                        pos.addon_to = pos_map[addon_to]._wrapped
+                    else:
+                        pos.addon_to = pos_map[addon_to]
 
                 if pos.price is None:
                     price = get_price(
@@ -911,19 +1027,33 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                     invoice_address=ia,
                 ).gross
 
-                if pos.voucher:
-                    Voucher.objects.filter(pk=pos.voucher.pk).update(redeemed=F('redeemed') + 1)
-                pos.save()
+                if simulate:
+                    pos = WrappedModel(pos)
+                    pos.id = 0
+                    answers = []
+                    for answ_data in answers_data:
+                        options = answ_data.pop('options', [])
+                        answ = WrappedModel(QuestionAnswer(**answ_data))
+                        answ.options = WrappedList(options)
+                        answers.append(answ)
+                    pos.answers = answers
+                    pos.pseudonymization_id = "PREVIEW"
+                else:
+                    if pos.voucher:
+                        Voucher.objects.filter(pk=pos.voucher.pk).update(redeemed=F('redeemed') + 1)
+                    pos.save()
+                    for answ_data in answers_data:
+                        options = answ_data.pop('options', [])
+                        answ = pos.answers.create(**answ_data)
+                        answ.options.add(*options)
                 pos_map[pos.positionid] = pos
-                for answ_data in answers_data:
-                    options = answ_data.pop('options', [])
-                    answ = pos.answers.create(**answ_data)
-                    answ.options.add(*options)
 
-            for cp in delete_cps:
-                cp.delete()
+            if not simulate:
+                for cp in delete_cps:
+                    cp.delete()
 
-        order.total = sum([p.price for p in order.positions.all()])
+        order.total = sum([p.price for p in pos_map.values()])
+        fees = []
         for fee_data in fees_data:
             is_percentage = fee_data.pop('_treat_value_as_percentage', False)
             if is_percentage:
@@ -955,17 +1085,26 @@ class OrderCreateSerializer(I18nAwareModelSerializer):
                     fee_data['tax_rule'] = tr
                     fee_data['value'] = val
                     f = OrderFee(**fee_data)
-                    f.order = order
+                    f.order = order._wrapped if simulate else order
                     f._calculate_tax()
-                    f.save()
+                    fees.append(f)
+                    if not simulate:
+                        f.save()
             else:
                 f = OrderFee(**fee_data)
-                f.order = order
+                f.order = order._wrapped if simulate else order
                 f._calculate_tax()
-                f.save()
+                fees.append(f)
+                if not simulate:
+                    f.save()
 
-        order.total += sum([f.value for f in order.fees.all()])
-        order.save(update_fields=['total'])
+        order.total += sum([f.value for f in fees])
+        if simulate:
+            order.fees = fees
+            order.positions = pos_map.values()
+            return order  # ignore payments
+        else:
+            order.save(update_fields=['total'])
 
         if order.total == Decimal('0.00') and validated_data.get('status') == Order.STATUS_PAID and not payment_provider:
             payment_provider = 'free'

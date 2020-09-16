@@ -292,6 +292,8 @@ Flexible group sizes
 
 If you want to give out discounted tickets to groups starting at a given size, but still billed per person, you can do so by creating a special **Group ticket** at the per-person price and set the **Minimum amount per order** option of the ticket to the minimal group size.
 
+For more complex use cases, you can also use add-on products that can be chosen multiple times.
+
 This way, your ticket can be bought an arbitrary number of times – but no less than the given minimal amount per order.
 
 Fixed group sizes
@@ -344,3 +346,13 @@ In addition to your normal conference quota, you need to create an unlimited quo
 Then, head to the **Bundled products** tab of the "conference ticket" and add the "conference food" as a bundled product with a **designated price** of € 150.
 
 Once a customer tries to buy the € 450 conference ticket, a sub-product will be added and the price will automatically be split into the two components, leading to a correct computation of taxes.
+
+You can find more use cases in these specialized guides:
+
+More use cases
+--------------
+
+.. toctree::
+   :maxdepth: 1
+
+   guides/timeslots

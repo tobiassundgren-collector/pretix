@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.template.loader import get_template
+from django.utils.timezone import override
 from django_scopes import scope, scopes_disabled
 from inlinestyler.utils import inline_css
 
@@ -12,10 +13,10 @@ from pretix.celery_app import app
 from pretix.helpers.urls import build_absolute_uri
 
 
-@app.task(base=TransactionAwareTask)
+@app.task(base=TransactionAwareTask, acks_late=True)
 @scopes_disabled()
 def notify(logentry_id: int):
-    logentry = LogEntry.all.get(id=logentry_id)
+    logentry = LogEntry.all.select_related('event', 'event__organizer').get(id=logentry_id)
     if not logentry.event:
         return  # Ignore, we only have event-related notifications right now
     types = get_all_notification_types(logentry.event)
@@ -65,7 +66,7 @@ def notify(logentry_id: int):
             send_notification.apply_async(args=(logentry_id, notification_type.action_type, user.pk, method))
 
 
-@app.task(base=ProfiledTask)
+@app.task(base=ProfiledTask, acks_late=True)
 def send_notification(logentry_id: int, action_type: str, user_id: int, method: str):
     logentry = LogEntry.all.get(id=logentry_id)
     if logentry.event:
@@ -79,7 +80,7 @@ def send_notification(logentry_id: int, action_type: str, user_id: int, method: 
         if not notification_type:
             return  # Ignore, e.g. plugin not active for this event
 
-        with language(user.locale):
+        with language(user.locale), override(logentry.event.timezone if logentry.event else user.timezone):
             notification = notification_type.build_notification(logentry)
 
             if method == "mail":

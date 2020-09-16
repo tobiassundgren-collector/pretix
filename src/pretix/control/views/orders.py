@@ -13,7 +13,8 @@ from django.contrib import messages
 from django.core.files import File
 from django.db import transaction
 from django.db.models import (
-    Count, IntegerField, OuterRef, Prefetch, ProtectedError, Q, Subquery, Sum,
+    Count, Exists, IntegerField, OuterRef, Prefetch, ProtectedError, Q,
+    Subquery, Sum,
 )
 from django.forms import formset_factory
 from django.http import (
@@ -26,37 +27,41 @@ from django.utils import formats
 from django.utils.functional import cached_property
 from django.utils.http import is_safe_url
 from django.utils.timezone import make_aware, now
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext, gettext_lazy as _
 from django.views.generic import (
     DetailView, FormView, ListView, TemplateView, View,
 )
 from i18nfield.strings import LazyI18nString
 
 from pretix.base.channels import get_all_sales_channels
+from pretix.base.decimal import round_decimal
 from pretix.base.email import get_email_context
 from pretix.base.i18n import language
 from pretix.base.models import (
-    CachedCombinedTicket, CachedFile, CachedTicket, Invoice, InvoiceAddress,
-    Item, ItemVariation, LogEntry, Order, QuestionAnswer, Quota,
-    generate_position_secret, generate_secret,
+    CachedCombinedTicket, CachedFile, CachedTicket, Checkin, Invoice,
+    InvoiceAddress, Item, ItemVariation, LogEntry, Order, QuestionAnswer,
+    Quota, generate_position_secret, generate_secret,
 )
 from pretix.base.models.orders import (
-    OrderFee, OrderPayment, OrderPosition, OrderRefund,
+    CancellationRequest, OrderFee, OrderPayment, OrderPosition, OrderRefund,
 )
 from pretix.base.models.tax import EU_COUNTRIES, cc_to_vat_prefix
 from pretix.base.payment import PaymentException
 from pretix.base.services import tickets
+from pretix.base.services.cancelevent import cancel_event
 from pretix.base.services.export import export
 from pretix.base.services.invoices import (
     generate_cancellation, generate_invoice, invoice_pdf, invoice_pdf_task,
     invoice_qualified, regenerate_invoice,
 )
 from pretix.base.services.locking import LockTimeoutException
-from pretix.base.services.mail import SendMailException, render_mail
+from pretix.base.services.mail import (
+    SendMailException, TolerantDict, render_mail,
+)
 from pretix.base.services.orders import (
     OrderChangeManager, OrderError, approve_order, cancel_order, deny_order,
     extend_order, mark_order_expired, mark_order_refunded,
-    notify_user_changed_order,
+    notify_user_changed_order, reactivate_order,
 )
 from pretix.base.services.stats import order_overview
 from pretix.base.services.tickets import generate
@@ -71,10 +76,11 @@ from pretix.control.forms.filter import (
     EventOrderFilterForm, OverviewFilterForm, RefundFilterForm,
 )
 from pretix.control.forms.orders import (
-    CancelForm, CommentForm, ConfirmPaymentForm, ExporterForm, ExtendForm,
-    MarkPaidForm, OrderContactForm, OrderFeeChangeForm, OrderLocaleForm,
-    OrderMailForm, OrderPositionAddForm, OrderPositionAddFormset,
-    OrderPositionChangeForm, OrderRefundForm, OtherOperationsForm,
+    CancelForm, CommentForm, ConfirmPaymentForm, EventCancelForm, ExporterForm,
+    ExtendForm, MarkPaidForm, OrderContactForm, OrderFeeChangeForm,
+    OrderLocaleForm, OrderMailForm, OrderPositionAddForm,
+    OrderPositionAddFormset, OrderPositionChangeForm, OrderRefundForm,
+    OtherOperationsForm,
 )
 from pretix.control.permissions import EventPermissionRequiredMixin
 from pretix.control.views import PaginationMixin
@@ -114,10 +120,11 @@ class OrderList(EventPermissionRequiredMixin, PaginationMixin, ListView):
             Order.annotate_overpayments(Order.objects).filter(
                 pk__in=[o.pk for o in ctx['orders']]
             ).annotate(
-                pcnt=Subquery(s, output_field=IntegerField())
+                pcnt=Subquery(s, output_field=IntegerField()),
+                has_cancellation_request=Exists(CancellationRequest.objects.filter(order=OuterRef('pk')))
             ).values(
                 'pk', 'pcnt', 'is_overpaid', 'is_underpaid', 'is_pending_with_full_payment', 'has_external_refund',
-                'has_pending_refund'
+                'has_pending_refund', 'has_cancellation_request'
             )
         }
 
@@ -130,6 +137,7 @@ class OrderList(EventPermissionRequiredMixin, PaginationMixin, ListView):
             o.is_pending_with_full_payment = annotated.get(o.pk)['is_pending_with_full_payment']
             o.has_external_refund = annotated.get(o.pk)['has_external_refund']
             o.has_pending_refund = annotated.get(o.pk)['has_pending_refund']
+            o.has_cancellation_request = annotated.get(o.pk)['has_cancellation_request']
 
         if ctx['page_obj'].paginator.count < 1000:
             # Performance safeguard: Only count positions if the data set is small
@@ -153,8 +161,7 @@ class OrderView(EventPermissionRequiredMixin, DetailView):
 
     def get_object(self, queryset=None):
         try:
-            return Order.objects.get(
-                event=self.request.event,
+            return self.request.event.orders.get(
                 code=self.kwargs['code'].upper()
             )
         except Order.DoesNotExist:
@@ -168,6 +175,8 @@ class OrderView(EventPermissionRequiredMixin, DetailView):
 
     @cached_property
     def order(self):
+        if hasattr(self, 'object') and self.object:
+            return self.object
         return self.get_object()
 
     def get_context_data(self, **kwargs):
@@ -245,7 +254,7 @@ class OrderDetail(OrderView):
         ).prefetch_related(
             'item__questions', 'issued_gift_cards',
             Prefetch('answers', queryset=QuestionAnswer.objects.prefetch_related('options').select_related('question')),
-            'checkins', 'checkins__list'
+            Prefetch('checkins', queryset=Checkin.objects.select_related('list').order_by('datetime')),
         ).order_by('positionid')
 
         positions = []
@@ -268,6 +277,7 @@ class OrderDetail(OrderView):
                 p.item.questions.all()
             )
             p.cache_answers()
+            p.order = self.order
 
             positions.append(p)
 
@@ -555,7 +565,7 @@ class OrderRefundProcess(OrderView):
         if self.refund.state == OrderRefund.REFUND_STATE_EXTERNAL:
             self.refund.done(user=self.request.user)
 
-            if self.request.POST.get("action") == "r" and self.order.status != Order.STATUS_CANCELED:
+            if self.request.POST.get("action") == "r" and (self.order.status != Order.STATUS_CANCELED and self.order.positions.exists()):
                 mark_order_refunded(self.order, user=self.request.user)
             elif not (self.order.status == Order.STATUS_PAID and self.order.pending_sum <= 0):
                 self.order.status = Order.STATUS_PENDING
@@ -601,6 +611,40 @@ class OrderRefundDone(OrderView):
 
     def get(self, *args, **kwargs):
         return render(self.request, 'pretixcontrol/order/refund_done.html', {
+            'order': self.order,
+        })
+
+
+class OrderCancellationRequestDelete(OrderView):
+    permission = 'can_change_orders'
+
+    @cached_property
+    def req(self):
+        return get_object_or_404(self.order.cancellation_requests, pk=self.kwargs['req'])
+
+    def post(self, *args, **kwargs):
+        with transaction.atomic():
+            self.req.delete()
+            self.order.log_action('pretix.event.order.cancellationrequest.deleted', {
+            }, user=self.request.user)
+
+        messages.success(self.request, _('The request has been removed. If you want, you can now inform the user.'))
+        with language(self.order.locale):
+            return redirect(reverse('control:event.order.sendmail', kwargs={
+                'event': self.request.event.slug,
+                'organizer': self.request.event.organizer.slug,
+                'code': self.order.code
+            }) + '?' + urlencode({
+                'subject': _('Your cancellation request'),
+                'message': _('Hello,\n\nunfortunately, we were unable to accommodate your request and cancel your '
+                             'order.\n\n'
+                             'Your {event} team').format(
+                    event="{event}",
+                )
+            }))
+
+    def get(self, *args, **kwargs):
+        return render(self.request, 'pretixcontrol/order/cancellation_request_delete.html', {
             'order': self.order,
         })
 
@@ -677,7 +721,14 @@ class OrderRefundView(OrderView):
             full_refund = self.order.payment_refund_sum
         else:
             full_refund = self.start_form.cleaned_data.get('partial_amount')
-        proposals = self.order.propose_auto_refunds(full_refund, payments=payments)
+        if self.request.GET.get('giftcard', 'false') == 'true':
+            proposals = {
+                None: full_refund
+            }
+            giftcard_proposal = full_refund
+        else:
+            proposals = self.order.propose_auto_refunds(full_refund, payments=payments)
+            giftcard_proposal = Decimal('0.00')
         to_refund = full_refund - sum(proposals.values())
         for p in payments:
             p.propose_refund = proposals.get(p, 0)
@@ -721,6 +772,7 @@ class OrderRefundView(OrderView):
                 if giftcard_value:
                     refund_selected += giftcard_value
                     giftcard = self.request.organizer.issued_gift_cards.create(
+                        expires=self.request.organizer.default_gift_card_expiry,
                         currency=self.request.event.currency,
                         testmode=self.order.testmode
                     )
@@ -848,20 +900,23 @@ class OrderRefundView(OrderView):
                     if giftcard_value and self.order.email:
                         messages.success(self.request, _('A new gift card was created. You can now send the user their '
                                                          'gift card code.'))
-                        return redirect(reverse('control:event.order.sendmail', kwargs={
-                            'event': self.request.event.slug,
-                            'organizer': self.request.event.organizer.slug,
-                            'code': self.order.code
-                        }) + '?' + urlencode({
-                            'subject': _('Your gift card code'),
-                            'message': _('Hello,\n\nwe have refunded you {amount} for your order.\n\nYou can use the gift '
-                                         'card code {giftcard} to pay for future ticket purchases in our shop.\n\n'
-                                         'Your {event} team').format(
-                                event="{event}",
-                                amount=money_filter(giftcard_value, self.request.event.currency),
-                                giftcard=giftcard.secret,
-                            )
-                        }))
+                        with language(self.order.locale):
+                            return redirect(reverse('control:event.order.sendmail', kwargs={
+                                'event': self.request.event.slug,
+                                'organizer': self.request.event.organizer.slug,
+                                'code': self.order.code
+                            }) + '?' + urlencode({
+                                'subject': gettext('Your gift card code'),
+                                'message': gettext(
+                                    'Hello,\n\nwe have refunded you {amount} for your order.\n\nYou can use the gift '
+                                    'card code {giftcard} to pay for future ticket purchases in our shop.\n\n'
+                                    'Your {event} team'
+                                ).format(
+                                    event="{event}",
+                                    amount=money_filter(giftcard_value, self.request.event.currency),
+                                    giftcard=giftcard.secret,
+                                )
+                            }))
                 return redirect(self.get_order_url())
             else:
                 messages.error(self.request, _('The refunds you selected do not match the selected total refund '
@@ -871,6 +926,7 @@ class OrderRefundView(OrderView):
             'payments': payments,
             'remainder': to_refund,
             'order': self.order,
+            'giftcard_proposal': giftcard_proposal,
             'partial_amount': (
                 self.request.POST.get('start-partial_amount') if self.request.method == 'POST'
                 else self.request.GET.get('start-partial_amount')
@@ -896,6 +952,12 @@ class OrderTransition(OrderView):
     permission = 'can_change_orders'
 
     @cached_property
+    def req(self):
+        if 'req' not in self.request.GET:
+            return None
+        return get_object_or_404(self.order.cancellation_requests, pk=self.request.GET.get('req'))
+
+    @cached_property
     def mark_paid_form(self):
         return MarkPaidForm(
             instance=self.order,
@@ -907,6 +969,9 @@ class OrderTransition(OrderView):
         return CancelForm(
             instance=self.order,
             data=self.request.POST if self.request.method == "POST" else None,
+            initial={
+                'cancellation_fee': self.req.cancellation_fee if self.req else None
+            }
         )
 
     def post(self, *args, **kwargs):
@@ -981,7 +1046,7 @@ class OrderTransition(OrderView):
                 messages.success(self.request, _('The payment has been created successfully.'))
         elif self.order.cancel_allowed() and to == 'c' and self.mark_canceled_form.is_valid():
             try:
-                cancel_order(self.order, user=self.request.user,
+                cancel_order(self.order.pk, user=self.request.user,
                              send_mail=self.mark_canceled_form.cleaned_data['send_email'],
                              cancellation_fee=self.mark_canceled_form.cleaned_data.get('cancellation_fee'))
             except OrderError as e:
@@ -995,8 +1060,9 @@ class OrderTransition(OrderView):
                         'event': self.request.event.slug,
                         'organizer': self.request.event.organizer.slug,
                         'code': self.order.code
-                    }) + '?start-action=do_nothing&start-mode=partial&start-partial_amount={}'.format(
-                        self.order.pending_sum * -1
+                    }) + '?start-action=do_nothing&start-mode=partial&start-partial_amount={}&giftcard={}'.format(
+                        round_decimal(self.order.pending_sum * -1),
+                        'true' if self.req and self.req.refund_as_giftcard else 'false'
                     ))
 
                 messages.success(self.request, _('The order has been canceled.'))
@@ -1259,6 +1325,42 @@ class OrderExtend(OrderView):
                           data=self.request.POST if self.request.method == "POST" else None)
 
 
+class OrderReactivate(OrderView):
+    permission = 'can_change_orders'
+
+    def post(self, *args, **kwargs):
+        try:
+            reactivate_order(
+                self.order,
+                user=self.request.user
+            )
+            messages.success(self.request, _('The order has been reactivated.'))
+        except OrderError as e:
+            messages.error(self.request, str(e))
+            return self._redirect_here()
+        except LockTimeoutException:
+            messages.error(self.request, _('We were not able to process the request completely as the '
+                                           'server was too busy.'))
+        return self._redirect_back()
+
+    def dispatch(self, request, *args, **kwargs):
+        if self.order.status != Order.STATUS_CANCELED:
+            messages.error(self.request, _('This action is only allowed for canceled orders.'))
+            return self._redirect_back()
+        return super().dispatch(request, *kwargs, **kwargs)
+
+    def _redirect_here(self):
+        return redirect('control:event.order.reactivate',
+                        event=self.request.event.slug,
+                        organizer=self.request.event.organizer.slug,
+                        code=self.order.code)
+
+    def get(self, *args, **kwargs):
+        return render(self.request, 'pretixcontrol/order/reactivate.html', {
+            'order': self.order,
+        })
+
+
 class OrderChange(OrderView):
     permission = 'can_change_orders'
     template_name = 'pretixcontrol/order/change.html'
@@ -1283,8 +1385,13 @@ class OrderChange(OrderView):
         return ff(
             prefix='add',
             order=self.order,
+            items=self.items,
             data=self.request.POST if self.request.method == "POST" else None
         )
+
+    @cached_property
+    def items(self):
+        return self.request.event.items.prefetch_related('variations', 'tax_rule').all()
 
     @cached_property
     def fees(self):
@@ -1292,25 +1399,15 @@ class OrderChange(OrderView):
         for f in fees:
             f.form = OrderFeeChangeForm(prefix='of-{}'.format(f.pk), instance=f,
                                         data=self.request.POST if self.request.method == "POST" else None)
-            try:
-                ia = self.order.invoice_address
-            except InvoiceAddress.DoesNotExist:
-                ia = None
-            f.apply_tax = self.request.event.settings.tax_rate_default and self.request.event.settings.tax_rate_default.tax_applicable(invoice_address=ia)
         return fees
 
     @cached_property
     def positions(self):
-        positions = list(self.order.positions.all())
+        positions = list(self.order.positions.select_related('item', 'item__tax_rule'))
         for p in positions:
-            p.form = OrderPositionChangeForm(prefix='op-{}'.format(p.pk), instance=p,
+            p.form = OrderPositionChangeForm(prefix='op-{}'.format(p.pk), instance=p, items=self.items,
                                              initial={'seat': p.seat.seat_guid if p.seat else None},
                                              data=self.request.POST if self.request.method == "POST" else None)
-            try:
-                ia = self.order.invoice_address
-            except InvoiceAddress.DoesNotExist:
-                ia = None
-            p.apply_tax = p.item.tax_rule and p.item.tax_rule.tax_applicable(invoice_address=ia)
         return positions
 
     def get_context_data(self, **kwargs):
@@ -1326,7 +1423,9 @@ class OrderChange(OrderView):
             return False
         else:
             if self.other_form.cleaned_data['recalculate_taxes']:
-                ocm.recalculate_taxes()
+                ocm.recalculate_taxes(
+                    keep=self.other_form.cleaned_data['recalculate_taxes']
+                )
             return True
 
     def _process_add(self, ocm):
@@ -1371,6 +1470,9 @@ class OrderChange(OrderView):
                 if f.form.cleaned_data['value'] != f.value:
                     ocm.change_fee(f, f.form.cleaned_data['value'])
 
+                if f.form.cleaned_data['tax_rule'] and f.form.cleaned_data['tax_rule'] != f.tax_rule:
+                    ocm.change_tax_rule(f, f.form.cleaned_data['tax_rule'])
+
             except OrderError as e:
                 f.custom_error = str(e)
                 return False
@@ -1386,6 +1488,7 @@ class OrderChange(OrderView):
                     ocm.cancel(p)
                     continue
 
+                change_item = None
                 if p.form.cleaned_data['itemvar']:
                     if '-' in p.form.cleaned_data['itemvar']:
                         itemid, varid = p.form.cleaned_data['itemvar'].split('-')
@@ -1398,16 +1501,27 @@ class OrderChange(OrderView):
                     else:
                         variation = None
                     if item != p.item or variation != p.variation:
-                        ocm.change_item(p, item, variation)
+                        change_item = (item, variation)
 
+                change_subevent = None
                 if self.request.event.has_subevents and p.form.cleaned_data['subevent'] and p.form.cleaned_data['subevent'] != p.subevent:
-                    ocm.change_subevent(p, p.form.cleaned_data['subevent'])
+                    change_subevent = (p.form.cleaned_data['subevent'],)
 
-                if p.seat and p.form.cleaned_data['seat'] and p.form.cleaned_data['seat'] != p.seat.seat_guid:
+                if change_item is not None and change_subevent is not None:
+                    ocm.change_item_and_subevent(p, *change_item, *change_subevent)
+                elif change_item is not None:
+                    ocm.change_item(p, *change_item)
+                elif change_subevent is not None:
+                    ocm.change_subevent(p, *change_subevent)
+
+                if p.form.cleaned_data.get('seat') and (not p.seat or p.form.cleaned_data['seat'] != p.seat.seat_guid):
                     ocm.change_seat(p, p.form.cleaned_data['seat'])
 
-                if p.form.cleaned_data['price'] != p.price:
+                if p.form.cleaned_data['price'] is not None and p.form.cleaned_data['price'] != p.price:
                     ocm.change_price(p, p.form.cleaned_data['price'])
+
+                if p.form.cleaned_data['tax_rule'] and p.form.cleaned_data['tax_rule'] != p.tax_rule:
+                    ocm.change_tax_rule(p, p.form.cleaned_data['tax_rule'])
 
                 if p.form.cleaned_data['operation_split']:
                     ocm.split(p)
@@ -1630,10 +1744,11 @@ class OrderSendMail(EventPermissionRequiredMixin, OrderViewMixin, FormView):
         with language(order.locale):
             email_context = get_email_context(event=order.event, order=order)
         email_template = LazyI18nString(form.cleaned_data['message'])
+        email_subject = str(form.cleaned_data['subject']).format_map(TolerantDict(email_context))
         email_content = render_mail(email_template, email_context)
         if self.request.POST.get('action') == 'preview':
             self.preview_output = {
-                'subject': _('Subject: {subject}').format(subject=form.cleaned_data['subject']),
+                'subject': _('Subject: {subject}').format(subject=email_subject),
                 'html': markdown_compile_email(email_content)
             }
             return self.get(self.request, *self.args, **self.kwargs)
@@ -1727,10 +1842,12 @@ class OverView(EventPermissionRequiredMixin, TemplateView):
                 date_filter=self.filter_form.cleaned_data['date_axis'],
                 date_from=self.filter_form.cleaned_data['date_from'],
                 date_until=self.filter_form.cleaned_data['date_until'],
+                fees=True
             )
         else:
             ctx['items_by_category'], ctx['total'] = order_overview(
                 self.request.event,
+                fees=True
             )
         ctx['subevent_warning'] = (
             self.request.event.has_subevents and
@@ -1881,3 +1998,70 @@ class RefundList(EventPermissionRequiredMixin, PaginationMixin, ListView):
     def filter_form(self):
         return RefundFilterForm(data=self.request.GET, event=self.request.event,
                                 initial={'status': 'open'})
+
+
+class EventCancel(EventPermissionRequiredMixin, AsyncAction, FormView):
+    template_name = 'pretixcontrol/orders/cancel.html'
+    permission = 'can_change_orders'
+    form_class = EventCancelForm
+    task = cancel_event
+    known_errortypes = ['OrderError']
+
+    def get(self, request, *args, **kwargs):
+        if 'async_id' in request.GET and settings.HAS_CELERY:
+            return self.get_result(request)
+        return FormView.get(self, request, *args, **kwargs)
+
+    def get_form_kwargs(self):
+        k = super().get_form_kwargs()
+        k['event'] = self.request.event
+        return k
+
+    def form_valid(self, form):
+        return self.do(
+            self.request.event.pk,
+            subevent=form.cleaned_data['subevent'].pk if form.cleaned_data.get('subevent') else None,
+            auto_refund=form.cleaned_data.get('auto_refund'),
+            manual_refund=form.cleaned_data.get('manual_refund'),
+            refund_as_giftcard=form.cleaned_data.get('refund_as_giftcard'),
+            giftcard_expires=form.cleaned_data.get('gift_card_expires'),
+            giftcard_conditions=form.cleaned_data.get('gift_card_conditions'),
+            keep_fee_fixed=form.cleaned_data.get('keep_fee_fixed'),
+            keep_fee_percentage=form.cleaned_data.get('keep_fee_percentage'),
+            keep_fees=form.cleaned_data.get('keep_fees'),
+            send=form.cleaned_data.get('send'),
+            send_subject=form.cleaned_data.get('send_subject').data,
+            send_message=form.cleaned_data.get('send_message').data,
+            send_waitinglist=form.cleaned_data.get('send_waitinglist'),
+            send_waitinglist_subject=form.cleaned_data.get('send_waitinglist_subject').data,
+            send_waitinglist_message=form.cleaned_data.get('send_waitinglist_message').data,
+            user=self.request.user.pk,
+        )
+
+    def get_success_message(self, value):
+        if value == 0:
+            return _('All orders have been canceled.')
+        else:
+            return _('The orders have been canceled. An error occurred with {count} orders, please '
+                     'check all uncanceled orders.').format(count=value)
+
+    def get_success_url(self, value):
+        return reverse('control:event.cancel', kwargs={
+            'organizer': self.request.organizer.slug,
+            'event': self.request.event.slug,
+        })
+
+    def get_error_url(self):
+        return reverse('control:event.cancel', kwargs={
+            'organizer': self.request.organizer.slug,
+            'event': self.request.event.slug,
+        })
+
+    def get_error_message(self, exception):
+        if isinstance(exception, str):
+            return exception
+        return super().get_error_message(exception)
+
+    def form_invalid(self, form):
+        messages.error(self.request, _('Your input was not valid.'))
+        return super().form_invalid(form)

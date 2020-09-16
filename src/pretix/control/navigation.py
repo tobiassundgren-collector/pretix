@@ -1,6 +1,6 @@
 from django.http import HttpRequest
 from django.urls import reverse
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 
 from pretix.control.signals import (
     nav_event, nav_event_settings, nav_global, nav_organizer,
@@ -438,6 +438,16 @@ def get_organizer_navigation(request):
             'active': 'organizer.team' in url.url_name,
             'icon': 'group',
         })
+
+    nav.append({
+        'label': _('Export'),
+        'url': reverse('control:organizer.export', kwargs={
+            'organizer': request.organizer.slug,
+        }),
+        'active': 'organizer.export' in url.url_name,
+        'icon': 'download',
+    })
+
     if 'can_change_organizer_settings' in request.orgapermset:
         nav.append({
             'label': _('Devices'),

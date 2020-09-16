@@ -15,7 +15,9 @@ from django.utils.translation.trans_real import (
 )
 
 from pretix.base.settings import GlobalSettingsObject
-from pretix.multidomain.urlreverse import get_domain
+from pretix.multidomain.urlreverse import (
+    get_event_domain, get_organizer_domain,
+)
 
 _supported = None
 
@@ -197,9 +199,7 @@ class SecurityMiddleware(MiddlewareMixin):
             'default-src': ["{static}"],
             'script-src': ['{static}', 'https://checkout.stripe.com', 'https://js.stripe.com'],
             'object-src': ["'none'"],
-            # frame-src is deprecated but kept for compatibility with CSP 1.0 browsers, e.g. Safari 9
             'frame-src': ['{static}', 'https://checkout.stripe.com', 'https://js.stripe.com'],
-            'child-src': ['{static}', 'https://checkout.stripe.com', 'https://js.stripe.com'],
             'style-src': ["{static}", "{media}"],
             'connect-src': ["{dynamic}", "{media}", "https://checkout.stripe.com"],
             'img-src': ["{static}", "{media}", "data:", "https://*.stripe.com"] + img_src,
@@ -210,8 +210,9 @@ class SecurityMiddleware(MiddlewareMixin):
             # single-sign-on this can be nearly anything so we cannot really restrict
             # this. However, we'll restrict it to HTTPS.
             'form-action': ["{dynamic}", "https:"] + (['http:'] if settings.SITE_URL.startswith('http://') else []),
-            'report-uri': ["/csp_report/"],
         }
+        if settings.LOG_CSP:
+            h['report-uri'] = ["/csp_report/"]
         if 'Content-Security-Policy' in resp:
             _merge_csp(h, _parse_csp(resp['Content-Security-Policy']))
 
@@ -231,7 +232,10 @@ class SecurityMiddleware(MiddlewareMixin):
                 dynamicdomain += " " + settings.SITE_URL
 
         if hasattr(request, 'organizer') and request.organizer:
-            domain = get_domain(request.organizer)
+            if hasattr(request, 'event') and request.event:
+                domain = get_event_domain(request.event, fallback=True)
+            else:
+                domain = get_organizer_domain(request.organizer)
             if domain:
                 siteurlsplit = urlsplit(settings.SITE_URL)
                 if siteurlsplit.port and siteurlsplit.port not in (80, 443):

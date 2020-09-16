@@ -1,4 +1,39 @@
+from django.dispatch import Signal
+
 from pretix.base.signals import EventPluginSignal
+
+global_html_head = Signal(
+    providing_args=["request"]
+)
+"""
+This signal allows you to put code inside the HTML ``<head>`` tag
+of every page in the frontend. You will get the request as the keyword argument
+``request`` and are expected to return plain HTML.
+
+This signal is called regardless of whether your plugin is active for all pages of the system.
+"""
+
+global_html_page_header = Signal(
+    providing_args=["request"]
+)
+"""
+This signal allows you to put code right in the beginning of the HTML ``<body>`` tag
+of every page in the frontend. You will get the request as the keyword argument
+``request`` and are expected to return plain HTML.
+
+This signal is called regardless of whether your plugin is active for all pages of the system.
+"""
+
+global_html_footer = Signal(
+    providing_args=["request"]
+)
+"""
+This signal allows you to put code before the end of the HTML ``<body>`` tag
+of every page in the frontend. You will get the request as the keyword argument
+``request`` and are expected to return plain HTML.
+
+This signal is called regardless of whether your plugin is active for all pages of the system.
+"""
 
 html_head = EventPluginSignal(
     providing_args=["request"]
@@ -162,7 +197,7 @@ As with all plugin signals, the ``sender`` keyword argument will contain the eve
 """
 
 order_info = EventPluginSignal(
-    providing_args=["order"]
+    providing_args=["order", "request"]
 )
 """
 This signal is sent out to display additional information on the order detail page
@@ -171,10 +206,28 @@ As with all plugin signals, the ``sender`` keyword argument will contain the eve
 """
 
 position_info = EventPluginSignal(
-    providing_args=["order", "position"]
+    providing_args=["order", "position", "request"]
 )
 """
 This signal is sent out to display additional information on the position detail page
+
+As with all plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
+order_info_top = EventPluginSignal(
+    providing_args=["order", "request"]
+)
+"""
+This signal is sent out to display additional information on top of the order detail page
+
+As with all plugin signals, the ``sender`` keyword argument will contain the event.
+"""
+
+position_info_top = EventPluginSignal(
+    providing_args=["order", "position", "request"]
+)
+"""
+This signal is sent out to display additional information on top of the position detail page
 
 As with all plugin signals, the ``sender`` keyword argument will contain the event.
 """

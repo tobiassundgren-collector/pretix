@@ -12,12 +12,13 @@ from django.core.files.storage import default_storage
 from django.core.mail import get_connection
 from django.core.validators import RegexValidator
 from django.db import models
-from django.db.models import Exists, F, OuterRef, Prefetch, Q, Subquery
+from django.db.models import Exists, OuterRef, Prefetch, Q, Subquery
 from django.template.defaultfilters import date as _date
 from django.utils.crypto import get_random_string
+from django.utils.formats import date_format
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django_scopes import ScopedManager, scopes_disabled
 from i18nfield.fields import I18nCharField, I18nTextField
 
@@ -213,8 +214,10 @@ class EventMixin:
         vars_reserved = set()
         items_gone = set()
         vars_gone = set()
+
+        r = getattr(self, '_quota_cache', {})
         for q in self.active_quotas:
-            res = q.availability(allow_cache=True)
+            res = r[q] if q in r else q.availability(allow_cache=True)
 
             if res[0] == Quota.AVAILABILITY_OK:
                 if q.active_items:
@@ -284,7 +287,7 @@ class Event(EventMixin, LoggedModel):
         max_length=200,
         verbose_name=_("Event name"),
     )
-    slug = models.SlugField(
+    slug = models.CharField(
         max_length=50, db_index=True,
         help_text=_(
             "Should be short, only contain lowercase letters, numbers, dots, and dashes, and must be unique among your "
@@ -293,7 +296,7 @@ class Event(EventMixin, LoggedModel):
             "This will be used in URLs, order codes, invoice numbers, and bank transfer references."),
         validators=[
             RegexValidator(
-                regex="^[a-zA-Z0-9][a-zA-Z0-9.-]+$",
+                regex="^[a-zA-Z0-9][a-zA-Z0-9.-]*$",
                 message=_("The slug may only contain letters, numbers, dots and dashes."),
             ),
             EventSlugBanlistValidator()
@@ -370,6 +373,9 @@ class Event(EventMixin, LoggedModel):
         """
         self.settings.invoice_renderer = 'modern1'
         self.settings.invoice_include_expire_date = True
+        self.settings.ticketoutput_pdf__enabled = True
+        self.settings.ticketoutput_passbook__enabled = True
+        self.settings.event_list_type = 'calendar'
 
     @property
     def social_image(self):
@@ -385,38 +391,19 @@ class Event(EventMixin, LoggedModel):
         if img:
             return urljoin(build_absolute_uri(self, 'presale:event.index'), img)
 
-    def free_seats(self, ignore_voucher=None, sales_channel='web'):
-        from .orders import CartPosition, Order, OrderPosition
-        from .vouchers import Voucher
-        vqs = Voucher.objects.filter(
-            event=self,
-            seat_id=OuterRef('pk'),
-            redeemed__lt=F('max_usages'),
-        ).filter(
-            Q(valid_until__isnull=True) | Q(valid_until__gte=now())
-        )
-        if ignore_voucher:
-            vqs = vqs.exclude(pk=ignore_voucher.pk)
-        qs = self.seats.annotate(
-            has_order=Exists(
-                OrderPosition.objects.filter(
-                    order__event=self,
-                    seat_id=OuterRef('pk'),
-                    order__status__in=[Order.STATUS_PENDING, Order.STATUS_PAID]
-                )
-            ),
-            has_cart=Exists(
-                CartPosition.objects.filter(
-                    event=self,
-                    seat_id=OuterRef('pk'),
-                    expires__gte=now()
-                )
-            ),
-            has_voucher=Exists(
-                vqs
-            )
-        ).filter(has_order=False, has_cart=False, has_voucher=False)
-        if sales_channel not in self.settings.seating_allow_blocked_seats_for_channel:
+    def free_seats(self, ignore_voucher=None, sales_channel='web', include_blocked=False):
+        from .seating import Seat
+
+        qs_annotated = Seat.annotated(self.seats, self.pk, None,
+                                      ignore_voucher_id=ignore_voucher.pk if ignore_voucher else None,
+                                      minimal_distance=self.settings.seating_minimal_distance,
+                                      distance_only_within_row=self.settings.seating_distance_within_row)
+
+        qs = qs_annotated.filter(has_order=False, has_cart=False, has_voucher=False)
+        if self.settings.seating_minimal_distance > 0:
+            qs = qs.filter(has_closeby_taken=False)
+
+        if not (sales_channel in self.settings.seating_allow_blocked_seats_for_channel or include_blocked):
             qs = qs.filter(blocked=False)
         return qs
 
@@ -428,7 +415,7 @@ class Event(EventMixin, LoggedModel):
             return super().presale_has_ended
 
     def delete_all_orders(self, really=False):
-        from .orders import OrderRefund, OrderPayment, OrderPosition, OrderFee
+        from .orders import OrderFee, OrderPayment, OrderPosition, OrderRefund
 
         if not really:
             raise TypeError("Pass really=True as a parameter.")
@@ -515,8 +502,10 @@ class Event(EventMixin, LoggedModel):
         ), tz)
 
     def copy_data_from(self, other):
-        from . import ItemAddOn, ItemCategory, Item, Question, Quota
         from ..signals import event_copy_data
+        from . import (
+            Item, ItemAddOn, ItemCategory, ItemMetaValue, Question, Quota,
+        )
 
         self.plugins = other.plugins
         self.is_public = other.is_public
@@ -540,6 +529,14 @@ class Event(EventMixin, LoggedModel):
             c.save()
             c.log_action('pretix.object.cloned')
 
+        item_meta_properties_map = {}
+        for imp in other.item_meta_properties.all():
+            item_meta_properties_map[imp.pk] = imp
+            imp.pk = None
+            imp.event = self
+            imp.save()
+            imp.log_action('pretix.object.cloned')
+
         item_map = {}
         variation_map = {}
         for i in Item.objects.filter(event=other).prefetch_related('variations'):
@@ -560,6 +557,12 @@ class Event(EventMixin, LoggedModel):
                 v.pk = None
                 v.item = i
                 v.save()
+
+        for imv in ItemMetaValue.objects.filter(item__event=other).prefetch_related('item', 'property'):
+            imv.pk = None
+            imv.property = item_meta_properties_map[imv.property.pk]
+            imv.item = item_map[imv.item.pk]
+            imv.save()
 
         for ia in ItemAddOn.objects.filter(base_item__event=other).prefetch_related('base_item', 'addon_category'):
             ia.pk = None
@@ -608,10 +611,29 @@ class Event(EventMixin, LoggedModel):
             q.dependency_question = question_map[q.dependency_question_id]
             q.save(update_fields=['dependency_question'])
 
+        def _walk_rules(rules):
+            if isinstance(rules, dict):
+                for k, v in rules.items():
+                    if k == 'lookup':
+                        if v[0] == 'product':
+                            v[1] = str(item_map.get(int(v[1]), 0).pk)
+                        elif v[0] == 'variation':
+                            v[1] = str(variation_map.get(int(v[1]), 0).pk)
+                    else:
+                        _walk_rules(v)
+            elif isinstance(rules, list):
+                for i in rules:
+                    _walk_rules(i)
+
+        checkin_list_map = {}
         for cl in other.checkin_lists.filter(subevent__isnull=True).prefetch_related('limit_products'):
             items = list(cl.limit_products.all())
+            checkin_list_map[cl.pk] = cl
             cl.pk = None
             cl.event = self
+            rules = cl.rules
+            _walk_rules(rules)
+            cl.rules = rules
             cl.save()
             cl.log_action('pretix.object.cloned')
             for i in items:
@@ -664,7 +686,7 @@ class Event(EventMixin, LoggedModel):
         event_copy_data.send(
             sender=self, other=other,
             tax_map=tax_map, category_map=category_map, item_map=item_map, variation_map=variation_map,
-            question_map=question_map
+            question_map=question_map, checkin_list_map=checkin_list_map
         )
 
     def get_payment_providers(self, cached=False) -> dict:
@@ -863,6 +885,7 @@ class Event(EventMixin, LoggedModel):
     def delete_sub_objects(self):
         self.cartposition_set.filter(addon_to__isnull=False).delete()
         self.cartposition_set.all().delete()
+        self.vouchers.all().delete()
         self.items.all().delete()
         self.subevents.all().delete()
 
@@ -1016,43 +1039,23 @@ class SubEvent(EventMixin, LoggedModel):
         ordering = ("date_from", "name")
 
     def __str__(self):
-        return '{} - {}'.format(self.name, self.get_date_range_display())
+        return '{} - {} {}'.format(
+            self.name,
+            self.get_date_range_display(),
+            date_format(self.date_from.astimezone(self.timezone), "TIME_FORMAT") if self.settings.show_times else ""
+        ).strip()
 
-    def free_seats(self, ignore_voucher=None, sales_channel='web'):
-        from .orders import CartPosition, Order, OrderPosition
-        from .vouchers import Voucher
-        vqs = Voucher.objects.filter(
-            event_id=self.event_id,
-            subevent=self,
-            seat_id=OuterRef('pk'),
-            redeemed__lt=F('max_usages'),
-        ).filter(
-            Q(valid_until__isnull=True) | Q(valid_until__gte=now())
-        )
-        if ignore_voucher:
-            vqs = vqs.exclude(pk=ignore_voucher.pk)
-        qs = self.seats.annotate(
-            has_order=Exists(
-                OrderPosition.objects.filter(
-                    order__event_id=self.event_id,
-                    subevent=self,
-                    seat_id=OuterRef('pk'),
-                    order__status__in=[Order.STATUS_PENDING, Order.STATUS_PAID]
-                )
-            ),
-            has_cart=Exists(
-                CartPosition.objects.filter(
-                    event_id=self.event_id,
-                    subevent=self,
-                    seat_id=OuterRef('pk'),
-                    expires__gte=now()
-                )
-            ),
-            has_voucher=Exists(
-                vqs
-            )
-        ).filter(has_order=False, has_cart=False, has_voucher=False)
-        if sales_channel not in self.settings.seating_allow_blocked_seats_for_channel:
+    def free_seats(self, ignore_voucher=None, sales_channel='web', include_blocked=False):
+        from .seating import Seat
+        qs_annotated = Seat.annotated(self.seats, self.event_id, self,
+                                      ignore_voucher_id=ignore_voucher.pk if ignore_voucher else None,
+                                      minimal_distance=self.settings.seating_minimal_distance,
+                                      distance_only_within_row=self.settings.seating_distance_within_row)
+        qs = qs_annotated.filter(has_order=False, has_cart=False, has_voucher=False)
+        if self.settings.seating_minimal_distance > 0:
+            qs = qs.filter(has_closeby_taken=False)
+
+        if not (sales_channel in self.settings.seating_allow_blocked_seats_for_channel or include_blocked):
             qs = qs.filter(blocked=False)
         return qs
 
@@ -1061,21 +1064,35 @@ class SubEvent(EventMixin, LoggedModel):
         return self.event.settings
 
     @cached_property
-    def item_price_overrides(self):
+    def item_overrides(self):
         from .items import SubEventItem
 
         return {
-            si.item_id: si.price
-            for si in SubEventItem.objects.filter(subevent=self, price__isnull=False)
+            si.item_id: si
+            for si in SubEventItem.objects.filter(subevent=self)
         }
 
     @cached_property
-    def var_price_overrides(self):
+    def var_overrides(self):
         from .items import SubEventItemVariation
 
         return {
+            si.variation_id: si
+            for si in SubEventItemVariation.objects.filter(subevent=self)
+        }
+
+    @property
+    def item_price_overrides(self):
+        return {
+            si.item_id: si.price
+            for si in self.item_overrides.values() if si.price is not None
+        }
+
+    @property
+    def var_price_overrides(self):
+        return {
             si.variation_id: si.price
-            for si in SubEventItemVariation.objects.filter(subevent=self, price__isnull=False)
+            for si in self.var_overrides.values() if si.price is not None
         }
 
     @property
@@ -1092,14 +1109,32 @@ class SubEvent(EventMixin, LoggedModel):
         return not self.orderposition_set.exists()
 
     def delete(self, *args, **kwargs):
+        clear_cache = kwargs.pop('clear_cache', False)
         super().delete(*args, **kwargs)
-        if self.event:
+        if self.event and clear_cache:
             self.event.cache.clear()
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.__original_dates = (self.date_from, self.date_to)
+
     def save(self, *args, **kwargs):
+        from .orders import Order
+
+        clear_cache = kwargs.pop('clear_cache', False)
         super().save(*args, **kwargs)
-        if self.event:
+        if self.event and clear_cache:
             self.event.cache.clear()
+
+        if (self.date_from, self.date_to) != self.__original_dates:
+            """
+            This is required to guarantee a synchronization invariant of our scanning apps.
+            Our syncing apps throw away order records of subevents more than X days ago, since
+            they are not interesting for ticket scanning and pose a performance hazard. However,
+            the app needs to know when a subevent is moved to a date in the future, since that
+            might require it to re-download and re-store the orders.
+            """
+            Order.objects.filter(all_positions__subevent=self).update(last_modified=now())
 
     @staticmethod
     def clean_items(event, items):
@@ -1167,8 +1202,8 @@ class RequiredAction(models.Model):
         created = not self.pk
         super().save(*args, **kwargs)
         if created:
-            from .log import LogEntry
             from ..services.notifications import notify
+            from .log import LogEntry
 
             logentry = LogEntry.objects.create(
                 content_object=self,

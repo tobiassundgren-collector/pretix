@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import string
+from collections import Counter
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Union
@@ -25,8 +26,8 @@ from django.utils.encoding import escape_uri_path
 from django.utils.formats import date_format
 from django.utils.functional import cached_property
 from django.utils.timezone import make_aware, now
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
-from django_countries.fields import Country, CountryField
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
+from django_countries.fields import Country
 from django_scopes import ScopedManager, scopes_disabled
 from i18nfield.strings import LazyI18nString
 from jsonfallback.fields import FallbackJSONField
@@ -43,6 +44,7 @@ from pretix.base.services.locking import NoLockManager
 from pretix.base.settings import PERSON_NAME_SCHEMES
 from pretix.base.signals import order_gracefully_delete
 
+from ...helpers.countries import CachedCountries, FastCountryField
 from .base import LockModel, LoggedModel
 from .event import Event, SubEvent
 from .items import Item, ItemVariation, Question, QuestionOption, Quota
@@ -151,6 +153,9 @@ class Order(LockModel, LoggedModel):
     datetime = models.DateTimeField(
         verbose_name=_("Date"), db_index=True
     )
+    cancellation_date = models.DateTimeField(
+        null=True, blank=True
+    )
     expires = models.DateTimeField(
         verbose_name=_("Expiration date")
     )
@@ -204,7 +209,7 @@ class Order(LockModel, LoggedModel):
         return self.full_code
 
     def gracefully_delete(self, user=None, auth=None):
-        from . import Voucher, GiftCard, GiftCardTransaction
+        from . import GiftCard, GiftCardTransaction, Voucher
 
         if not self.testmode:
             raise TypeError("Only test mode orders can be deleted.")
@@ -387,13 +392,19 @@ class Order(LockModel, LoggedModel):
     def set_expires(self, now_dt=None, subevents=None):
         now_dt = now_dt or now()
         tz = pytz.timezone(self.event.settings.timezone)
-        exp_by_date = now_dt.astimezone(tz) + timedelta(days=self.event.settings.get('payment_term_days', as_type=int))
-        exp_by_date = exp_by_date.astimezone(tz).replace(hour=23, minute=59, second=59, microsecond=0)
-        if self.event.settings.get('payment_term_weekdays'):
-            if exp_by_date.weekday() == 5:
-                exp_by_date += timedelta(days=2)
-            elif exp_by_date.weekday() == 6:
-                exp_by_date += timedelta(days=1)
+        mode = self.event.settings.get('payment_term_mode')
+        if mode == 'days':
+            exp_by_date = now_dt.astimezone(tz) + timedelta(days=self.event.settings.get('payment_term_days', as_type=int))
+            exp_by_date = exp_by_date.astimezone(tz).replace(hour=23, minute=59, second=59, microsecond=0)
+            if self.event.settings.get('payment_term_weekdays'):
+                if exp_by_date.weekday() == 5:
+                    exp_by_date += timedelta(days=2)
+                elif exp_by_date.weekday() == 6:
+                    exp_by_date += timedelta(days=1)
+        elif mode == 'minutes':
+            exp_by_date = now_dt.astimezone(tz) + timedelta(minutes=self.event.settings.get('payment_term_minutes', as_type=int))
+        else:
+            raise ValueError("'payment_term_mode' has an invalid value '{}'.".format(mode))
 
         self.expires = exp_by_date
 
@@ -426,8 +437,21 @@ class Order(LockModel, LoggedModel):
 
     def cancel_allowed(self):
         return (
-            self.status in (Order.STATUS_PENDING, Order.STATUS_PAID) and self.count_positions
+            self.status in (Order.STATUS_PENDING, Order.STATUS_PAID, Order.STATUS_EXPIRED) and self.count_positions
         )
+
+    @cached_property
+    def user_change_deadline(self):
+        until = self.event.settings.get('change_allow_user_until', as_type=RelativeDateWrapper)
+        if until:
+            if self.event.has_subevents:
+                terms = [
+                    until.datetime(se)
+                    for se in self.event.subevents.filter(id__in=self.positions.values_list('subevent', flat=True))
+                ]
+                return min(terms) if terms else None
+            else:
+                return until.datetime(self.event)
 
     @cached_property
     def user_cancel_deadline(self):
@@ -448,17 +472,52 @@ class Order(LockModel, LoggedModel):
     @cached_property
     def user_cancel_fee(self):
         fee = Decimal('0.00')
-        if self.event.settings.cancel_allow_user_paid_keep:
-            fee += self.event.settings.cancel_allow_user_paid_keep
-        if self.event.settings.cancel_allow_user_paid_keep_percentage:
-            fee += self.event.settings.cancel_allow_user_paid_keep_percentage / Decimal('100.0') * self.total
         if self.event.settings.cancel_allow_user_paid_keep_fees:
             fee += self.fees.filter(
-                fee_type__in=(OrderFee.FEE_TYPE_PAYMENT, OrderFee.FEE_TYPE_SHIPPING, OrderFee.FEE_TYPE_SERVICE)
+                fee_type__in=(OrderFee.FEE_TYPE_PAYMENT, OrderFee.FEE_TYPE_SHIPPING, OrderFee.FEE_TYPE_SERVICE,
+                              OrderFee.FEE_TYPE_CANCELLATION)
             ).aggregate(
                 s=Sum('value')
             )['s'] or 0
+        if self.event.settings.cancel_allow_user_paid_keep_percentage:
+            fee += self.event.settings.cancel_allow_user_paid_keep_percentage / Decimal('100.0') * (self.total - fee)
+        if self.event.settings.cancel_allow_user_paid_keep:
+            fee += self.event.settings.cancel_allow_user_paid_keep
         return round_decimal(fee, self.event.currency)
+
+    @property
+    @scopes_disabled()
+    def user_change_allowed(self) -> bool:
+        """
+        Returns whether or not this order can be canceled by the user.
+        """
+        from .checkin import Checkin
+
+        if self.status not in (Order.STATUS_PENDING, Order.STATUS_PAID) or not self.count_positions:
+            return False
+
+        if self.cancellation_requests.exists():
+            return False
+
+        if self.require_approval:
+            return False
+
+        positions = list(
+            self.positions.all().annotate(
+                has_variations=Exists(ItemVariation.objects.filter(item_id=OuterRef('item_id'))),
+                has_checkin=Exists(Checkin.objects.filter(position_id=OuterRef('pk')))
+            ).select_related('item').prefetch_related('issued_gift_cards')
+        )
+        cancelable = all([op.item.allow_cancel and not op.has_checkin for op in positions])
+        if not cancelable or not positions:
+            return False
+        for op in positions:
+            if op.issued_gift_cards.all():
+                return False
+        if self.user_change_deadline and now() > self.user_change_deadline:
+            return False
+
+        return self.event.settings.change_allow_user_variation and any([op.has_variations for op in positions])
 
     @property
     @scopes_disabled()
@@ -468,6 +527,8 @@ class Order(LockModel, LoggedModel):
         """
         from .checkin import Checkin
 
+        if self.cancellation_requests.exists() or not self.cancel_allowed():
+            return False
         positions = list(
             self.positions.all().annotate(
                 has_checkin=Exists(Checkin.objects.filter(position_id=OuterRef('pk')))
@@ -494,10 +555,16 @@ class Order(LockModel, LoggedModel):
         # Algorithm to choose which payments are to be refunded to create the least hassle
         payments = payments or self.payments.filter(state=OrderPayment.PAYMENT_STATE_CONFIRMED)
         for p in payments:
-            p.full_refund_possible = p.payment_provider.payment_refund_supported(p)
-            p.partial_refund_possible = p.payment_provider.payment_partial_refund_supported(p)
-            p.propose_refund = Decimal('0.00')
-            p.available_amount = p.amount - p.refunded_amount
+            if p.payment_provider:
+                p.full_refund_possible = p.payment_provider.payment_refund_supported(p)
+                p.partial_refund_possible = p.payment_provider.payment_partial_refund_supported(p)
+                p.propose_refund = Decimal('0.00')
+                p.available_amount = p.amount - p.refunded_amount
+            else:
+                p.full_refund_possible = False
+                p.partial_refund_possible = False
+                p.propose_refund = Decimal('0.00')
+                p.available_amount = Decimal('0.00')
 
         unused_payments = set(p for p in payments if p.full_refund_possible or p.partial_refund_possible)
         to_refund = amount
@@ -693,16 +760,19 @@ class Order(LockModel, LoggedModel):
 
         return self._is_still_available(count_waitinglist=count_waitinglist, force=force)
 
-    def _is_still_available(self, now_dt: datetime=None, count_waitinglist=True, force=False) -> Union[bool, str]:
+    def _is_still_available(self, now_dt: datetime=None, count_waitinglist=True, force=False,
+                            check_voucher_usage=False) -> Union[bool, str]:
         error_messages = {
             'unavailable': _('The ordered product "{item}" is no longer available.'),
             'seat_unavailable': _('The seat "{seat}" is no longer available.'),
             'voucher_budget': _('The voucher "{voucher}" no longer has sufficient budget.'),
+            'voucher_usages': _('The voucher "{voucher}" has been used in the meantime.'),
         }
         now_dt = now_dt or now()
         positions = self.positions.all().select_related('item', 'variation', 'seat', 'voucher')
         quota_cache = {}
         v_budget = {}
+        v_usage = Counter()
         try:
             for i, op in enumerate(positions):
                 if op.seat:
@@ -720,6 +790,13 @@ class Order(LockModel, LoggedModel):
                             voucher=op.voucher.code
                         ))
                     v_budget[op.voucher] -= disc
+
+                if op.voucher and check_voucher_usage:
+                    v_usage[op.voucher.pk] += 1
+                    if v_usage[op.voucher.pk] + op.voucher.redeemed > op.voucher.max_usages:
+                        raise Quota.QuotaExceededException(error_messages['voucher_usages'].format(
+                            voucher=op.voucher.code
+                        ))
 
                 quotas = list(op.quotas)
                 if len(quotas) == 0:
@@ -771,7 +848,9 @@ class Order(LockModel, LoggedModel):
                          only be attached for this position and child positions, the link will only point to the
                          position and the attendee email will be used if available.
         """
-        from pretix.base.services.mail import SendMailException, mail, render_mail
+        from pretix.base.services.mail import (
+            SendMailException, TolerantDict, mail, render_mail,
+        )
 
         if not self.email:
             return
@@ -786,6 +865,7 @@ class Order(LockModel, LoggedModel):
 
             try:
                 email_content = render_mail(template, context)
+                subject = subject.format_map(TolerantDict(context))
                 mail(
                     recipient, subject, template, context,
                     self.event, self.locale, self, headers=headers, sender=sender,
@@ -1048,6 +1128,13 @@ class AbstractPosition(models.Model):
         'Seat', null=True, blank=True, on_delete=models.PROTECT
     )
 
+    company = models.CharField(max_length=255, blank=True, verbose_name=_('Company name'), null=True)
+    street = models.TextField(verbose_name=_('Address'), blank=True, null=True)
+    zipcode = models.CharField(max_length=30, verbose_name=_('ZIP code'), blank=True, null=True)
+    city = models.CharField(max_length=255, verbose_name=_('City'), blank=True, null=True)
+    country = FastCountryField(verbose_name=_('Country'), blank=True, blank_label=_('Select country'), null=True)
+    state = models.CharField(max_length=255, verbose_name=pgettext_lazy('address', 'State'), blank=True, null=True)
+
     class Meta:
         abstract = True
 
@@ -1139,6 +1226,33 @@ class AbstractPosition(models.Model):
         else:
             scheme = PERSON_NAME_SCHEMES[self.event.settings.name_scheme]
         return scheme['concatenation'](self.attendee_name_parts).strip()
+
+    @property
+    def state_name(self):
+        sd = pycountry.subdivisions.get(code='{}-{}'.format(self.country, self.state))
+        if sd:
+            return sd.name
+        return self.state
+
+    @property
+    def state_for_address(self):
+        from pretix.base.settings import COUNTRIES_WITH_STATE_IN_ADDRESS
+        if not self.state or str(self.country) not in COUNTRIES_WITH_STATE_IN_ADDRESS:
+            return ""
+        if COUNTRIES_WITH_STATE_IN_ADDRESS[str(self.country)][1] == 'long':
+            return self.state_name
+        return self.state
+
+    def address_format(self):
+        lines = [
+            self.attendee_name,
+            self.company,
+            self.street,
+            (self.zipcode or '') + ' ' + (self.city or '') + ' ' + (self.state_for_address or ''),
+            self.country.name
+        ]
+        lines = [r.strip() for r in lines if r]
+        return '\n'.join(lines).strip()
 
 
 class OrderPayment(models.Model):
@@ -1319,7 +1433,9 @@ class OrderPayment(models.Model):
         :type mail_text: str
         :raises Quota.QuotaExceededException: if the quota is exceeded and ``force`` is ``False``
         """
-        from pretix.base.services.invoices import generate_invoice, invoice_qualified
+        from pretix.base.services.invoices import (
+            generate_invoice, invoice_qualified,
+        )
 
         with transaction.atomic():
             locked_instance = OrderPayment.objects.select_for_update().get(pk=self.pk)
@@ -1389,7 +1505,7 @@ class OrderPayment(models.Model):
                     trigger_pdf=not send_mail or not self.order.event.settings.invoice_email_attachment
                 )
 
-        if send_mail:
+        if send_mail and self.order.sales_channel in self.order.event.settings.mail_sales_channel_placed_paid:
             self._send_paid_mail(invoice, user, mail_text)
             if self.order.event.settings.mail_send_order_paid_attendee:
                 for p in self.order.positions.all():
@@ -1742,7 +1858,10 @@ class OrderFee(models.Model):
             self.fee_type, self.value
         )
 
-    def _calculate_tax(self):
+    def _calculate_tax(self, tax_rule=None):
+        if tax_rule:
+            self.tax_rule = tax_rule
+
         try:
             ia = self.order.invoice_address
         except InvoiceAddress.DoesNotExist:
@@ -1752,18 +1871,17 @@ class OrderFee(models.Model):
             self.tax_rule = self.order.event.settings.tax_rate_default
 
         if self.tax_rule:
-            if self.tax_rule.tax_applicable(ia):
-                tax = self.tax_rule.tax(self.value, base_price_is='gross')
-                self.tax_rate = tax.rate
-                self.tax_value = tax.tax
-            else:
-                self.tax_value = Decimal('0.00')
-                self.tax_rate = Decimal('0.00')
+            tax = self.tax_rule.tax(self.value, base_price_is='gross', invoice_address=ia)
+            self.tax_rate = tax.rate
+            self.tax_value = tax.tax
         else:
             self.tax_value = Decimal('0.00')
             self.tax_rate = Decimal('0.00')
 
     def save(self, *args, **kwargs):
+        if self.tax_rule and not self.tax_rule.rate and not self.tax_rule.pk:
+            self.tax_rule = None
+
         if self.tax_rate is None:
             self._calculate_tax()
         self.order.touch()
@@ -1898,20 +2016,16 @@ class OrderPosition(AbstractPosition):
             self.item.id, self.variation.id if self.variation else 0, self.order_id
         )
 
-    def _calculate_tax(self):
-        self.tax_rule = self.item.tax_rule
+    def _calculate_tax(self, tax_rule=None):
+        self.tax_rule = tax_rule or self.item.tax_rule
         try:
             ia = self.order.invoice_address
         except InvoiceAddress.DoesNotExist:
             ia = None
         if self.tax_rule:
-            if self.tax_rule.tax_applicable(ia):
-                tax = self.tax_rule.tax(self.price, base_price_is='gross')
-                self.tax_rate = tax.rate
-                self.tax_value = tax.tax
-            else:
-                self.tax_value = Decimal('0.00')
-                self.tax_rate = Decimal('0.00')
+            tax = self.tax_rule.tax(self.price, invoice_address=ia, base_price_is='gross')
+            self.tax_rate = tax.rate
+            self.tax_value = tax.tax
         else:
             self.tax_value = Decimal('0.00')
             self.tax_rate = Decimal('0.00')
@@ -1969,7 +2083,9 @@ class OrderPosition(AbstractPosition):
         :param sender: Custom email sender.
         :param attach_tickets: Attach tickets of this order, if they are existing and ready to download
         """
-        from pretix.base.services.mail import SendMailException, mail, render_mail
+        from pretix.base.services.mail import (
+            SendMailException, mail, render_mail,
+        )
 
         if not self.attendee_email:
             return
@@ -2050,6 +2166,10 @@ class CartPosition(AbstractPosition):
     includes_tax = models.BooleanField(
         default=True
     )
+    override_tax_rate = models.DecimalField(
+        max_digits=10, decimal_places=2,
+        null=True, blank=True
+    )
     is_bundled = models.BooleanField(default=False)
 
     objects = ScopedManager(organizer='event__organizer')
@@ -2066,6 +2186,8 @@ class CartPosition(AbstractPosition):
     @property
     def tax_rate(self):
         if self.includes_tax:
+            if self.override_tax_rate is not None:
+                return self.override_tax_rate
             return self.item.tax(self.price, base_price_is='gross').rate
         else:
             return Decimal('0.00')
@@ -2073,7 +2195,7 @@ class CartPosition(AbstractPosition):
     @property
     def tax_value(self):
         if self.includes_tax:
-            return self.item.tax(self.price, base_price_is='gross').tax
+            return self.item.tax(self.price, override_tax_rate=self.override_tax_rate, base_price_is='gross').tax
         else:
             return Decimal('0.00')
 
@@ -2089,11 +2211,13 @@ class InvoiceAddress(models.Model):
     zipcode = models.CharField(max_length=30, verbose_name=_('ZIP code'), blank=False)
     city = models.CharField(max_length=255, verbose_name=_('City'), blank=False)
     country_old = models.CharField(max_length=255, verbose_name=_('Country'), blank=False)
-    country = CountryField(verbose_name=_('Country'), blank=False, blank_label=_('Select country'))
+    country = FastCountryField(verbose_name=_('Country'), blank=False, blank_label=_('Select country'),
+                               countries=CachedCountries)
     state = models.CharField(max_length=255, verbose_name=pgettext_lazy('address', 'State'), blank=True)
     vat_id = models.CharField(max_length=255, blank=True, verbose_name=_('VAT ID'),
                               help_text=_('Only for business customers within the EU.'))
     vat_id_validated = models.BooleanField(default=False)
+    custom_field = models.CharField(max_length=255, null=True, blank=True)
     internal_reference = models.TextField(
         verbose_name=_('Internal reference'),
         help_text=_('This reference will be printed on your invoice for your convenience.'),
@@ -2193,6 +2317,13 @@ class CachedCombinedTicket(models.Model):
     extension = models.CharField(max_length=255)
     file = models.FileField(null=True, blank=True, upload_to=cachedcombinedticket_name, max_length=255)
     created = models.DateTimeField(auto_now_add=True)
+
+
+class CancellationRequest(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='cancellation_requests')
+    created = models.DateTimeField(auto_now_add=True)
+    cancellation_fee = models.DecimalField(max_digits=10, decimal_places=2)
+    refund_as_giftcard = models.BooleanField(default=False)
 
 
 @receiver(post_delete, sender=CachedTicket)

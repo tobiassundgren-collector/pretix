@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from django_scopes import scopes_disabled
 
-from pretix.base.models import GiftCard
+from pretix.base.models import GiftCard, Organizer
 
 
 @pytest.fixture
@@ -14,17 +14,27 @@ def giftcard(organizer, event):
     return gc
 
 
+@pytest.fixture
+def other_giftcard(organizer, event):
+    o = Organizer.objects.create(name='Dummy2', slug='dummy2')
+    organizer.gift_card_issuer_acceptance.create(issuer=o)
+    gc = o.issued_gift_cards.create(secret="GHIJK", currency="EUR")
+    return gc
+
+
 TEST_GC_RES = {
     "id": 1,
     "secret": "ABCDEF",
     "value": "23.00",
     "testmode": False,
+    "expires": None,
+    "conditions": None,
     "currency": "EUR"
 }
 
 
 @pytest.mark.django_db
-def test_giftcard_list(token_client, organizer, event, giftcard):
+def test_giftcard_list(token_client, organizer, event, giftcard, other_giftcard):
     res = dict(TEST_GC_RES)
     res["id"] = giftcard.pk
     res["issuance"] = giftcard.issuance.isoformat().replace('+00:00', 'Z')
@@ -32,6 +42,24 @@ def test_giftcard_list(token_client, organizer, event, giftcard):
     resp = token_client.get('/api/v1/organizers/{}/giftcards/'.format(organizer.slug))
     assert resp.status_code == 200
     assert [res] == resp.data['results']
+
+    resp = token_client.get('/api/v1/organizers/{}/giftcards/?testmode=true'.format(organizer.slug))
+    assert resp.status_code == 200
+    assert [] == resp.data['results']
+    resp = token_client.get('/api/v1/organizers/{}/giftcards/?testmode=false'.format(organizer.slug))
+    assert resp.status_code == 200
+    assert [res] == resp.data['results']
+
+    resp = token_client.get('/api/v1/organizers/{}/giftcards/?secret=DEF'.format(organizer.slug))
+    assert resp.status_code == 200
+    assert [] == resp.data['results']
+    resp = token_client.get('/api/v1/organizers/{}/giftcards/?secret=ABCDEF'.format(organizer.slug))
+    assert resp.status_code == 200
+    assert [res] == resp.data['results']
+
+    resp = token_client.get('/api/v1/organizers/{}/giftcards/?include_accepted=true'.format(organizer.slug))
+    assert resp.status_code == 200
+    assert 2 == len(resp.data['results'])
 
 
 @pytest.mark.django_db
@@ -123,6 +151,18 @@ def test_giftcard_transact(token_client, organizer, event, giftcard):
     assert resp.status_code == 200
     giftcard.refresh_from_db()
     assert giftcard.value == Decimal('33.00')
+    resp = token_client.post(
+        '/api/v1/organizers/{}/giftcards/{}/transact/'.format(organizer.slug, giftcard.pk),
+        {
+            'value': '10.00',
+            'text': 'bla'
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    giftcard.refresh_from_db()
+    assert giftcard.value == Decimal('43.00')
+    assert giftcard.transactions.last().text == 'bla'
 
 
 @pytest.mark.django_db

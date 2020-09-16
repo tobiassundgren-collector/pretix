@@ -12,7 +12,48 @@
     <h2>{% trans "Voucher redemption" %}</h2>
     {% if subevent %}
         <h3>{{ subevent.name }}</h3>
+        {% with ev=subevent %}
+            <div class="info-row">
+                <span class="fa fa-clock-o fa-fw"></span>
+                <p>
+                    {{ ev.get_date_range_display }}
+                    {% if event.settings.show_times %}
+                        <br>
+                        {% blocktrans trimmed with time=ev.date_from|date:"TIME_FORMAT" %}
+                            Begin: {{ time }}
+                        {% endblocktrans %}
+                        {% if event.settings.show_date_to and ev.date_to %}
+                            <br>
+                            {% blocktrans trimmed with time=ev.date_to|date:"TIME_FORMAT" %}
+                                End: {{ time }}
+                            {% endblocktrans %}
+                        {% endif %}
+                    {% endif %}
+                    {% if ev.date_admission %}
+                        <br>
+                        {% if ev.date_admission|date:"SHORT_DATE_FORMAT" == ev.date_from|date:"SHORT_DATE_FORMAT" %}
+                            {% blocktrans trimmed with time=ev.date_admission|date:"TIME_FORMAT" %}
+                                Admission: {{ time }}
+                            {% endblocktrans %}
+                        {% else %}
+                            {% blocktrans trimmed with datetime=ev.date_admission|date:"SHORT_DATETIME_FORMAT" %}
+                                Admission: {{ datetime }}
+                            {% endblocktrans %}
+                        {% endif %}
+                    {% endif %}
+                    <br>
+                    {% if subevent %}
+                        <a href="{% eventurl event "presale:event.ical.download" subevent=subevent.pk %}">
+                    {% else %}
+                        <a href="{% eventurl event "presale:event.ical.download" %}">
+                    {% endif %}
+                        {% trans "Add to Calendar" %}
+                    </a>
+                </p>
+            </div>
+        {% endwith %}
     {% endif %}
+
     <p>
         {% blocktrans trimmed %}
             You entered a voucher code that allows you to buy one of the following products at the specified price:
@@ -178,7 +219,7 @@
                                                     {% endif %}
                                                 </div>
                                             {% else %}
-                                                {% include "pretixpresale/event/fragment_availability.html" with avail=var.cached_availability.0 %}
+                                                {% include "pretixpresale/event/fragment_availability.html" with price=var.display_price.gross avail=var.cached_availability.0 %}
                                             {% endif %}
                                             <div class="clearfix"></div>
                                         </div>
@@ -284,7 +325,7 @@
                                         {% endif %}
                                     </div>
                                 {% else %}
-                                    {% include "pretixpresale/event/fragment_availability.html" with avail=item.cached_availability.0 %}
+                                    {% include "pretixpresale/event/fragment_availability.html" with price=item.display_price.gross avail=item.cached_availability.0 %}
                                 {% endif %}
                                 <div class="clearfix"></div>
                             </div>
@@ -297,7 +338,15 @@
                 <div class="row-fluid checkout-button-row">
                     <div class="col-md-4 col-md-offset-8 col-xs-12">
                         <button class="btn btn-block btn-primary btn-lg" id="btn-add-to-cart" type="submit">
-                            <i class="fa fa-shopping-cart"></i> {% trans "Add to cart" %}
+                            {% if request.event.settings.redirect_to_checkout_directly %}
+                                {% if allfree %}
+                                    <i class="fa fa-check"></i> {% trans "Register" context "free_tickets" %}
+                                {% else %}
+                                    <i class="fa fa-shopping-cart"></i> {% trans "Proceed with checkout" %}
+                                {% endif %}
+                            {% else %}
+                                <i class="fa fa-shopping-cart"></i> {% trans "Add to cart" %}
+                            {% endif %}
                         </button>
                     </div>
                     <div class="clearfix"></div>

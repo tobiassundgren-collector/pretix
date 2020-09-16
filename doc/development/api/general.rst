@@ -20,7 +20,7 @@ Order events
 There are multiple signals that will be sent out in the ordering cycle:
 
 .. automodule:: pretix.base.signals
-   :members: validate_cart, validate_cart_addons, validate_order, order_fee_calculation, order_paid, order_placed, order_canceled, order_expired, order_modified, order_changed, order_approved, order_denied, order_fee_type_name, allow_ticket_download, order_split, order_gracefully_delete, invoice_line_text
+   :members: validate_cart, validate_cart_addons, validate_order, order_fee_calculation, order_paid, order_placed, order_canceled, order_reactivated, order_expired, order_modified, order_changed, order_approved, order_denied, order_fee_type_name, allow_ticket_download, order_split, order_gracefully_delete, invoice_line_text
 
 Check-ins
 """""""""
@@ -33,11 +33,11 @@ Frontend
 --------
 
 .. automodule:: pretix.presale.signals
-   :members: html_head, html_footer, footer_link, front_page_top, front_page_bottom, front_page_bottom_widget, fee_calculation_for_cart, contact_form_fields, question_form_fields, checkout_confirm_messages, checkout_confirm_page_content, checkout_all_optional, html_page_header, sass_preamble, sass_postamble, render_seating_plan, checkout_flow_steps, position_info, item_description
+   :members: html_head, html_footer, footer_link, front_page_top, front_page_bottom, front_page_bottom_widget, fee_calculation_for_cart, contact_form_fields, question_form_fields, checkout_confirm_messages, checkout_confirm_page_content, checkout_all_optional, html_page_header, sass_preamble, sass_postamble, render_seating_plan, checkout_flow_steps, position_info, position_info_top, item_description, global_html_head, global_html_footer, global_html_page_header
 
 
 .. automodule:: pretix.presale.signals
-   :members: order_info, order_meta_from_request
+   :members: order_info, order_info_top, order_meta_from_request
 
 Request flow
 """"""""""""
@@ -66,19 +66,13 @@ Vouchers
 """"""""
 
 .. automodule:: pretix.control.signals
-   :members: item_forms
-
-Vouchers
-""""""""
-
-.. automodule:: pretix.control.signals
-   :members: voucher_form_class, voucher_form_html, voucher_form_validation
+   :members: item_forms, voucher_form_class, voucher_form_html, voucher_form_validation
 
 Dashboards
 """"""""""
 
 .. automodule:: pretix.control.signals
-   :members: event_dashboard_widgets, user_dashboard_widgets
+   :members: event_dashboard_widgets, user_dashboard_widgets, event_dashboard_top
 
 Ticket designs
 """"""""""""""

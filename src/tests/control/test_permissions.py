@@ -51,6 +51,8 @@ event_urls = [
     "comment/",
     "live/",
     "delete/",
+    "dangerzone/",
+    "cancel/",
     "settings/",
     "settings/plugins",
     "settings/payment",
@@ -100,6 +102,7 @@ event_urls = [
     "orders/ABC/resend",
     "orders/ABC/invoice",
     "orders/ABC/extend",
+    "orders/ABC/reactivate",
     "orders/ABC/change",
     "orders/ABC/contact",
     "orders/ABC/comment",
@@ -107,6 +110,7 @@ event_urls = [
     "orders/ABC/approve",
     "orders/ABC/deny",
     "orders/ABC/checkvatid",
+    "orders/ABC/cancellationrequests/1/delete",
     "orders/ABC/payments/1/cancel",
     "orders/ABC/payments/1/confirm",
     "orders/ABC/refund",
@@ -146,6 +150,7 @@ organizer_urls = [
     'organizer/abc/giftcards',
     'organizer/abc/giftcard/add',
     'organizer/abc/giftcard/1/',
+    'organizer/abc/giftcard/1/edit',
 ]
 
 
@@ -222,6 +227,7 @@ def test_wrong_event(perf_patch, client, env, url):
 event_permission_urls = [
     ("can_change_event_settings", "live/", 200),
     ("can_change_event_settings", "delete/", 200),
+    ("can_change_event_settings", "dangerzone/", 200),
     ("can_change_event_settings", "settings/", 200),
     ("can_change_event_settings", "settings/plugins", 200),
     ("can_change_event_settings", "settings/payment", 200),
@@ -254,8 +260,6 @@ event_permission_urls = [
     # ("can_change_items", "questions/", 200),
     ("can_change_items", "questions/2/", 404),
     ("can_change_items", "questions/2/delete", 404),
-    ("can_change_items", "questions/2/up", 404),
-    ("can_change_items", "questions/2/down", 404),
     ("can_change_items", "questions/reorder", 400),
     ("can_change_items", "questions/add", 200),
     # ("can_change_items", "quotas/", 200),
@@ -271,6 +275,7 @@ event_permission_urls = [
     ("can_view_orders", "orders/", 200),
     ("can_view_orders", "orders/FOO/", 200),
     ("can_change_orders", "orders/FOO/extend", 200),
+    ("can_change_orders", "orders/FOO/reactivate", 302),
     ("can_change_orders", "orders/FOO/contact", 200),
     ("can_change_orders", "orders/FOO/transition", 405),
     ("can_change_orders", "orders/FOO/checkvatid", 405),
@@ -285,6 +290,7 @@ event_permission_urls = [
     ("can_change_orders", "orders/import/", 200),
     ("can_change_orders", "orders/import/0ab7b081-92d3-4480-82de-2f8b056fd32f/", 404),
     ("can_view_orders", "orders/FOO/answer/5/", 404),
+    ("can_change_orders", "cancel/", 200),
     ("can_change_vouchers", "vouchers/add", 200),
     ("can_change_orders", "requiredactions/", 200),
     ("can_change_vouchers", "vouchers/bulk_add", 200),
@@ -406,6 +412,7 @@ organizer_permission_urls = [
     ("can_manage_gift_cards", "organizer/dummy/giftcards", 200),
     ("can_manage_gift_cards", "organizer/dummy/giftcard/add", 200),
     ("can_manage_gift_cards", "organizer/dummy/giftcard/1/", 404),
+    ("can_manage_gift_cards", "organizer/dummy/giftcard/1/edit", 404),
 ]
 
 

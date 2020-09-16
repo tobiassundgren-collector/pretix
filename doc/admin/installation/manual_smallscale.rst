@@ -12,7 +12,7 @@ solution with many things readily set-up, look at :ref:`dockersmallscale`.
              get it right. If you're not feeling comfortable managing a Linux server, check out our hosting and service
              offers at `pretix.eu`_.
 
-We tested this guide on the Linux distribution **Debian 8.0** but it should work very similar on other
+We tested this guide on the Linux distribution **Debian 10.0** but it should work very similar on other
 modern distributions, especially on all systemd-based ones.
 
 Requirements
@@ -23,7 +23,7 @@ installation guides):
 
 * A SMTP server to send out mails, e.g. `Postfix`_ on your machine or some third-party server you have credentials for
 * A HTTP reverse proxy, e.g. `nginx`_ or Apache to allow HTTPS connections
-* A `PostgreSQL`_, `MySQL`_ 5.7+, or MariaDB 10.2.7+ database server
+* A `PostgreSQL`_ 9.5+, `MySQL`_ 5.7+, or MariaDB 10.2.7+ database server
 * A `redis`_ server
 
 We also recommend that you use a firewall, although this is not a pretix-specific recommendation. If you're new to
@@ -133,7 +133,7 @@ command if you're running MySQL::
 
     (venv)$ pip3 install "pretix[postgres]" gunicorn
 
-Note that you need Python 3.5 or newer. You can find out your Python version using ``python -V``.
+Note that you need Python 3.6 or newer. You can find out your Python version using ``python -V``.
 
 We also need to create a data directory::
 
@@ -308,7 +308,7 @@ example::
 .. _Let's Encrypt: https://letsencrypt.org/
 .. _pretix.eu: https://pretix.eu/
 .. _MySQL: https://dev.mysql.com/doc/refman/5.7/en/linux-installation-apt-repo.html
-.. _PostgreSQL: https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-9-4-on-debian-8
+.. _PostgreSQL: https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-20-04
 .. _redis: https://blog.programster.org/debian-8-install-redis-server/
 .. _ufw: https://en.wikipedia.org/wiki/Uncomplicated_Firewall
 .. _strong encryption settings: https://mozilla.github.io/server-side-tls/ssl-config-generator/

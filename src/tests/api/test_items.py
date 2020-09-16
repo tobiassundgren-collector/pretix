@@ -198,7 +198,9 @@ def test_category_delete(token_client, organizer, event, category3, item):
 
 @pytest.fixture
 def item(event):
-    return event.items.create(name="Budget Ticket", default_price=23)
+    item = event.items.create(name="Budget Ticket", default_price=23)
+    item.meta_values.create(property=event.item_meta_properties.first(), value="Tuesday")
+    return item
 
 
 @pytest.fixture
@@ -244,7 +246,10 @@ TEST_ITEM_RES = {
     "addons": [],
     "bundles": [],
     "show_quota_left": None,
-    "original_price": None
+    "original_price": None,
+    "meta_data": {
+        "day": "Tuesday"
+    }
 }
 
 
@@ -347,7 +352,8 @@ def test_item_detail_addons(token_client, organizer, event, team, item, category
         "min_count": 0,
         "max_count": 1,
         "position": 0,
-        "price_included": False
+        "multi_allowed": False,
+        "price_included": False,
     }]
     resp = token_client.get('/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug,
                                                                                item.pk))
@@ -403,13 +409,17 @@ def test_item_create(token_client, organizer, event, item, category, taxrule):
             "min_per_order": None,
             "max_per_order": None,
             "checkin_attention": False,
-            "has_variations": True
+            "has_variations": True,
+            "meta_data": {
+                "day": "Wednesday"
+            }
         },
         format='json'
     )
     assert resp.status_code == 201
     with scopes_disabled():
         assert Item.objects.get(pk=resp.data['id']).sales_channels == ["web", "pretixpos"]
+        assert Item.objects.get(pk=resp.data['id']).meta_data == {'day': 'Wednesday'}
 
 
 @pytest.mark.django_db
@@ -566,6 +576,7 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
                     "min_count": 0,
                     "max_count": 10,
                     "position": 0,
+                    "multi_allowed": False,
                     "price_included": True
                 }
             ]
@@ -611,6 +622,7 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
                     "min_count": 0,
                     "max_count": 10,
                     "position": 0,
+                    "multi_allowed": False,
                     "price_included": True
                 }
             ]
@@ -654,6 +666,7 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
                     "min_count": 110,
                     "max_count": 10,
                     "position": 0,
+                    "multi_allowed": False,
                     "price_included": True
                 }
             ]
@@ -697,6 +710,7 @@ def test_item_create_with_addon(token_client, organizer, event, item, category, 
                     "min_count": -1,
                     "max_count": 10,
                     "position": 0,
+                    "multi_allowed": False,
                     "price_included": True
                 }
             ]
@@ -911,6 +925,7 @@ def test_item_update(token_client, organizer, event, item, category, item2, cate
                     "min_count": 0,
                     "max_count": 10,
                     "position": 0,
+                    "multi_allowed": False,
                     "price_included": True
                 }
             ]
@@ -938,6 +953,31 @@ def test_item_update(token_client, organizer, event, item, category, item2, cate
     assert resp.status_code == 400
     assert resp.content.decode() == '{"non_field_errors":["Updating add-ons, bundles, or variations via PATCH/PUT is not supported. Please use ' \
                                     'the dedicated nested endpoint."]}'
+
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug, item.pk),
+        {
+            "meta_data": {
+                "day": "Friday"
+            }
+        },
+        format='json'
+    )
+    assert resp.status_code == 200
+    with scopes_disabled():
+        assert Item.objects.get(pk=item.pk).meta_data == {'day': 'Friday'}
+
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/items/{}/'.format(organizer.slug, event.slug, item.pk),
+        {
+            "meta_data": {
+                "foo": "bar"
+            }
+        },
+        format='json'
+    )
+    assert resp.status_code == 400
+    assert resp.content.decode() == '{"meta_data":["Item meta data property \'foo\' does not exist."]}'
 
 
 @pytest.mark.django_db
@@ -977,6 +1017,7 @@ def test_item_update_with_addon(token_client, organizer, event, item, category):
                     "min_count": 0,
                     "max_count": 10,
                     "position": 0,
+                    "multi_allowed": False,
                     "price_included": True
                 }
             ]
@@ -1338,6 +1379,7 @@ TEST_ADDONS_RES = {
     "min_count": 0,
     "max_count": 10,
     "position": 1,
+    "multi_allowed": False,
     "price_included": False
 }
 
@@ -1376,6 +1418,7 @@ def test_addons_create(token_client, organizer, event, item, category, category2
             "min_count": 0,
             "max_count": 10,
             "position": 1,
+            "multi_allowed": False,
             "price_included": False
         },
         format='json'
@@ -1393,6 +1436,7 @@ def test_addons_create(token_client, organizer, event, item, category, category2
             "min_count": 10,
             "max_count": 20,
             "position": 2,
+            "multi_allowed": False,
             "price_included": False
         },
         format='json'
@@ -1407,6 +1451,7 @@ def test_addons_create(token_client, organizer, event, item, category, category2
             "min_count": 10,
             "max_count": 20,
             "position": 2,
+            "multi_allowed": False,
             "price_included": False
         },
         format='json'
@@ -1468,6 +1513,7 @@ TEST_QUOTA_RES = {
     "variations": [],
     "subevent": None,
     "close_when_sold_out": False,
+    "release_after_exit": False,
     "closed": False
 }
 
@@ -1731,6 +1777,7 @@ def test_quota_availability(token_client, organizer, event, quota, item):
     assert {'blocking_vouchers': 0,
             'available_number': 200,
             'pending_orders': 0,
+            'exited_orders': 0,
             'cart_positions': 0,
             'available': True,
             'total_size': 200,
@@ -1939,6 +1986,31 @@ def test_question_create(token_client, organizer, event, event2, item):
         q2 = Question.objects.get(pk=resp.data['id'])
     assert q2.dependency_question == question
 
+    resp = token_client.post(
+        '/api/v1/organizers/{}/events/{}/questions/'.format(organizer.slug, event.slug),
+        {
+            "question": "What's your name?",
+            "type": "S",
+            "required": True,
+            "items": [item.pk],
+            "position": 0,
+            "ask_during_checkin": False,
+            "identifier": None,
+            "dependency_question": None,
+            "dependency_values": [],
+        },
+        format='json'
+    )
+    assert resp.status_code == 201
+    with scopes_disabled():
+        question = Question.objects.get(pk=resp.data['id'])
+        assert question.question == "What's your name?"
+        assert question.type == "S"
+        assert question.identifier is not None
+        assert len(question.items.all()) == 1
+        assert question.dependency_question is None
+        assert question.dependency_values == []
+
 
 @pytest.mark.django_db
 def test_question_update(token_client, organizer, event, question):
@@ -1970,6 +2042,19 @@ def test_question_update_circular_dependency(token_client, organizer, event, que
     )
     assert resp.status_code == 400
     assert resp.content.decode() == '{"non_field_errors":["Circular dependency between questions detected."]}'
+
+
+@pytest.mark.django_db
+def test_question_self_dependency(token_client, organizer, event, question):
+    resp = token_client.patch(
+        '/api/v1/organizers/{}/events/{}/questions/{}/'.format(organizer.slug, event.slug, question.pk),
+        {
+            "dependency_question": question.pk
+        },
+        format='json'
+    )
+    assert resp.status_code == 400
+    assert resp.content.decode() == '{"dependency_question":["A question cannot depend on itself."]}'
 
 
 @pytest.mark.django_db

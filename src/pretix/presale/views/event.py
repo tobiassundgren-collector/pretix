@@ -2,17 +2,22 @@ import calendar
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from importlib import import_module
 
+import isoweek
 import pytz
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
-from django.db.models import Count, Exists, OuterRef, Prefetch
+from django.db.models import (
+    Count, Exists, IntegerField, OuterRef, Prefetch, Value,
+)
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.decorators import method_decorator
+from django.utils.formats import get_format
 from django.utils.timezone import now
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import TemplateView
@@ -20,15 +25,19 @@ from django.views.generic import TemplateView
 from pretix.base.channels import get_all_sales_channels
 from pretix.base.models import ItemVariation, Quota, SeatCategoryMapping
 from pretix.base.models.event import SubEvent
-from pretix.base.models.items import ItemBundle
+from pretix.base.models.items import (
+    ItemBundle, SubEventItem, SubEventItemVariation,
+)
+from pretix.base.services.quotas import QuotaAvailability
 from pretix.multidomain.urlreverse import eventreverse
 from pretix.presale.ical import get_ical
 from pretix.presale.signals import item_description
 from pretix.presale.views.organizer import (
-    EventListMixin, add_subevents_for_days, filter_qs_by_attr,
-    weeks_for_template,
+    EventListMixin, add_subevents_for_days, days_for_template,
+    filter_qs_by_attr, weeks_for_template,
 )
 
+from ...helpers.formats.en.formats import WEEK_FORMAT
 from . import (
     CartMixin, EventViewMixin, allow_frame_if_namespaced, get_cart,
     iframe_entry_view_wrapper,
@@ -51,8 +60,20 @@ def item_group_by_category(items):
     )
 
 
-def get_grouped_items(event, subevent=None, voucher=None, channel='web', require_seat=0):
-    items = event.items.using(settings.DATABASE_REPLICA).filter_available(channel=channel, voucher=voucher).select_related(
+def get_grouped_items(event, subevent=None, voucher=None, channel='web', require_seat=0, base_qs=None, allow_addons=False,
+                      quota_cache=None, filter_items=None, filter_categories=None):
+    base_qs = base_qs if base_qs is not None else event.items
+
+    requires_seat = Exists(
+        SeatCategoryMapping.objects.filter(
+            product_id=OuterRef('pk'),
+            subevent=subevent
+        )
+    )
+    if not event.settings.seating_choice:
+        requires_seat = Value(0, output_field=IntegerField())
+
+    items = base_qs.using(settings.DATABASE_REPLICA).filter_available(channel=channel, voucher=voucher, allow_addons=allow_addons).select_related(
         'category', 'tax_rule',  # for re-grouping
         'hidden_if_available',
     ).prefetch_related(
@@ -77,7 +98,17 @@ def get_grouped_items(event, subevent=None, voucher=None, channel='web', require
                               )),
                  )),
         Prefetch('variations', to_attr='available_variations',
-                 queryset=ItemVariation.objects.using(settings.DATABASE_REPLICA).filter(active=True, quotas__isnull=False).prefetch_related(
+                 queryset=ItemVariation.objects.using(settings.DATABASE_REPLICA).annotate(
+                     subevent_disabled=Exists(
+                         SubEventItemVariation.objects.filter(
+                             variation_id=OuterRef('pk'),
+                             subevent=subevent,
+                             disabled=True,
+                         )
+                     ),
+                 ).filter(
+                     active=True, quotas__isnull=False, subevent_disabled=False
+                 ).prefetch_related(
                      Prefetch('quotas',
                               to_attr='_subevent_quotas',
                               queryset=event.quotas.using(settings.DATABASE_REPLICA).filter(subevent=subevent))
@@ -85,21 +116,29 @@ def get_grouped_items(event, subevent=None, voucher=None, channel='web', require
     ).annotate(
         quotac=Count('quotas'),
         has_variations=Count('variations'),
-        requires_seat=Exists(
-            SeatCategoryMapping.objects.filter(
-                product_id=OuterRef('pk'),
-                subevent=subevent
+        subevent_disabled=Exists(
+            SubEventItem.objects.filter(
+                item_id=OuterRef('pk'),
+                subevent=subevent,
+                disabled=True,
             )
-        )
+        ),
+        requires_seat=requires_seat,
     ).filter(
-        quotac__gt=0,
+        quotac__gt=0, subevent_disabled=False,
     ).order_by('category__position', 'category_id', 'position', 'name')
     if require_seat:
         items = items.filter(requires_seat__gt=0)
     else:
         items = items.filter(requires_seat=0)
+
+    if filter_items:
+        items = items.filter(pk__in=[a for a in filter_items if a.isdigit()])
+    if filter_categories:
+        items = items.filter(category_id__in=[a for a in filter_categories if a.isdigit()])
+
     display_add_to_cart = False
-    external_quota_cache = event.cache.get('item_quota_cache')
+    external_quota_cache = quota_cache or event.cache.get('item_quota_cache')
     quota_cache = external_quota_cache or {}
 
     if subevent:
@@ -113,6 +152,24 @@ def get_grouped_items(event, subevent=None, voucher=None, channel='web', require
     if voucher and voucher.quota_id:
         # If a voucher is set to a specific quota, we need to filter out on that level
         restrict_vars = set(voucher.quota.variations.all())
+
+    quotas_to_compute = []
+    for item in items:
+        if item.has_variations:
+            for v in item.available_variations:
+                for q in v._subevent_quotas:
+                    if q not in quota_cache:
+                        quotas_to_compute.append(q)
+        else:
+            for q in item._subevent_quotas:
+                if q not in quota_cache:
+                    quotas_to_compute.append(q)
+
+    if quotas_to_compute:
+        qa = QuotaAvailability()
+        qa.queue(*quotas_to_compute)
+        qa.compute()
+        quota_cache.update({q.pk: r for q, r in qa.results.items()})
 
     for item in items:
         if voucher and voucher.item_id and voucher.variation_id:
@@ -248,7 +305,7 @@ def get_grouped_items(event, subevent=None, voucher=None, channel='web', require
 
             item._remove = not bool(item.available_variations)
 
-    if not external_quota_cache:
+    if not external_quota_cache and not voucher and not allow_addons:
         event.cache.set('item_quota_cache', quota_cache, 5)
     items = [item for item in items
              if (len(item.available_variations) > 0 or not item.has_variations) and not item._remove]
@@ -315,9 +372,22 @@ class EventIndex(EventViewMixin, EventListMixin, CartMixin, TemplateView):
 
         if not self.request.event.has_subevents or self.subevent:
             # Fetch all items
-            items, display_add_to_cart = get_grouped_items(self.request.event, self.subevent,
-                                                           channel=self.request.sales_channel.identifier)
+            items, display_add_to_cart = get_grouped_items(
+                self.request.event, self.subevent,
+                filter_items=self.request.GET.getlist('item'),
+                filter_categories=self.request.GET.getlist('category'),
+                channel=self.request.sales_channel.identifier
+            )
             context['itemnum'] = len(items)
+            context['allfree'] = all(
+                item.display_price.gross == Decimal('0.00') for item in items if not item.has_variations
+            ) and all(
+                all(
+                    var.display_price.gross == Decimal('0.00')
+                    for var in item.available_variations
+                )
+                for item in items if item.has_variations
+            )
 
             # Regroup those by category
             context['items_by_category'] = item_group_by_category(items)
@@ -340,6 +410,10 @@ class EventIndex(EventViewMixin, EventListMixin, CartMixin, TemplateView):
             context['frontpage_text'] = str(self.request.event.settings.frontpage_text)
 
         context['list_type'] = self.request.GET.get("style", self.request.event.settings.event_list_type)
+        if context['list_type'] not in ("calendar", "week") and self.request.event.subevents.count() > 100:
+            if self.request.event.settings.event_list_type not in ("calendar", "week"):
+                self.request.event.settings.event_list_type = "calendar"
+            context['list_type'] = "calendar"
 
         if context['list_type'] == "calendar" and self.request.event.has_subevents:
             self._set_month_year()
@@ -359,9 +433,44 @@ class EventIndex(EventViewMixin, EventListMixin, CartMixin, TemplateView):
                 kwargs.get('cart_namespace')
             )
 
+            context['show_names'] = ebd.get('_subevents_different_names', False) or sum(
+                len(i) for i in ebd.values() if isinstance(i, list)
+            ) < 2
             context['weeks'] = weeks_for_template(ebd, self.year, self.month)
             context['months'] = [date(self.year, i + 1, 1) for i in range(12)]
             context['years'] = range(now().year - 2, now().year + 3)
+        elif context['list_type'] == "week" and self.request.event.has_subevents:
+            self._set_week_year()
+            tz = pytz.timezone(self.request.event.settings.timezone)
+            week = isoweek.Week(self.year, self.week)
+            before = datetime(
+                week.monday().year, week.monday().month, week.monday().day, 0, 0, 0, tzinfo=tz
+            ) - timedelta(days=1)
+            after = datetime(
+                week.sunday().year, week.sunday().month, week.sunday().day, 0, 0, 0, tzinfo=tz
+            ) + timedelta(days=1)
+
+            context['date'] = week.monday()
+            context['before'] = before
+            context['after'] = after
+
+            ebd = defaultdict(list)
+            add_subevents_for_days(
+                filter_qs_by_attr(self.request.event.subevents_annotated(self.request.sales_channel.identifier).using(settings.DATABASE_REPLICA), self.request),
+                before, after, ebd, set(), self.request.event,
+                kwargs.get('cart_namespace')
+            )
+
+            context['show_names'] = ebd.get('_subevents_different_names', False) or sum(
+                len(i) for i in ebd.values() if isinstance(i, list)
+            ) < 2
+            context['days'] = days_for_template(ebd, week)
+            context['weeks'] = [date(self.year, i + 1, 1) for i in range(12)]
+            context['weeks'] = [i + 1 for i in range(53)]
+            context['years'] = range(now().year - 2, now().year + 3)
+            context['week_format'] = get_format('WEEK_FORMAT')
+            if context['week_format'] == 'WEEK_FORMAT':
+                context['week_format'] = WEEK_FORMAT
         elif self.request.event.has_subevents:
             context['subevent_list'] = self.request.event.subevents_sorted(
                 filter_qs_by_attr(self.request.event.subevents_annotated(self.request.sales_channel.identifier).using(settings.DATABASE_REPLICA), self.request)

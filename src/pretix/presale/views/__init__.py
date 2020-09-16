@@ -6,7 +6,6 @@ from itertools import groupby
 
 from django.conf import settings
 from django.db.models import Prefetch, Sum
-from django.utils.decorators import available_attrs
 from django.utils.functional import cached_property
 from django.utils.timezone import now
 from django_scopes import scopes_disabled
@@ -75,10 +74,14 @@ class CartMixin:
             cartpos = self.positions
 
         lcp = list(cartpos)
-        has_addons = {cp.addon_to.pk for cp in lcp if cp.addon_to}
+        has_addons = defaultdict(list)
+        for cp in lcp:
+            if cp.addon_to_id:
+                has_addons[cp.addon_to_id].append(cp)
 
         pos_additional_fields = defaultdict(list)
         for cp in lcp:
+            cp.item.event = self.request.event  # will save some SQL queries
             responses = question_form_fields.send(sender=self.request.event, position=cp)
             data = cp.meta_info_data
             for r, response in sorted(responses, key=lambda r: str(r[0])):
@@ -94,13 +97,13 @@ class CartMixin:
         # Django is unable to join related models in a .values() query
         def keyfunc(pos):
             if isinstance(pos, OrderPosition):
-                if pos.addon_to:
+                if pos.addon_to_id:
                     i = pos.addon_to.positionid
                 else:
                     i = pos.positionid
             else:
-                if pos.addon_to:
-                    i = pos.addon_to.pk
+                if pos.addon_to_id:
+                    i = pos.addon_to_id
                 else:
                     i = pos.pk
 
@@ -109,16 +112,28 @@ class CartMixin:
                 or self.request.event.settings.attendee_emails_asked
                 or pos_additional_fields.get(pos.pk)
             )
-            addon_penalty = 1 if pos.addon_to else 0
-            if downloads or pos.pk in has_addons or pos.addon_to:
-                return i, addon_penalty, pos.pk, 0, 0, 0, 0, (pos.subevent_id or 0), pos.seat_id
-            if answers and (has_attendee_data or pos.item.questions.all()):
-                return i, addon_penalty, pos.pk, 0, 0, 0, 0, (pos.subevent_id or 0), pos.seat_id
 
+            addon_penalty = 1 if pos.addon_to_id else 0
+
+            if downloads \
+                    or pos.pk in has_addons \
+                    or pos.addon_to_id \
+                    or pos.item.issue_giftcard \
+                    or (answers and (has_attendee_data or pos.item.questions.exists())):
+                return (
+                    # standalone positions are grouped by main product position id, addons below them also sorted by position id
+                    i, addon_penalty, pos.pk,
+                    # all other places are only used for positions that can be grouped. We just put zeros.
+                ) + (0, ) * 10
+
+            # positions are sorted and grouped by various attributes
+            category_key = (pos.item.category.position, pos.item.category.id) if pos.item.category is not None else (0, 0)
+            item_key = pos.item.position, pos.item_id
+            variation_key = (pos.variation.position, pos.variation.id) if pos.variation is not None else (0, 0)
             return (
-                0, addon_penalty, 0, pos.item_id, pos.variation_id, pos.price, (pos.voucher_id or 0),
-                (pos.subevent_id or 0), pos.seat_id
-            )
+                # These are grouped by attributes so we don't put any position ids
+                0, 0, 0,
+            ) + category_key + item_key + variation_key + (pos.price, (pos.voucher_id or 0), (pos.subevent_id or 0), (pos.seat_id or 0))
 
         positions = []
         for k, g in groupby(sorted(lcp, key=keyfunc), key=keyfunc):
@@ -129,6 +144,10 @@ class CartMixin:
             group.net_total = group.count * group.net_price
             group.has_questions = answers and k[0] != ""
             group.tax_rule = group.item.tax_rule
+
+            group.bundle_sum = group.price + sum(a.price for a in has_addons[group.pk])
+            group.bundle_sum_net = group.net_price + sum(a.net_price for a in has_addons[group.pk])
+
             if answers:
                 group.cache_answers(all=False)
                 group.additional_answers = pos_additional_fields.get(group.pk)
@@ -164,6 +183,7 @@ class CartMixin:
 
         return {
             'positions': positions,
+            'invoice_address': self.invoice_address,
             'all_with_voucher': all(p.voucher_id for p in positions),
             'raw': cartpos,
             'total': total,
@@ -202,7 +222,7 @@ def get_cart(request):
                 'item', 'variation'
             ).select_related(
                 'item', 'variation', 'subevent', 'subevent__event', 'subevent__event__organizer',
-                'item__tax_rule'
+                'item__tax_rule', 'addon_to'
             )
             for cp in request._cart_cache:
                 cp.event = request.event  # Populate field with known value to save queries
@@ -282,7 +302,7 @@ def allow_frame_if_namespaced(view_func):
         if request.resolver_match and request.resolver_match.kwargs.get('cart_namespace'):
             resp.xframe_options_exempt = True
         return resp
-    return wraps(view_func, assigned=available_attrs(view_func))(wrapped_view)
+    return wraps(view_func)(wrapped_view)
 
 
 def allow_cors_if_namespaced(view_func):
@@ -295,7 +315,7 @@ def allow_cors_if_namespaced(view_func):
         if request.resolver_match and request.resolver_match.kwargs.get('cart_namespace'):
             resp['Access-Control-Allow-Origin'] = '*'
         return resp
-    return wraps(view_func, assigned=available_attrs(view_func))(wrapped_view)
+    return wraps(view_func)(wrapped_view)
 
 
 def iframe_entry_view_wrapper(view_func):
@@ -321,4 +341,4 @@ def iframe_entry_view_wrapper(view_func):
 
         resp = view_func(request, *args, **kwargs)
         return resp
-    return wraps(view_func, assigned=available_attrs(view_func))(wrapped_view)
+    return wraps(view_func)(wrapped_view)

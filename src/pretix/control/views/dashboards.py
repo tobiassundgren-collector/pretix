@@ -2,9 +2,11 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytz
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import (
-    Count, Exists, IntegerField, Max, Min, OuterRef, Q, Subquery, Sum,
+    Count, Exists, IntegerField, Max, Min, OuterRef, Prefetch, Q, Subquery,
+    Sum,
 )
 from django.db.models.functions import Coalesce, Greatest
 from django.dispatch import receiver
@@ -16,13 +18,14 @@ from django.utils import formats
 from django.utils.formats import date_format
 from django.utils.html import escape
 from django.utils.timezone import now
-from django.utils.translation import pgettext, ugettext_lazy as _, ungettext
+from django.utils.translation import gettext_lazy as _, pgettext, ungettext
 
 from pretix.base.decimal import round_decimal
 from pretix.base.models import (
-    Item, Order, OrderPosition, OrderRefund, RequiredAction, SubEvent, Voucher,
-    WaitingListEntry,
+    Item, ItemVariation, Order, OrderPosition, OrderRefund, RequiredAction,
+    SubEvent, Voucher, WaitingListEntry,
 )
+from pretix.base.services.quotas import QuotaAvailability
 from pretix.base.timeline import timeline_for_event
 from pretix.control.forms.event import CommentForm
 from pretix.control.signals import (
@@ -30,6 +33,7 @@ from pretix.control.signals import (
 )
 from pretix.helpers.daterange import daterange
 
+from ...base.models.orders import CancellationRequest
 from ..logdisplay import OVERVIEW_BANLIST
 
 NUM_WIDGET = '<div class="numwidget"><span class="num">{num}</span><span class="text">{text}</span></div>'
@@ -122,26 +126,51 @@ def waitinglist_widgets(sender, subevent=None, lazy=False, **kwargs):
     widgets = []
 
     wles = WaitingListEntry.objects.filter(event=sender, subevent=subevent, voucher__isnull=True)
-    if wles.count():
+    if wles.exists():
         if not lazy:
             quota_cache = {}
-            itemvar_cache = {}
             happy = 0
+            tuples = wles.values('item', 'variation').order_by().annotate(cnt=Count('id'))
 
-            for wle in wles:
-                if (wle.item, wle.variation) not in itemvar_cache:
-                    itemvar_cache[(wle.item, wle.variation)] = (
-                        wle.variation.check_quotas(subevent=wle.subevent, count_waitinglist=False, _cache=quota_cache)
-                        if wle.variation
-                        else wle.item.check_quotas(subevent=wle.subevent, count_waitinglist=False, _cache=quota_cache)
-                    )
-                row = itemvar_cache.get((wle.item, wle.variation))
+            items = {
+                i.pk: i for i in sender.items.filter(id__in=[t['item'] for t in tuples]).prefetch_related(
+                    Prefetch('quotas',
+                             to_attr='_subevent_quotas',
+                             queryset=sender.quotas.using(settings.DATABASE_REPLICA).filter(subevent=subevent)),
+                )
+            }
+            vars = {
+                i.pk: i for i in ItemVariation.objects.filter(
+                    item__event=sender, id__in=[t['variation'] for t in tuples if t['variation']]
+                ).prefetch_related(
+                    Prefetch('quotas',
+                             to_attr='_subevent_quotas',
+                             queryset=sender.quotas.using(settings.DATABASE_REPLICA).filter(subevent=subevent)),
+                )
+            }
+
+            for wlt in tuples:
+                item = items.get(wlt['item'])
+                variation = vars.get(wlt['variation'])
+                if not item:
+                    continue
+                quotas = (
+                    variation._get_quotas(subevent=subevent)
+                    if variation
+                    else item._get_quotas(subevent=subevent)
+                )
+                row = (
+                    variation.check_quotas(subevent=subevent, count_waitinglist=False, _cache=quota_cache)
+                    if variation
+                    else item.check_quotas(subevent=subevent, count_waitinglist=False, _cache=quota_cache)
+                )
                 if row[1] is None:
-                    itemvar_cache[(wle.item, wle.variation)] = (row[0], row[1])
                     happy += 1
                 elif row[1] > 0:
-                    itemvar_cache[(wle.item, wle.variation)] = (row[0], row[1] - 1)
                     happy += 1
+                    for q in quotas:
+                        if q.size is not None:
+                            quota_cache[q.pk] = (quota_cache[q.pk][0], quota_cache[q.pk][1] - 1)
 
         widgets.append({
             'content': None if lazy else NUM_WIDGET.format(
@@ -171,10 +200,20 @@ def waitinglist_widgets(sender, subevent=None, lazy=False, **kwargs):
 @receiver(signal=event_dashboard_widgets)
 def quota_widgets(sender, subevent=None, lazy=False, **kwargs):
     widgets = []
+    quotas = sender.quotas.filter(subevent=subevent)
 
-    for q in sender.quotas.filter(subevent=subevent):
+    quotas_to_compute = [
+        q for q in quotas
+        if not q.cache_is_hot(now() + timedelta(seconds=5))
+    ]
+    qa = QuotaAvailability()
+    if quotas_to_compute:
+        qa.queue(*quotas_to_compute)
+        qa.compute()
+
+    for q in quotas:
         if not lazy:
-            status, left = q.availability(allow_cache=True)
+            status, left = qa.results[q] if q in qa.results else q.availability(allow_cache=True)
         widgets.append({
             'content': None if lazy else NUM_WIDGET.format(
                 num='{}/{}'.format(left, q.size) if q.size is not None else '\u221e',
@@ -229,8 +268,8 @@ def checkin_widget(sender, subevent=None, lazy=False, **kwargs):
     for cl in qs:
         widgets.append({
             'content': None if lazy else NUM_WIDGET.format(
-                num='{}/{}'.format(cl.checkin_count, cl.position_count),
-                text=_('Checked in – {list}').format(list=escape(cl.name))
+                num='{}/{}'.format(cl.inside_count, cl.position_count),
+                text=_('Present – {list}').format(list=escape(cl.name))
             ),
             'lazy': 'checkin-{}'.format(cl.pk),
             'display_size': 'small',
@@ -316,6 +355,9 @@ def event_index(request, organizer, event):
     ctx['has_pending_approvals'] = request.event.orders.filter(
         status=Order.STATUS_PENDING,
         require_approval=True
+    ).exists()
+    ctx['has_cancellation_requests'] = CancellationRequest.objects.filter(
+        order__event=request.event
     ).exists()
 
     for a in ctx['actions']:
@@ -535,6 +577,7 @@ def user_index(request):
 
     ctx = {
         'widgets': rearrange(widgets),
+        'can_create_event': request.user.teams.filter(can_create_events=True).exists(),
         'upcoming': widgets_for_event_qs(
             request,
             annotated_event_query(request, lazy=True).filter(

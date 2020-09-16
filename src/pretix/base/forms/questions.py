@@ -18,7 +18,7 @@ from django.forms import Select
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django.utils.translation import (
-    get_language, pgettext_lazy, ugettext_lazy as _,
+    get_language, gettext_lazy as _, pgettext_lazy,
 )
 from django_countries import countries
 from django_countries.fields import Country, CountryField
@@ -40,7 +40,8 @@ from pretix.base.settings import (
     PERSON_NAME_TITLE_GROUPS,
 )
 from pretix.base.templatetags.rich_text import rich_text
-from pretix.control.forms import SplitDateTimeField
+from pretix.control.forms import ExtFileField, SplitDateTimeField
+from pretix.helpers.countries import CachedCountries
 from pretix.helpers.escapejson import escapejson_attr
 from pretix.helpers.i18n import get_format_without_seconds
 from pretix.presale.signals import question_form_fields
@@ -183,6 +184,10 @@ class NamePartsFormField(forms.MultiValueField):
                     raise forms.ValidationError(self.error_messages['required'], code='required')
         if self.require_all_fields and not all(v for v in value):
             raise forms.ValidationError(self.error_messages['incomplete'], code='required')
+
+        if sum(len(v) for v in value if v) > 250:
+            raise forms.ValidationError(_('Please enter a shorter name.'), code='max_length')
+
         return value
 
 
@@ -204,14 +209,19 @@ def guess_country(event):
         valid_countries = countries.countries
         if '-' in locale:
             parts = locale.split('-')
+            # TODO: does this actually work?
             if parts[1].upper() in valid_countries:
                 country = Country(parts[1].upper())
             elif parts[0].upper() in valid_countries:
                 country = Country(parts[0].upper())
         else:
-            if locale in valid_countries:
+            if locale.upper() in valid_countries:
                 country = Country(locale.upper())
     return country
+
+
+class QuestionCheckboxSelectMultiple(forms.CheckboxSelectMultiple):
+    option_template_name = 'pretixbase/forms/widgets/checkbox_option_with_links.html'
 
 
 class BaseQuestionsForm(forms.Form):
@@ -238,18 +248,20 @@ class BaseQuestionsForm(forms.Form):
 
         super().__init__(*args, **kwargs)
 
+        add_fields = {}
+
         if item.admission and event.settings.attendee_names_asked:
-            self.fields['attendee_name_parts'] = NamePartsFormField(
+            add_fields['attendee_name_parts'] = NamePartsFormField(
                 max_length=255,
-                required=event.settings.attendee_names_required,
+                required=event.settings.attendee_names_required and not self.all_optional,
                 scheme=event.settings.name_scheme,
                 titles=event.settings.name_scheme_titles,
                 label=_('Attendee name'),
                 initial=(cartpos.attendee_name_parts if cartpos else orderpos.attendee_name_parts),
             )
         if item.admission and event.settings.attendee_emails_asked:
-            self.fields['attendee_email'] = forms.EmailField(
-                required=event.settings.attendee_emails_required,
+            add_fields['attendee_email'] = forms.EmailField(
+                required=event.settings.attendee_emails_required and not self.all_optional,
                 label=_('Attendee email'),
                 initial=(cartpos.attendee_email if cartpos else orderpos.attendee_email),
                 widget=forms.EmailInput(
@@ -258,6 +270,85 @@ class BaseQuestionsForm(forms.Form):
                     }
                 )
             )
+        if item.admission and event.settings.attendee_company_asked:
+            add_fields['company'] = forms.CharField(
+                required=event.settings.attendee_company_required and not self.all_optional,
+                label=_('Company'),
+                max_length=255,
+                initial=(cartpos.company if cartpos else orderpos.company),
+            )
+
+        if item.admission and event.settings.attendee_addresses_asked:
+            add_fields['street'] = forms.CharField(
+                required=event.settings.attendee_addresses_required and not self.all_optional,
+                label=_('Address'),
+                widget=forms.Textarea(attrs={
+                    'rows': 2,
+                    'placeholder': _('Street and Number'),
+                    'autocomplete': 'street-address'
+                }),
+                initial=(cartpos.street if cartpos else orderpos.street),
+            )
+            add_fields['zipcode'] = forms.CharField(
+                required=event.settings.attendee_addresses_required and not self.all_optional,
+                max_length=30,
+                label=_('ZIP code'),
+                initial=(cartpos.zipcode if cartpos else orderpos.zipcode),
+                widget=forms.TextInput(attrs={
+                    'autocomplete': 'postal-code',
+                }),
+            )
+            add_fields['city'] = forms.CharField(
+                required=event.settings.attendee_addresses_required and not self.all_optional,
+                label=_('City'),
+                max_length=255,
+                initial=(cartpos.city if cartpos else orderpos.city),
+                widget=forms.TextInput(attrs={
+                    'autocomplete': 'address-level2',
+                }),
+            )
+            country = (cartpos.country if cartpos else orderpos.country) or guess_country(event)
+            add_fields['country'] = CountryField(
+                countries=CachedCountries
+            ).formfield(
+                required=event.settings.attendee_addresses_required and not self.all_optional,
+                label=_('Country'),
+                initial=country,
+                widget=forms.Select(attrs={
+                    'autocomplete': 'country',
+                }),
+            )
+            c = [('', pgettext_lazy('address', 'Select state'))]
+            fprefix = str(self.prefix) + '-' if self.prefix is not None and self.prefix != '-' else ''
+            cc = None
+            if fprefix + 'country' in self.data:
+                cc = str(self.data[fprefix + 'country'])
+            elif country:
+                cc = str(country)
+            if cc and cc in COUNTRIES_WITH_STATE_IN_ADDRESS:
+                types, form = COUNTRIES_WITH_STATE_IN_ADDRESS[cc]
+                statelist = [s for s in pycountry.subdivisions.get(country_code=cc) if s.type in types]
+                c += sorted([(s.code[3:], s.name) for s in statelist], key=lambda s: s[1])
+            elif fprefix + 'state' in self.data:
+                self.data = self.data.copy()
+                del self.data[fprefix + 'state']
+
+            add_fields['state'] = forms.ChoiceField(
+                label=pgettext_lazy('address', 'State'),
+                required=False,
+                choices=c,
+                widget=forms.Select(attrs={
+                    'autocomplete': 'address-level1',
+                }),
+            )
+            add_fields['state'].widget.is_required = True
+
+        field_positions = list(
+            [
+                (n, event.settings.system_question_order.get(n if n != 'state' else 'country', 0))
+                for n in add_fields.keys()
+            ]
+        )
 
         for q in questions:
             # Do we already have an answer? Provide it as the initial value
@@ -309,12 +400,15 @@ class BaseQuestionsForm(forms.Form):
                     initial=initial.answer if initial else None,
                 )
             elif q.type == Question.TYPE_COUNTRYCODE:
-                field = CountryField().formfield(
+                field = CountryField(
+                    countries=CachedCountries,
+                    blank=True, null=True, blank_label=' ',
+                ).formfield(
                     label=label, required=required,
                     help_text=help_text,
                     widget=forms.Select,
-                    empty_label='',
-                    initial=initial.answer if initial else None,
+                    empty_label=' ',
+                    initial=initial.answer if initial else (guess_country(event) if required else None),
                 )
             elif q.type == Question.TYPE_CHOICE:
                 field = forms.ModelChoiceField(
@@ -332,15 +426,21 @@ class BaseQuestionsForm(forms.Form):
                     label=label, required=required,
                     help_text=help_text,
                     to_field_name='identifier',
-                    widget=forms.CheckboxSelectMultiple,
+                    widget=QuestionCheckboxSelectMultiple,
                     initial=initial.options.all() if initial else None,
                 )
             elif q.type == Question.TYPE_FILE:
-                field = forms.FileField(
+                field = ExtFileField(
                     label=label, required=required,
                     help_text=help_text,
                     initial=initial.file if initial else None,
                     widget=UploadedFileWidget(position=pos, event=event, answer=initial),
+                    ext_whitelist=(
+                        ".png", ".jpg", ".gif", ".jpeg", ".pdf", ".txt", ".docx", ".gif", ".svg",
+                        ".pptx", ".ppt", ".doc", ".xlsx", ".xls", ".jfif", ".heic", ".heif", ".pages",
+                        ".bmp", ".tif", ".tiff"
+                    ),
+                    max_size=10 * 1024 * 1024,
                 )
             elif q.type == Question.TYPE_DATE:
                 field = forms.DateField(
@@ -402,7 +502,12 @@ class BaseQuestionsForm(forms.Form):
                     field._required = q.required and not self.all_optional
                 field.required = False
 
-            self.fields['question_%s' % q.id] = field
+            add_fields['question_%s' % q.id] = field
+            field_positions.append(('question_%s' % q.id, q.position))
+
+        field_positions.sort(key=lambda e: e[1])
+        for fname, p in field_positions:
+            self.fields[fname] = add_fields[fname]
 
         responses = question_form_fields.send(sender=event, position=pos)
         data = pos.meta_info_data
@@ -418,6 +523,10 @@ class BaseQuestionsForm(forms.Form):
 
     def clean(self):
         d = super().clean()
+
+        if d.get('city') and d.get('country') and str(d['country']) in COUNTRIES_WITH_STATE_IN_ADDRESS:
+            if not d.get('state'):
+                self.add_error('state', _('This field is required.'))
 
         question_cache = {f.question.pk: f.question for f in self.fields.values() if getattr(f, 'question', None)}
 
@@ -445,7 +554,8 @@ class BaseQuestionsForm(forms.Form):
 
         if not self.all_optional:
             for q in question_cache.values():
-                if question_is_required(q) and not d.get('question_%d' % q.pk):
+                answer = d.get('question_%d' % q.pk)
+                if question_is_required(q) and not answer and answer != 0:
                     raise ValidationError({'question_%d' % q.pk: [_('This field is required')]})
 
         return d
@@ -457,7 +567,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
     class Meta:
         model = InvoiceAddress
         fields = ('is_business', 'company', 'name_parts', 'street', 'zipcode', 'city', 'country', 'state',
-                  'vat_id', 'internal_reference', 'beneficiary')
+                  'vat_id', 'internal_reference', 'beneficiary', 'custom_field')
         widgets = {
             'is_business': BusinessBooleanRadio,
             'street': forms.Textarea(attrs={
@@ -479,7 +589,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
                 'data-display-dependency': '#id_is_business_1',
                 'autocomplete': 'organization',
             }),
-            'vat_id': forms.TextInput(attrs={'data-display-dependency': '#id_is_business_1'}),
+            'vat_id': forms.TextInput(attrs={'data-display-dependency': '#id_is_business_1', 'data-countries-in-eu': ','.join(EU_COUNTRIES)}),
             'internal_reference': forms.TextInput,
         }
         labels = {
@@ -499,6 +609,8 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if not event.settings.invoice_address_vatid:
             del self.fields['vat_id']
+
+        self.fields['country'].choices = CachedCountries()
 
         c = [('', pgettext_lazy('address', 'Select state'))]
         fprefix = self.prefix + '-' if self.prefix else ''
@@ -527,6 +639,11 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         )
         self.fields['state'].widget.is_required = True
 
+        # Without JavaScript the VAT ID field is not hidden, so we empty the field if a country outside the EU is selected.
+        if cc and cc not in EU_COUNTRIES and fprefix + 'vat_id' in self.data:
+            self.data = self.data.copy()
+            del self.data[fprefix + 'vat_id']
+
         if not event.settings.invoice_address_required or self.all_optional:
             for k, f in self.fields.items():
                 f.required = False
@@ -541,8 +658,6 @@ class BaseInvoiceAddressForm(forms.ModelForm):
             self.fields['company'].widget.is_required = True
             self.fields['company'].widget.attrs['required'] = 'required'
             del self.fields['company'].widget.attrs['data-display-dependency']
-            if 'vat_id' in self.fields:
-                del self.fields['vat_id'].widget.attrs['data-display-dependency']
 
         self.fields['name_parts'] = NamePartsFormField(
             max_length=255,
@@ -561,6 +676,11 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         if not event.settings.invoice_address_beneficiary:
             del self.fields['beneficiary']
 
+        if event.settings.invoice_address_custom_field:
+            self.fields['custom_field'].label = event.settings.invoice_address_custom_field
+        else:
+            del self.fields['custom_field']
+
         for k, v in self.fields.items():
             if v.widget.attrs.get('autocomplete') or k == 'name_parts':
                 v.widget.attrs['autocomplete'] = 'section-invoice billing ' + v.widget.attrs.get('autocomplete', '')
@@ -569,6 +689,9 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         data = self.cleaned_data
         if not data.get('is_business'):
             data['company'] = ''
+            data['vat_id'] = ''
+        if data.get('is_business') and not data.get('country') in EU_COUNTRIES:
+            data['vat_id'] = ''
         if self.event.settings.invoice_address_required:
             if data.get('is_business') and not data.get('company'):
                 raise ValidationError(_('You need to provide a company name.'))
@@ -589,7 +712,6 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         ) and len(data.get('name_parts', {})) == 1:
             # Do not save the country if it is the only field set -- we don't know the user even checked it!
             self.cleaned_data['country'] = ''
-
         if self.validate_vat_id and self.instance.vat_id_validated and 'vat_id' not in self.changed_data:
             pass
         elif self.validate_vat_id and data.get('is_business') and data.get('country') in EU_COUNTRIES and data.get('vat_id'):

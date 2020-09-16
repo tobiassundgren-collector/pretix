@@ -1,9 +1,12 @@
 @import "../../pretixbase/scss/_variables.scss";
-@import "../../bootstrap/scss/_bootstrap.scss";
+@import "../../bootstrap/scss/_bootstrap_reduced.scss";
 @import "../../pretixbase/scss/_theme.scss";
+@import "../../lightbox/css/lightbox.scss";
 @import "../../datetimepicker/_bootstrap-datetimepicker.scss";
+@import "../../slider/_bootstrap-slider.scss";
 @import "../../fontawesome/scss/font-awesome.scss";
 
+@import "_theme.scss";
 @import "_event.scss";
 @import "_cart.scss";
 @import "_forms.scss";
@@ -20,24 +23,6 @@ footer {
     text-align: center;
     padding: 10px 0;
     font-size: 11px;
-}
-.page-header {
-    position: relative;
-    padding-bottom: 9px;
-
-    h1 {
-        margin: 0;
-    }
-    h1 small {
-        white-space: nowrap;
-    }
-    .loginbox {
-        padding-top: 15px;
-    }
-    .event-logo, .organizer-logo {
-        max-width: 100%;
-        height: auto;
-    }
 }
 .js-only {
     display: none;
@@ -147,6 +132,7 @@ body.loading .container {
             .modal-card-content {
                 text-align: center;
                 margin-left: 0;
+                margin-right: 0;
                 margin-top: 10px;
             }
         }
@@ -290,6 +276,25 @@ h2 .label {
 
 .nojs .requirejs {
     display: none !important;
+}
+
+.event-list {
+    margin-top: 15px;
+    border-top: 1px solid $table-border-color;
+
+    .row {
+        margin-left: 0;
+        margin-right: 0;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        border-bottom: 1px solid $table-border-color;
+        border-left: 1px solid $table-border-color;
+        border-right: 1px solid $table-border-color;
+    }
+    .row > div {
+        padding-top: 5px;
+        padding-bottom: 5px;
+    }
 }
 
 @import "_iframe.scss";

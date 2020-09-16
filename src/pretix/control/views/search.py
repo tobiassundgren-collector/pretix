@@ -1,9 +1,10 @@
 from django.conf import settings
-from django.db.models import Count, IntegerField, OuterRef, Q, Subquery
+from django.db.models import Count, Exists, IntegerField, OuterRef, Q, Subquery
 from django.utils.functional import cached_property
 from django.views.generic import ListView
 
 from pretix.base.models import Order, OrderPosition
+from pretix.base.models.orders import CancellationRequest
 from pretix.control.forms.filter import OrderSearchFilterForm
 from pretix.control.views import LargeResultSetPaginator, PaginationMixin
 
@@ -21,6 +22,9 @@ class OrderSearch(PaginationMixin, ListView):
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data()
         ctx['filter_form'] = self.filter_form
+        ctx['meta_fields'] = [
+            self.filter_form[k] for k in self.filter_form.fields if k.startswith('meta_')
+        ]
 
         # Only compute this annotations for this page (query optimization)
         s = OrderPosition.objects.filter(
@@ -29,12 +33,14 @@ class OrderSearch(PaginationMixin, ListView):
         annotated = {
             o['pk']: o
             for o in
-            Order.objects.using(settings.DATABASE_REPLICA).filter(
+            Order.annotate_overpayments(Order.objects).using(settings.DATABASE_REPLICA).filter(
                 pk__in=[o.pk for o in ctx['orders']]
             ).annotate(
-                pcnt=Subquery(s, output_field=IntegerField())
+                pcnt=Subquery(s, output_field=IntegerField()),
+                has_cancellation_request=Exists(CancellationRequest.objects.filter(order=OuterRef('pk')))
             ).values(
-                'pk', 'pcnt',
+                'pk', 'pcnt', 'is_overpaid', 'is_underpaid', 'is_pending_with_full_payment', 'has_external_refund',
+                'has_pending_refund', 'has_cancellation_request'
             )
         }
 
@@ -42,6 +48,12 @@ class OrderSearch(PaginationMixin, ListView):
             if o.pk not in annotated:
                 continue
             o.pcnt = annotated.get(o.pk)['pcnt']
+            o.is_overpaid = annotated.get(o.pk)['is_overpaid']
+            o.is_underpaid = annotated.get(o.pk)['is_underpaid']
+            o.is_pending_with_full_payment = annotated.get(o.pk)['is_pending_with_full_payment']
+            o.has_external_refund = annotated.get(o.pk)['has_external_refund']
+            o.has_pending_refund = annotated.get(o.pk)['has_pending_refund']
+            o.has_cancellation_request = annotated.get(o.pk)['has_cancellation_request']
 
         return ctx
 
@@ -50,10 +62,7 @@ class OrderSearch(PaginationMixin, ListView):
 
         if not self.request.user.has_active_staff_session(self.request.session.session_key):
             qs = qs.filter(
-                Q(event__organizer_id__in=self.request.user.teams.filter(
-                    all_events=True, can_view_orders=True).values_list('organizer', flat=True))
-                | Q(event_id__in=self.request.user.teams.filter(
-                    can_view_orders=True).values_list('limit_events__id', flat=True))
+                Q(event_id__in=self.request.user.get_events_with_permission('can_view_orders').values_list('id', flat=True))
             )
 
         if self.filter_form.is_valid():

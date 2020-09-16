@@ -1,19 +1,30 @@
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from django import forms
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.template.defaultfilters import floatformat
 from django.urls import reverse
-from django.utils.timezone import now
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.timezone import make_aware, now
+from django.utils.translation import (
+    gettext_lazy as _, gettext_noop, pgettext_lazy,
+)
+from i18nfield.forms import I18nFormField, I18nTextarea, I18nTextInput
+from i18nfield.strings import LazyI18nString
 
 from pretix.base.email import get_available_placeholders
 from pretix.base.forms import I18nModelForm, PlaceholderValidator
-from pretix.base.forms.widgets import DatePickerWidget
-from pretix.base.models import InvoiceAddress, ItemAddOn, Order, OrderPosition
+from pretix.base.forms.widgets import (
+    DatePickerWidget, SplitDateTimePickerWidget,
+)
+from pretix.base.models import (
+    InvoiceAddress, ItemAddOn, Order, OrderFee, OrderPosition, TaxRule,
+)
 from pretix.base.models.event import SubEvent
 from pretix.base.services.pricing import get_price
+from pretix.control.forms import SplitDateTimeField
 from pretix.control.forms.widgets import Select2
 from pretix.helpers.money import change_decimal_field
 
@@ -25,16 +36,17 @@ class ExtendForm(I18nModelForm):
                     'and you having sold more tickets than you planned!'),
         required=False
     )
+    expires = forms.DateField(
+        label=_("Expiration date"),
+        widget=forms.DateInput(attrs={
+            'class': 'datepickerfield',
+            'data-is-payment-date': 'true'
+        }),
+    )
 
     class Meta:
         model = Order
-        fields = ['expires']
-        widgets = {
-            'expires': forms.DateInput(attrs={
-                'class': 'datepickerfield',
-                'data-is-payment-date': 'true'
-            })
-        }
+        fields = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -45,10 +57,21 @@ class ExtendForm(I18nModelForm):
 
     def clean(self):
         data = super().clean()
-        data['expires'] = data['expires'].replace(hour=23, minute=59, second=59)
-        if data['expires'] < now():
-            raise ValidationError(_('The new expiry date needs to be in the future.'))
+        if data.get('expires'):
+            if isinstance(data['expires'], date):
+                data['expires'] = make_aware(datetime.combine(
+                    data['expires'],
+                    time(hour=23, minute=59, second=59)
+                ), self.instance.event.timezone)
+            else:
+                data['expires'] = data['expires'].replace(hour=23, minute=59, second=59)
+            if data['expires'] < now():
+                raise ValidationError(_('The new expiry date needs to be in the future.'))
         return data
+
+    def save(self, commit=True):
+        self.instance.expires = self.cleaned_data['expires']
+        return super().save(commit)
 
 
 class ConfirmPaymentForm(forms.Form):
@@ -99,7 +122,10 @@ class CancelForm(ConfirmPaymentForm):
         prs = self.instance.payment_refund_sum
         if prs > 0:
             change_decimal_field(self.fields['cancellation_fee'], self.instance.event.currency)
-            self.fields['cancellation_fee'].initial = Decimal('0.00')
+            self.fields['cancellation_fee'].widget.attrs['placeholder'] = floatformat(
+                Decimal('0.00'),
+                settings.CURRENCY_PLACES.get(self.instance.event.currency, 2)
+            )
             self.fields['cancellation_fee'].max_value = prs
         else:
             del self.fields['cancellation_fee']
@@ -157,14 +183,15 @@ class CommentForm(I18nModelForm):
 
 
 class OtherOperationsForm(forms.Form):
-    recalculate_taxes = forms.BooleanField(
+    recalculate_taxes = forms.ChoiceField(
         label=_('Re-calculate taxes'),
         required=False,
-        help_text=_(
-            'This operation re-checks if taxes should be paid to the items due to e.g. configured reverse charge rules '
-            'and changes the prices and tax values accordingly. This is useful e.g. after an invoice address change. '
-            'Use with care and only if you need to. Note that rounding differences might occur in this procedure.'
-        )
+        choices=(
+            ('', _('Do not re-calculate taxes')),
+            ('gross', _('Re-calculate taxes based on address and product settings, keep gross amount the same.')),
+            ('net', _('Re-calculate taxes based on address and product settings, keep net amount the same.')),
+        ),
+        widget=forms.RadioSelect
     )
     reissue_invoice = forms.BooleanField(
         label=_('Issue a new invoice if required'),
@@ -172,7 +199,7 @@ class OtherOperationsForm(forms.Form):
         initial=True,
         help_text=_(
             'If an invoice exists for this order and this operation would change its contents, the old invoice will '
-            'be cancelled and a new invoice will be issued.'
+            'be canceled and a new invoice will be issued.'
         )
     )
     notify = forms.BooleanField(
@@ -222,6 +249,7 @@ class OrderPositionAddForm(forms.Form):
     )
 
     def __init__(self, *args, **kwargs):
+        self.items = kwargs.pop('items')
         order = kwargs.pop('order')
         super().__init__(*args, **kwargs)
 
@@ -231,11 +259,13 @@ class OrderPositionAddForm(forms.Form):
             ia = None
 
         choices = []
-        for i in order.event.items.prefetch_related('variations').all():
+        for i in self.items:
             pname = str(i)
             if not i.is_available():
                 pname += ' ({})'.format(_('inactive'))
             variations = list(i.variations.all())
+            if i.tax_rule:  # performance optimization
+                i.tax_rule.event = order.event
             if variations:
                 for v in variations:
                     p = get_price(i, v, invoice_address=ia)
@@ -245,7 +275,11 @@ class OrderPositionAddForm(forms.Form):
                 p = get_price(i, invoice_address=ia)
                 choices.append((str(i.pk), '%s (%s)' % (pname, p.print(order.event.currency))))
         self.fields['itemvar'].choices = choices
-        if ItemAddOn.objects.filter(base_item__event=order.event).exists():
+        if order.event.cache.get_or_set(
+                'has_addon_products',
+                default=lambda: ItemAddOn.objects.filter(base_item__event=order.event).exists(),
+                timeout=300
+        ):
             self.fields['addon_to'].queryset = order.positions.filter(addon_to__isnull=True).select_related(
                 'item', 'variation'
             )
@@ -274,10 +308,12 @@ class OrderPositionAddForm(forms.Form):
 class OrderPositionAddFormset(forms.BaseFormSet):
     def __init__(self, *args, **kwargs):
         self.order = kwargs.pop('order', None)
+        self.items = kwargs.pop('items')
         super().__init__(*args, **kwargs)
 
     def _construct_form(self, i, **kwargs):
         kwargs['order'] = self.order
+        kwargs['items'] = self.items
         return super()._construct_form(i, **kwargs)
 
     @property
@@ -288,6 +324,7 @@ class OrderPositionAddFormset(forms.BaseFormSet):
             empty_permitted=True,
             use_required_attribute=False,
             order=self.order,
+            items=self.items,
         )
         self.add_fields(form, None)
         return form
@@ -312,6 +349,11 @@ class OrderPositionChangeForm(forms.Form):
         localize=True,
         label=_('New price (gross)')
     )
+    tax_rule = forms.ModelChoiceField(
+        TaxRule.objects.none(),
+        required=False,
+        empty_label=_('(Unchanged)')
+    )
     operation_secret = forms.BooleanField(
         required=False,
         label=_('Generate a new secret')
@@ -325,8 +367,13 @@ class OrderPositionChangeForm(forms.Form):
         label=_('Split into new order')
     )
 
+    @staticmethod
+    def taxrule_label_from_instance(obj):
+        return f"{obj.name} ({obj.rate} %)"
+
     def __init__(self, *args, **kwargs):
         instance = kwargs.pop('instance')
+        items = kwargs.pop('items')
         initial = kwargs.get('initial', {})
 
         initial['price'] = instance.price
@@ -349,13 +396,19 @@ class OrderPositionChangeForm(forms.Form):
         else:
             del self.fields['subevent']
 
-        if not instance.seat:
+        self.fields['tax_rule'].queryset = instance.event.tax_rules.all()
+        self.fields['tax_rule'].label_from_instance = self.taxrule_label_from_instance
+
+        if not instance.seat and not (
+                not instance.event.settings.seating_choice and
+                instance.item.seat_category_mappings.filter(subevent=instance.subevent).exists()
+        ):
             del self.fields['seat']
 
         choices = [
             ('', _('(Unchanged)'))
         ]
-        for i in instance.order.event.items.prefetch_related('variations').all():
+        for i in items:
             pname = str(i)
             if not i.is_available():
                 pname += ' ({})'.format(_('inactive'))
@@ -378,6 +431,11 @@ class OrderFeeChangeForm(forms.Form):
         localize=True,
         label=_('New price (gross)')
     )
+    tax_rule = forms.ModelChoiceField(
+        TaxRule.objects.none(),
+        required=False,
+        empty_label=_('(Unchanged)')
+    )
     operation_cancel = forms.BooleanField(
         required=False,
         label=_('Remove this fee')
@@ -390,6 +448,7 @@ class OrderFeeChangeForm(forms.Form):
         initial['value'] = instance.value
         kwargs['initial'] = initial
         super().__init__(*args, **kwargs)
+        self.fields['tax_rule'].queryset = instance.order.event.tax_rules.all()
         change_decimal_field(self.fields['value'], instance.order.event.currency)
 
 
@@ -501,3 +560,179 @@ class OrderRefundForm(forms.Form):
         if data.get('mode') == 'partial' and not data.get('partial_amount'):
             raise ValidationError(_('You need to specify an amount for a partial refund.'))
         return data
+
+
+class EventCancelForm(forms.Form):
+    subevent = forms.ModelChoiceField(
+        SubEvent.objects.none(),
+        label=pgettext_lazy('subevent', 'Date'),
+        required=False,
+        empty_label=pgettext_lazy('subevent', 'All dates')
+    )
+    all_subevents = forms.BooleanField(
+        label=_('Cancel all dates'),
+        initial=False,
+        required=False
+    )
+    auto_refund = forms.BooleanField(
+        label=_('Automatically refund money if possible'),
+        initial=True,
+        required=False
+    )
+    manual_refund = forms.BooleanField(
+        label=_('Create manual refund if the payment method odes not support automatic refunds'),
+        widget=forms.CheckboxInput(attrs={'data-display-dependency': '#id_auto_refund'}),
+        initial=True,
+        required=False,
+        help_text=_('If checked, all payments with a payment method not supporting automatic refunds will be on your '
+                    'manual refund to-do list. Do not check if you want to refund some of the orders by offsetting '
+                    'with different orders or issuing gift cards.')
+    )
+    refund_as_giftcard = forms.BooleanField(
+        label=_('Refund order value to a gift card instead instead of the original payment method'),
+        widget=forms.CheckboxInput(attrs={'data-display-dependency': '#id_auto_refund'}),
+        initial=False,
+        required=False,
+    )
+    gift_card_expires = SplitDateTimeField(
+        label=_('Gift card validity'),
+        required=False,
+        widget=SplitDateTimePickerWidget(
+            attrs={'data-display-dependency': '#id_refund_as_giftcard'},
+        )
+    )
+    gift_card_conditions = forms.CharField(
+        label=_('Special terms and conditions'),
+        required=False,
+        widget=forms.Textarea(
+            attrs={'rows': 2, 'data-display-dependency': '#id_refund_as_giftcard'},
+        )
+    )
+    keep_fee_fixed = forms.DecimalField(
+        label=_("Keep a fixed cancellation fee"),
+        max_digits=10, decimal_places=2,
+        required=False
+    )
+    keep_fee_percentage = forms.DecimalField(
+        label=_("Keep a percentual cancellation fee"),
+        max_digits=10, decimal_places=2,
+        required=False
+    )
+    keep_fees = forms.MultipleChoiceField(
+        label=_("Keep fees"),
+        widget=forms.CheckboxSelectMultiple,
+        choices=[(k, v) for k, v in OrderFee.FEE_TYPES if k != OrderFee.FEE_TYPE_GIFTCARD],
+        help_text=_('The selected types of fees will not be refunded but instead added to the cancellation fee. Fees '
+                    'are never refunded in when an order in an event series is only partially canceled since it '
+                    'consists of tickets for multiple dates.'),
+        required=False,
+    )
+    send = forms.BooleanField(
+        label=_("Send information via email"),
+        required=False
+    )
+    send_subject = forms.CharField()
+    send_message = forms.CharField()
+    send_waitinglist = forms.BooleanField(
+        label=_("Send information to waiting list"),
+        required=False
+    )
+    send_waitinglist_subject = forms.CharField()
+    send_waitinglist_message = forms.CharField()
+
+    def _set_field_placeholders(self, fn, base_parameters):
+        phs = [
+            '{%s}' % p
+            for p in sorted(get_available_placeholders(self.event, base_parameters).keys())
+        ]
+        ht = _('Available placeholders: {list}').format(
+            list=', '.join(phs)
+        )
+        if self.fields[fn].help_text:
+            self.fields[fn].help_text += ' ' + str(ht)
+        else:
+            self.fields[fn].help_text = ht
+        self.fields[fn].validators.append(
+            PlaceholderValidator(phs)
+        )
+
+    def __init__(self, *args, **kwargs):
+        self.event = kwargs.pop('event')
+        kwargs.setdefault('initial', {})
+        kwargs['initial']['gift_card_expires'] = self.event.organizer.default_gift_card_expiry
+        super().__init__(*args, **kwargs)
+        self.fields['send_subject'] = I18nFormField(
+            label=_("Subject"),
+            required=True,
+            widget_kwargs={'attrs': {'data-display-dependency': '#id_send'}},
+            initial=_('Canceled: {event}'),
+            widget=I18nTextInput,
+            locales=self.event.settings.get('locales'),
+        )
+        self.fields['send_message'] = I18nFormField(
+            label=_('Message'),
+            widget=I18nTextarea,
+            required=True,
+            widget_kwargs={'attrs': {'data-display-dependency': '#id_send'}},
+            locales=self.event.settings.get('locales'),
+            initial=LazyI18nString.from_gettext(gettext_noop(
+                'Hello,\n\n'
+                'with this email, we regret to inform you that {event} has been canceled.\n\n'
+                'We will refund you {refund_amount} to your original payment method.\n\n'
+                'You can view the current state of your order here:\n\n{url}\n\nBest regards,\n\n'
+                'Your {event} team'
+            ))
+        )
+
+        self._set_field_placeholders('send_subject', ['event_or_subevent', 'refund_amount', 'position_or_address',
+                                                      'order', 'event'])
+        self._set_field_placeholders('send_message', ['event_or_subevent', 'refund_amount', 'position_or_address',
+                                                      'order', 'event'])
+        self.fields['send_waitinglist_subject'] = I18nFormField(
+            label=_("Subject"),
+            required=True,
+            initial=_('Canceled: {event}'),
+            widget=I18nTextInput,
+            widget_kwargs={'attrs': {'data-display-dependency': '#id_send_waitinglist'}},
+            locales=self.event.settings.get('locales'),
+        )
+        self.fields['send_waitinglist_message'] = I18nFormField(
+            label=_('Message'),
+            widget=I18nTextarea,
+            required=True,
+            locales=self.event.settings.get('locales'),
+            widget_kwargs={'attrs': {'data-display-dependency': '#id_send_waitinglist'}},
+            initial=LazyI18nString.from_gettext(gettext_noop(
+                'Hello,\n\n'
+                'with this email, we regret to inform you that {event} has been canceled.\n\n'
+                'You will therefore not receive a ticket from the waiting list.\n\n'
+                'Best regards,\n\n'
+                'Your {event} team'
+            ))
+        )
+        self._set_field_placeholders('send_waitinglist_subject', ['event_or_subevent', 'event'])
+        self._set_field_placeholders('send_waitinglist_message', ['event_or_subevent', 'event'])
+
+        if self.event.has_subevents:
+            self.fields['subevent'].queryset = self.event.subevents.all()
+            self.fields['subevent'].widget = Select2(
+                attrs={
+                    'data-model-select2': 'event',
+                    'data-select2-url': reverse('control:event.subevents.select2', kwargs={
+                        'event': self.event.slug,
+                        'organizer': self.event.organizer.slug,
+                    }),
+                    'data-placeholder': pgettext_lazy('subevent', 'All dates')
+                }
+            )
+            self.fields['subevent'].widget.choices = self.fields['subevent'].choices
+        else:
+            del self.fields['subevent']
+            del self.fields['all_subevents']
+        change_decimal_field(self.fields['keep_fee_fixed'], self.event.currency)
+
+    def clean(self):
+        d = super().clean()
+        if self.event.has_subevents and not d['subevent'] and not d['all_subevents']:
+            raise ValidationError(_('Please confirm that you want to cancel ALL dates in this event series.'))
+        return d

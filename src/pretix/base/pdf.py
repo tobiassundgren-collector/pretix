@@ -17,7 +17,7 @@ from django.dispatch import receiver
 from django.utils.formats import date_format
 from django.utils.html import conditional_escape
 from django.utils.timezone import now
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from PyPDF2 import PdfFileReader
 from pytz import timezone
 from reportlab.graphics import renderPDF
@@ -108,6 +108,23 @@ DEFAULT_VARIABLES = OrderedDict((
         "label": _("Attendee name"),
         "editor_sample": _("John Doe"),
         "evaluate": lambda op, order, ev: op.attendee_name or (op.addon_to.attendee_name if op.addon_to else '')
+    }),
+    ("attendee_company", {
+        "label": _("Attendee company"),
+        "editor_sample": _("Sample company"),
+        "evaluate": lambda op, order, ev: op.company or (op.addon_to.company if op.addon_to else '')
+    }),
+    ('attendee_address', {
+        'label': _('Full attendee address'),
+        'editor_sample': _('John Doe\nSample company\nSesame Street 42\n12345 Any City\nAtlantis'),
+        'evaluate': lambda op, order, event: op.address_format()
+    }),
+    ("attendee_country", {
+        "label": _("Attendee country"),
+        "editor_sample": 'Atlantis',
+        "evaluate": lambda op, order, ev: str(getattr(op.country, 'name', '')) or (
+            str(getattr(op.addon_to.country, 'name', '')) if op.addon_to else ''
+        )
     }),
     ("event_name", {
         "label": _("Event name"),
@@ -207,7 +224,7 @@ DEFAULT_VARIABLES = OrderedDict((
     }),
     ("addons", {
         "label": _("List of Add-Ons"),
-        "editor_sample": _("Addon 1\nAddon 2"),
+        "editor_sample": _("Add-on 1\nAdd-on 2"),
         "evaluate": lambda op, order, ev: "\n".join([
             '{} - {}'.format(p.item, p.variation) if p.variation else str(p.item)
             for p in (
@@ -431,6 +448,8 @@ class Renderer:
             return '(error)'
         if o['content'] == 'other':
             return o['text']
+        elif o['content'].startswith('itemmeta:'):
+            return op.item.meta_data.get(o['content'][9:]) or ''
         elif o['content'].startswith('meta:'):
             return ev.meta_data.get(o['content'][5:]) or ''
         elif o['content'] in self.variables:
@@ -473,7 +492,10 @@ class Renderer:
             'support_ligatures': False,
         }
         reshaper = ArabicReshaper(configuration=configuration)
-        text = "<br/>".join(get_display(reshaper.reshape(l)) for l in text.split("<br/>"))
+        try:
+            text = "<br/>".join(get_display(reshaper.reshape(l)) for l in text.split("<br/>"))
+        except:
+            logger.exception('Reshaping/Bidi fixes failed on string {}'.format(repr(text)))
 
         p = Paragraph(text, style=style)
         w, h = p.wrapOn(canvas, float(o['width']) * mm, 1000 * mm)
@@ -525,7 +547,7 @@ class Renderer:
                 with open(os.path.join(d, 'out.pdf'), 'rb') as f:
                     return BytesIO(f.read())
         else:
-            from PyPDF2 import PdfFileWriter, PdfFileReader
+            from PyPDF2 import PdfFileReader, PdfFileWriter
             buffer.seek(0)
             new_pdf = PdfFileReader(buffer)
             output = PdfFileWriter()

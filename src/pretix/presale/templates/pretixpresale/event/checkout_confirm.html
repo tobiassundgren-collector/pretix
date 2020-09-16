@@ -13,20 +13,21 @@
         {% csrf_token %}
         <div class="panel panel-primary cart">
             <div class="panel-heading">
-                <div class="pull-right flip cart-modify">
-                    <a href="{% eventurl request.event "presale:event.index" cart_namespace=cart_namespace|default_if_none:"" %}">
-                        <span class="fa fa-edit"></span>
-                        {% trans "Modify" %}
-                    </a>
+                <div class="pull-right flip">
+                    <strong id="cart-deadline-short" data-expires="{{ cart.first_expiry|date:"Y-m-d H:i:sO" }}">
+                        {% if cart.minutes_left > 0 or cart.seconds_left > 0 %}
+                            {{ cart.minutes_left|stringformat:"02d" }}:{{ cart.seconds_left|stringformat:"02d" }}
+                        {% else %}
+                            {% trans "Cart expired" %}
+                        {% endif %}
+                    </strong>
+                    <span class="helper-display-block cart-modify">
+                        <a href="{% eventurl request.event "presale:event.index" cart_namespace=cart_namespace|default_if_none:"" %}">
+                            <span class="fa fa-edit"></span>
+                            {% trans "Add or remove tickets" %}
+                        </a>
+                    </span>
                 </div>
-                <strong id="cart-deadline-short" data-expires="{{ cart.first_expiry|date:"Y-m-d H:i:sO" }}"
-                    class="pull-right flip">
-                    {% if cart.minutes_left > 0 or cart.seconds_left > 0 %}
-                        {{ cart.minutes_left|stringformat:"02d" }}:{{ cart.seconds_left|stringformat:"02d" }}
-                    {% else %}
-                        {% trans "Cart expired" %}
-                    {% endif %}
-                </strong>
                 <h3 class="panel-title">
                     <i class="fa fa-shopping-cart"></i>
                     {% trans "Your cart" %}
@@ -107,6 +108,14 @@
                                 {% if request.event.settings.invoice_address_vatid %}
                                     <dt>{% trans "VAT ID" %}</dt>
                                     <dd>{{ addr.vat_id }}</dd>
+                                {% endif %}
+                                {% if addr.beneficiary %}
+                                    <dt>{% trans "Beneficiary" %}</dt>
+                                    <dd>{{ addr.beneficiary|linebreaksbr }}</dd>
+                                {% endif %}
+                                {% if request.event.settings.invoice_address_custom_field and addr.custom_field %}
+                                    <dt>{{ request.event.settings.invoice_address_custom_field }}</dt>
+                                    <dd>{{ addr.custom_field }}</dd>
                                 {% endif %}
                                 <dt>{% trans "Internal reference" %}</dt>
                                 <dd>{{ addr.internal_reference }}</dd>

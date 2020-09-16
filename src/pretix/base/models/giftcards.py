@@ -5,7 +5,8 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Sum
 from django.utils.crypto import get_random_string
-from django.utils.translation import ugettext_lazy as _
+from django.utils.timezone import now
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 
 from pretix.base.banlist import banned
 from pretix.base.models import LoggedModel
@@ -54,7 +55,7 @@ class GiftCard(LoggedModel):
         validators=[
             RegexValidator(
                 regex="^[a-zA-Z0-9][a-zA-Z0-9.-]+$",
-                message=_("The giftcard code may only contain letters, numbers, dots and dashes."),
+                message=_("The gift card code may only contain letters, numbers, dots and dashes."),
             )
         ],
     )
@@ -62,11 +63,21 @@ class GiftCard(LoggedModel):
         verbose_name=_('Test mode card'),
         default=False
     )
+    expires = models.DateTimeField(
+        null=True, blank=True, verbose_name=_('Expiry date')
+    )
+    conditions = models.TextField(
+        null=True, blank=True, verbose_name=pgettext_lazy('giftcard', 'Special terms and conditions')
+    )
     CURRENCY_CHOICES = [(c.alpha_3, c.alpha_3 + " - " + c.name) for c in settings.CURRENCIES]
     currency = models.CharField(max_length=10, choices=CURRENCY_CHOICES)
 
     def __str__(self):
         return self.secret
+
+    @property
+    def expired(self):
+        return self.expires and now() > self.expires
 
     @property
     def value(self):
@@ -83,6 +94,7 @@ class GiftCard(LoggedModel):
 
     class Meta:
         unique_together = (('secret', 'issuer'),)
+        ordering = ("issuance",)
 
 
 class GiftCardTransaction(models.Model):
@@ -119,6 +131,7 @@ class GiftCardTransaction(models.Model):
         blank=True,
         on_delete=models.PROTECT
     )
+    text = models.TextField(blank=True, null=True)
 
     class Meta:
         ordering = ("datetime",)

@@ -6,7 +6,7 @@ from django import forms
 from django.core.exceptions import ValidationError
 from django.http import HttpRequest
 from django.template.loader import get_template
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from i18nfield.fields import I18nFormField, I18nTextarea
 from i18nfield.forms import I18nTextInput
 from i18nfield.strings import LazyI18nString
@@ -98,13 +98,19 @@ class BankTransfer(BasePaymentProvider):
                 }},
                 required=False
             )),
+            ('invoice_immediately',
+             forms.BooleanField(
+                 label=_('Create an invoice for orders using bank transfer immediately if the event is otherwise '
+                         'configured to create invoices after payment is completed.'),
+                 required=False,
+             )),
             ('public_name', I18nFormField(
                 label=_('Payment method name'),
                 widget=I18nTextInput,
                 required=False
             )),
             ('omit_hyphen', forms.BooleanField(
-                label=_('Do not include a hypen in the payment reference.'),
+                label=_('Do not include a hyphen in the payment reference.'),
                 help_text=_('This is required in some countries.'),
                 required=False
             )),
@@ -118,6 +124,10 @@ class BankTransfer(BasePaymentProvider):
     def test_mode_message(self):
         return _('In test mode, you can just manually mark this order as paid in the backend after it has been '
                  'created.')
+
+    @property
+    def requires_invoice_immediately(self):
+        return self.settings.get('invoice_immediately', False, as_type=bool)
 
     @property
     def settings_form_fields(self):

@@ -2,7 +2,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils.functional import cached_property
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
 from django_countries.serializers import CountryFieldMixin
 from hierarkey.proxy import HierarkeyProxy
 from pytz import common_timezones
@@ -29,8 +29,26 @@ class MetaDataField(Field):
         }
 
     def to_internal_value(self, data):
+        if not isinstance(data, dict) or not all(isinstance(k, str) for k in data.keys()):
+            raise ValidationError('meta_data needs to be an object (str -> str).')
+
         return {
             'meta_data': data
+        }
+
+
+class MetaPropertyField(Field):
+
+    def to_representation(self, value):
+        return {
+            v.name: v.default for v in value.item_meta_properties.all()
+        }
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict) or not all(isinstance(k, str) for k in data.keys()) or not all(isinstance(k, str) for k in data.values()):
+            raise ValidationError('item_meta_properties needs to be an object (str -> str).')
+        return {
+            'item_meta_properties': data
         }
 
 
@@ -45,6 +63,8 @@ class SeatCategoryMappingField(Field):
         }
 
     def to_internal_value(self, data):
+        if not isinstance(data, dict) or not all(isinstance(k, str) for k in data.keys()) or not all(isinstance(k, int) for k in data.values()):
+            raise ValidationError('seat_category_mapping needs to be an object (str -> int).')
         return {
             'seat_category_mapping': data or {}
         }
@@ -77,6 +97,7 @@ class TimeZoneField(ChoiceField):
 
 class EventSerializer(I18nAwareModelSerializer):
     meta_data = MetaDataField(required=False, source='*')
+    item_meta_properties = MetaPropertyField(required=False, source='*')
     plugins = PluginsField(required=False, source='*')
     seat_category_mapping = SeatCategoryMappingField(source='*', required=False)
     timezone = TimeZoneField(required=False, choices=[(a, a) for a in common_timezones])
@@ -86,7 +107,7 @@ class EventSerializer(I18nAwareModelSerializer):
         fields = ('name', 'slug', 'live', 'testmode', 'currency', 'date_from',
                   'date_to', 'date_admission', 'is_public', 'presale_start',
                   'presale_end', 'location', 'geo_lat', 'geo_lon', 'has_subevents', 'meta_data', 'seating_plan',
-                  'plugins', 'seat_category_mapping', 'timezone')
+                  'plugins', 'seat_category_mapping', 'timezone', 'item_meta_properties')
 
     def validate(self, data):
         data = super().validate(data)
@@ -131,6 +152,12 @@ class EventSerializer(I18nAwareModelSerializer):
                 raise ValidationError(_('Meta data property \'{name}\' does not exist.').format(name=key))
         return value
 
+    @cached_property
+    def item_meta_props(self):
+        return {
+            p.name: p for p in self.context['request'].event.item_meta_properties.all()
+        }
+
     def validate_seating_plan(self, value):
         if value and value.organizer != self.context['request'].organizer:
             raise ValidationError('Invalid seating plan.')
@@ -172,6 +199,7 @@ class EventSerializer(I18nAwareModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         meta_data = validated_data.pop('meta_data', None)
+        item_meta_properties = validated_data.pop('item_meta_properties', None)
         validated_data.pop('seat_category_mapping', None)
         plugins = validated_data.pop('plugins', settings.PRETIX_PLUGINS_DEFAULT.split(','))
         tz = validated_data.pop('timezone', None)
@@ -188,6 +216,15 @@ class EventSerializer(I18nAwareModelSerializer):
                     value=value
                 )
 
+        # Item Meta properties
+        if item_meta_properties is not None:
+            for key, value in item_meta_properties.items():
+                event.item_meta_properties.create(
+                    name=key,
+                    default=value,
+                    event=event
+                )
+
         # Seats
         if event.seating_plan:
             generate_seats(event, None, event.seating_plan, {})
@@ -202,6 +239,7 @@ class EventSerializer(I18nAwareModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         meta_data = validated_data.pop('meta_data', None)
+        item_meta_properties = validated_data.pop('item_meta_properties', None)
         plugins = validated_data.pop('plugins', None)
         seat_category_mapping = validated_data.pop('seat_category_mapping', None)
         tz = validated_data.pop('timezone', None)
@@ -227,6 +265,26 @@ class EventSerializer(I18nAwareModelSerializer):
             for prop, current_object in current.items():
                 if prop.name not in meta_data:
                     current_object.delete()
+
+        # Item Meta properties
+        if item_meta_properties is not None:
+            current = [imp for imp in event.item_meta_properties.all()]
+            for key, value in item_meta_properties.items():
+                prop = self.item_meta_props.get(key)
+                if prop in current:
+                    prop.default = value
+                    prop.save()
+                else:
+                    prop = event.item_meta_properties.create(
+                        name=key,
+                        default=value,
+                        event=event
+                    )
+                    current.append(prop)
+
+            for prop in current:
+                if prop.name not in list(item_meta_properties.keys()):
+                    prop.delete()
 
         # Seats
         if seat_category_mapping is not None or ('seating_plan' in validated_data and validated_data['seating_plan'] is None):
@@ -290,13 +348,13 @@ class CloneEventSerializer(EventSerializer):
 class SubEventItemSerializer(I18nAwareModelSerializer):
     class Meta:
         model = SubEventItem
-        fields = ('item', 'price')
+        fields = ('item', 'price', 'disabled')
 
 
 class SubEventItemVariationSerializer(I18nAwareModelSerializer):
     class Meta:
         model = SubEventItemVariation
-        fields = ('variation', 'price')
+        fields = ('variation', 'price', 'disabled')
 
 
 class SubEventSerializer(I18nAwareModelSerializer):
@@ -401,27 +459,29 @@ class SubEventSerializer(I18nAwareModelSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        item_price_overrides_data = validated_data.pop('subeventitem_set') if 'subeventitem_set' in validated_data else {}
-        variation_price_overrides_data = validated_data.pop('subeventitemvariation_set') if 'subeventitemvariation_set' in validated_data else {}
+        item_price_overrides_data = validated_data.pop('subeventitem_set', None)
+        variation_price_overrides_data = validated_data.pop('subeventitemvariation_set', None)
         meta_data = validated_data.pop('meta_data', None)
         seat_category_mapping = validated_data.pop('seat_category_mapping', None)
         subevent = super().update(instance, validated_data)
 
-        existing_item_overrides = {item.item: item.id for item in SubEventItem.objects.filter(subevent=subevent)}
+        if item_price_overrides_data is not None:
+            existing_item_overrides = {item.item: item.id for item in SubEventItem.objects.filter(subevent=subevent)}
 
-        for item_price_override_data in item_price_overrides_data:
-            id = existing_item_overrides.pop(item_price_override_data['item'], None)
-            SubEventItem(id=id, subevent=subevent, **item_price_override_data).save()
+            for item_price_override_data in item_price_overrides_data:
+                id = existing_item_overrides.pop(item_price_override_data['item'], None)
+                SubEventItem(id=id, subevent=subevent, **item_price_override_data).save()
 
-        SubEventItem.objects.filter(id__in=existing_item_overrides.values()).delete()
+            SubEventItem.objects.filter(id__in=existing_item_overrides.values()).delete()
 
-        existing_variation_overrides = {item.variation: item.id for item in SubEventItemVariation.objects.filter(subevent=subevent)}
+        if variation_price_overrides_data is not None:
+            existing_variation_overrides = {item.variation: item.id for item in SubEventItemVariation.objects.filter(subevent=subevent)}
 
-        for variation_price_override_data in variation_price_overrides_data:
-            id = existing_variation_overrides.pop(variation_price_override_data['variation'], None)
-            SubEventItemVariation(id=id, subevent=subevent, **variation_price_override_data).save()
+            for variation_price_override_data in variation_price_overrides_data:
+                id = existing_variation_overrides.pop(variation_price_override_data['variation'], None)
+                SubEventItemVariation(id=id, subevent=subevent, **variation_price_override_data).save()
 
-        SubEventItemVariation.objects.filter(id__in=existing_variation_overrides.values()).delete()
+            SubEventItemVariation.objects.filter(id__in=existing_variation_overrides.values()).delete()
 
         # Meta data
         if meta_data is not None:
@@ -481,6 +541,9 @@ class EventSettingsSerializer(serializers.Serializer):
         'checkout_email_helptext',
         'presale_has_ended_text',
         'voucher_explanation_text',
+        'banner_text',
+        'banner_text_bottom',
+        'show_dates_on_frontpage',
         'show_date_to',
         'show_times',
         'show_items_outside_presale_period',
@@ -501,16 +564,23 @@ class EventSettingsSerializer(serializers.Serializer):
         'meta_noindex',
         'redirect_to_checkout_directly',
         'frontpage_subevent_ordering',
+        'event_list_type',
         'frontpage_text',
         'attendee_names_asked',
         'attendee_names_required',
         'attendee_emails_asked',
         'attendee_emails_required',
-        'confirm_text',
+        'attendee_addresses_asked',
+        'attendee_addresses_required',
+        'attendee_company_asked',
+        'attendee_company_required',
+        'confirm_texts',
         'order_email_asked_twice',
+        'payment_term_mode',
         'payment_term_days',
-        'payment_term_last',
         'payment_term_weekdays',
+        'payment_term_minutes',
+        'payment_term_last',
         'payment_term_expire_automatically',
         'payment_term_accept_late',
         'payment_explanation',
@@ -528,6 +598,7 @@ class EventSettingsSerializer(serializers.Serializer):
         'invoice_address_vatid',
         'invoice_address_company_required',
         'invoice_address_beneficiary',
+        'invoice_address_custom_field',
         'invoice_name_required',
         'invoice_address_not_asked_free',
         'invoice_show_payments',
@@ -537,6 +608,7 @@ class EventSettingsSerializer(serializers.Serializer):
         'invoice_numbers_consecutive',
         'invoice_numbers_prefix',
         'invoice_numbers_prefix_cancellations',
+        'invoice_numbers_counter_length',
         'invoice_attendee_name',
         'invoice_include_expire_date',
         'invoice_address_explanation_text',
@@ -551,6 +623,7 @@ class EventSettingsSerializer(serializers.Serializer):
         'invoice_introductory_text',
         'invoice_additional_text',
         'invoice_footer_text',
+        'invoice_eu_currencies',
         'cancel_allow_user',
         'cancel_allow_user_until',
         'cancel_allow_user_paid',
@@ -558,6 +631,13 @@ class EventSettingsSerializer(serializers.Serializer):
         'cancel_allow_user_paid_keep',
         'cancel_allow_user_paid_keep_fees',
         'cancel_allow_user_paid_keep_percentage',
+        'cancel_allow_user_paid_adjust_fees',
+        'cancel_allow_user_paid_adjust_fees_explanation',
+        'cancel_allow_user_paid_refund_as_giftcard',
+        'cancel_allow_user_paid_require_approval',
+        'change_allow_user_variation',
+        'change_allow_user_until',
+        'change_allow_user_price',
     ]
 
     def __init__(self, *args, **kwargs):
@@ -565,9 +645,13 @@ class EventSettingsSerializer(serializers.Serializer):
         super().__init__(*args, **kwargs)
         for fname in self.default_fields:
             kwargs = DEFAULTS[fname].get('serializer_kwargs', {})
+            if callable(kwargs):
+                kwargs = kwargs()
             kwargs.setdefault('required', False)
             kwargs.setdefault('allow_null', True)
             form_kwargs = DEFAULTS[fname].get('form_kwargs', {})
+            if callable(form_kwargs):
+                form_kwargs = form_kwargs()
             if 'serializer_class' not in DEFAULTS[fname]:
                 raise ValidationError('{} has no serializer class'.format(fname))
             f = DEFAULTS[fname]['serializer_class'](
@@ -596,3 +680,40 @@ class EventSettingsSerializer(serializers.Serializer):
         settings_dict.update(data)
         validate_settings(self.event, settings_dict)
         return data
+
+
+class DeviceEventSettingsSerializer(EventSettingsSerializer):
+    default_fields = [
+        'locales',
+        'locale',
+        'last_order_modification_date',
+        'show_quota_left',
+        'max_items_per_order',
+        'attendee_names_asked',
+        'attendee_names_required',
+        'attendee_emails_asked',
+        'attendee_emails_required',
+        'attendee_addresses_asked',
+        'attendee_addresses_required',
+        'attendee_company_asked',
+        'attendee_company_required',
+        'ticket_download',
+        'ticket_download_addons',
+        'ticket_download_nonadm',
+        'ticket_download_pending',
+        'invoice_address_asked',
+        'invoice_address_required',
+        'invoice_address_vatid',
+        'invoice_address_company_required',
+        'invoice_address_beneficiary',
+        'invoice_address_custom_field',
+        'invoice_name_required',
+        'invoice_address_not_asked_free',
+        'invoice_address_from_name',
+        'invoice_address_from',
+        'invoice_address_from_zipcode',
+        'invoice_address_from_city',
+        'invoice_address_from_country',
+        'invoice_address_from_tax_id',
+        'invoice_address_from_vat_id',
+    ]

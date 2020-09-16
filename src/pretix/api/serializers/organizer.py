@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from django.db.models import Q
-from django.utils.translation import get_language, ugettext_lazy as _
+from django.utils.translation import get_language, gettext_lazy as _
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
@@ -55,7 +55,7 @@ class GiftCardSerializer(I18nAwareModelSerializer):
 
     class Meta:
         model = GiftCard
-        fields = ('id', 'secret', 'issuance', 'value', 'currency', 'testmode')
+        fields = ('id', 'secret', 'issuance', 'value', 'currency', 'testmode', 'expires', 'conditions')
 
 
 class EventSlugField(serializers.SlugRelatedField):

@@ -1,16 +1,16 @@
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
 import pytz
 from django.core import mail as djmail
-from django.dispatch import receiver
 from django.test import TestCase
 from django.utils.timezone import make_aware, now
 from django_countries.fields import Country
 from django_scopes import scope
+from tests.testdummy.signals import FoobazSalesChannel
 
-from pretix.base.channels import SalesChannel
 from pretix.base.decimal import round_decimal
 from pretix.base.models import (
     CartPosition, Event, InvoiceAddress, Item, Order, OrderPosition, Organizer,
@@ -23,25 +23,11 @@ from pretix.base.reldate import RelativeDate, RelativeDateWrapper
 from pretix.base.services.invoices import generate_invoice
 from pretix.base.services.orders import (
     OrderChangeManager, OrderError, _create_order, approve_order, cancel_order,
-    deny_order, expire_orders, send_download_reminders, send_expiry_warnings,
+    deny_order, expire_orders, reactivate_order, send_download_reminders,
+    send_expiry_warnings,
 )
-from pretix.base.signals import register_sales_channels
 from pretix.plugins.banktransfer.payment import BankTransfer
 from pretix.testutils.scope import classscope
-
-
-class FoobarSalesChannel(SalesChannel):
-    identifier = "bar"
-    verbose_name = "Foobar"
-    icon = "home"
-    testmode_supported = False
-
-
-@receiver(register_sales_channels, dispatch_uid="test_orders_register_sales_channels")
-def base_sales_channels(sender, **kwargs):
-    return (
-        FoobarSalesChannel(),
-    )
 
 
 @pytest.fixture(scope='function')
@@ -93,6 +79,20 @@ def test_expiry_weekdays(event):
 
 
 @pytest.mark.django_db
+def test_expiry_minutes(event):
+    today = now()
+    event.settings.set('payment_term_days', 5)
+    event.settings.set('payment_term_mode', 'minutes')
+    event.settings.set('payment_term_minutes', 30)
+    event.settings.set('payment_term_weekdays', False)
+    order = _create_order(event, email='dummy@example.org', positions=[],
+                          now_dt=today, payment_provider=FreeOrderProvider(event),
+                          locale='de')[0]
+    assert (order.expires - today).days == 0
+    assert (order.expires - today).seconds == 30 * 60
+
+
+@pytest.mark.django_db
 def test_expiry_last(event):
     today = now()
     event.settings.set('payment_term_days', 5)
@@ -117,7 +117,7 @@ def test_expiry_last_relative(event):
     event.date_from = now() + timedelta(days=5)
     event.save()
     event.settings.set('payment_term_last', RelativeDateWrapper(
-        RelativeDate(days_before=2, time=None, base_date_name='date_from')
+        RelativeDate(days_before=2, time=None, base_date_name='date_from', minutes_before=None)
     ))
     order = _create_order(event, email='dummy@example.org', positions=[],
                           now_dt=today, payment_provider=FreeOrderProvider(event),
@@ -148,7 +148,7 @@ def test_expiry_last_relative_subevents(event):
     )
 
     event.settings.set('payment_term_last', RelativeDateWrapper(
-        RelativeDate(days_before=2, time=None, base_date_name='date_from')
+        RelativeDate(days_before=2, time=None, base_date_name='date_from', minutes_before=None)
     ))
     order = _create_order(event, email='dummy@example.org', positions=[cp1, cp2],
                           now_dt=today, payment_provider=FreeOrderProvider(event),
@@ -444,7 +444,23 @@ class DownloadReminderTests(TestCase):
                 order=self.order, item=self.ticket, variation=None,
                 price=Decimal("23.00"), attendee_name_parts={"full_name": "Peter"}, positionid=1
             )
+            self.event.settings.ticket_download = True
             djmail.outbox = []
+
+    @classscope(attr='o')
+    def test_downloads_disabled(self):
+        self.event.settings.mail_days_download_reminder = 2
+        self.event.settings.ticket_download = False
+        send_download_reminders(sender=self.event)
+        assert len(djmail.outbox) == 0
+
+    @classscope(attr='o')
+    def test_downloads_disabled_per_product(self):
+        self.event.settings.mail_days_download_reminder = 2
+        self.ticket.generate_tickets = False
+        self.ticket.save()
+        send_download_reminders(sender=self.event)
+        assert len(djmail.outbox) == 0
 
     @classscope(attr='o')
     def test_disabled(self):
@@ -541,6 +557,13 @@ class DownloadReminderTests(TestCase):
         send_download_reminders(sender=self.event)
         assert len(djmail.outbox) == 0
 
+    @classscope(attr='o')
+    def test_not_sent_for_disabled_sales_channel(self):
+        self.event.settings.mail_days_download_reminder = 2
+        self.event.settings.mail_sales_channel_download_reminder = []
+        send_download_reminders(sender=self.event)
+        assert len(djmail.outbox) == 0
+
 
 class OrderCancelTests(TestCase):
     def setUp(self):
@@ -589,6 +612,7 @@ class OrderCancelTests(TestCase):
     def test_cancel_unpaid(self):
         cancel_order(self.order.pk)
         self.order.refresh_from_db()
+        assert self.order.cancellation_date
         assert self.order.status == Order.STATUS_CANCELED
         assert self.order.all_logentries().last().action_type == 'pretix.event.order.canceled'
         assert self.order.invoices.count() == 2
@@ -772,9 +796,9 @@ class OrderChangeManagerTests(TestCase):
                 layout_category='Stalls', product=self.stalls
             )
             self.quota.items.add(self.stalls)
-            self.seat_a1 = self.event.seats.create(name="A1", product=self.stalls, seat_guid="A1")
-            self.seat_a2 = self.event.seats.create(name="A2", product=self.stalls, seat_guid="A2")
-            self.seat_a3 = self.event.seats.create(name="A3", product=self.stalls, seat_guid="A3")
+            self.seat_a1 = self.event.seats.create(seat_number="A1", product=self.stalls, seat_guid="A1")
+            self.seat_a2 = self.event.seats.create(seat_number="A2", product=self.stalls, seat_guid="A2")
+            self.seat_a3 = self.event.seats.create(seat_number="A3", product=self.stalls, seat_guid="A3")
 
     def _enable_reverse_charge(self):
         self.tr7.eu_reverse_charge = True
@@ -808,6 +832,26 @@ class OrderChangeManagerTests(TestCase):
         self.quota.save()
         with self.assertRaises(OrderError):
             self.ocm.change_subevent(self.op1, se2)
+
+    @classscope(attr='o')
+    def test_change_subevent_and_product(self):
+        self.event.has_subevents = True
+        self.event.save()
+        se1 = self.event.subevents.create(name="Foo", date_from=now())
+        se2 = self.event.subevents.create(name="Bar", date_from=now())
+        self.op1.subevent = se1
+        self.op1.save()
+        self.quota.subevent = se1
+        self.quota.save()
+        self.quota.items.remove(self.shirt)
+        q2 = self.event.quotas.create(name="Q2", size=None, subevent=se2)
+        q2.items.add(self.shirt)
+        self.ocm.change_item_and_subevent(self.op1, self.shirt, None, se2)
+        self.ocm.commit()
+        self.op1.refresh_from_db()
+        self.order.refresh_from_db()
+        assert self.op1.subevent == se2
+        assert self.op1.item == self.shirt
 
     @classscope(attr='o')
     def test_change_subevent_success(self):
@@ -1394,6 +1438,15 @@ class OrderChangeManagerTests(TestCase):
         assert self.order.invoices.count() == 3
 
     @classscope(attr='o')
+    def test_no_new_invoice_for_free_order(self):
+        generate_invoice(self.order)
+        assert self.order.invoices.count() == 1
+        self.ocm.change_price(self.op1, Decimal('0.00'))
+        self.ocm.change_price(self.op2, Decimal('0.00'))
+        self.ocm.commit()
+        assert self.order.invoices.count() == 2
+
+    @classscope(attr='o')
     def test_reissue_invoice_disabled(self):
         self.ocm.reissue_invoice = False
         generate_invoice(self.order)
@@ -1410,6 +1463,68 @@ class OrderChangeManagerTests(TestCase):
         self.ocm.add_position(self.ticket, None, Decimal('0.00'))
         self.ocm.commit()
         assert self.order.invoices.count() == 1
+
+    @classscope(attr='o')
+    def test_recalculate_country_rate(self):
+        self.event.settings.set('tax_rate_default', self.tr19.pk)
+        prov = self.ocm._get_payment_provider()
+        prov.settings.set('_fee_abs', Decimal('0.30'))
+        self.ocm._recalculate_total_and_payment_fee()
+
+        assert self.order.total == Decimal('46.30')
+        fee = self.order.fees.get(fee_type=OrderFee.FEE_TYPE_PAYMENT)
+        assert fee.value == prov.calculate_fee(self.order.total)
+        assert fee.tax_rate == Decimal('19.00')
+        assert fee.tax_value == Decimal('0.05')
+
+        self.ocm = OrderChangeManager(self.order, None)
+
+        self._enable_reverse_charge()
+        self.tr7.custom_rules = json.dumps([
+            {'country': 'AT', 'address_type': '', 'action': 'vat', 'rate': '100.00'}
+        ])
+        self.tr7.save()
+
+        self.ocm.recalculate_taxes(keep='net')
+        self.ocm.commit()
+        ops = list(self.order.positions.all())
+        for op in ops:
+            assert op.price == Decimal('43.00')
+            assert op.tax_value == Decimal('21.50')
+            assert op.tax_rate == Decimal('100.00')
+
+        assert self.order.total == Decimal('86.00') + fee.value
+
+    @classscope(attr='o')
+    def test_recalculate_country_rate_keep_gross(self):
+        self.event.settings.set('tax_rate_default', self.tr19.pk)
+        prov = self.ocm._get_payment_provider()
+        prov.settings.set('_fee_abs', Decimal('0.30'))
+        self.ocm._recalculate_total_and_payment_fee()
+
+        assert self.order.total == Decimal('46.30')
+        fee = self.order.fees.get(fee_type=OrderFee.FEE_TYPE_PAYMENT)
+        assert fee.value == prov.calculate_fee(self.order.total)
+        assert fee.tax_rate == Decimal('19.00')
+        assert fee.tax_value == Decimal('0.05')
+
+        self.ocm = OrderChangeManager(self.order, None)
+
+        self._enable_reverse_charge()
+        self.tr7.custom_rules = json.dumps([
+            {'country': 'AT', 'address_type': '', 'action': 'vat', 'rate': '100.00'}
+        ])
+        self.tr7.save()
+
+        self.ocm.recalculate_taxes(keep='gross')
+        self.ocm.commit()
+        ops = list(self.order.positions.all())
+        for op in ops:
+            assert op.price == Decimal('23.00')
+            assert op.tax_value == Decimal('11.50')
+            assert op.tax_rate == Decimal('100.00')
+
+        assert self.order.total == Decimal('46.00') + fee.value
 
     @classscope(attr='o')
     def test_recalculate_reverse_charge(self):
@@ -1448,7 +1563,7 @@ class OrderChangeManagerTests(TestCase):
         self.ocm.commit()
         ops = list(self.order.positions.all())
         for op in ops:
-            assert op.price == Decimal('23.01')   # sic. we can't really avoid it.
+            assert op.price == Decimal('23.01')  # sic. we can't really avoid it.
             assert op.tax_value == Decimal('1.51')
             assert op.tax_rate == Decimal('7.00')
 
@@ -1997,7 +2112,12 @@ class OrderChangeManagerTests(TestCase):
             self.ocm.commit()
 
     @classscope(attr='o')
-    def test_add_with_seat_required(self):
+    def test_add_with_seat_not_required_if_no_choice(self):
+        self.event.settings.seating_choice = False
+        self.ocm.add_position(self.stalls, None, price=Decimal('13.00'))
+
+    @classscope(attr='o')
+    def test_add_with_seat_not_required(self):
         with self.assertRaises(OrderError):
             self.ocm.add_position(self.stalls, None, price=Decimal('13.00'))
 
@@ -2160,7 +2280,8 @@ class OrderChangeManagerTests(TestCase):
     def test_clear_out_order(self):
         self.order.status = Order.STATUS_PAID
         self.order.save()
-        self.order.payments.create(amount=self.order.total, state=OrderPayment.PAYMENT_STATE_CONFIRMED, provider='manual')
+        self.order.payments.create(amount=self.order.total, state=OrderPayment.PAYMENT_STATE_CONFIRMED,
+                                   provider='manual')
         cancel_order(self.order, cancellation_fee=Decimal('5.00'))
         self.order.refresh_from_db()
         assert self.order.total == Decimal('5.00')
@@ -2178,7 +2299,8 @@ class OrderChangeManagerTests(TestCase):
         self.order.total = Decimal('51.1')
         self.order.save()
 
-        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_PENDING, amount=Decimal('48.5'), fee=fee, provider="banktransfer")
+        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_PENDING, amount=Decimal('48.5'), fee=fee,
+                                   provider="banktransfer")
         prov = self.ocm._get_payment_provider()
         prov.settings.set('_fee_percent', Decimal('10.00'))
         prov.settings.set('_fee_reverse_calc', False)
@@ -2196,7 +2318,8 @@ class OrderChangeManagerTests(TestCase):
         self.order.total = Decimal('50.60')
         self.order.save()
 
-        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_PENDING, amount=Decimal('48.5'), fee=fee, provider="banktransfer")
+        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_PENDING, amount=Decimal('48.5'), fee=fee,
+                                   provider="banktransfer")
         prov = self.ocm._get_payment_provider()
         prov.settings.set('_fee_percent', Decimal('10.00'))
         prov.settings.set('_fee_reverse_calc', False)
@@ -2215,7 +2338,8 @@ class OrderChangeManagerTests(TestCase):
         self.order.total = Decimal('50.60')
         self.order.save()
 
-        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_PENDING, amount=Decimal('48.5'), fee=fee, provider="banktransfer")
+        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_PENDING, amount=Decimal('48.5'), fee=fee,
+                                   provider="banktransfer")
         prov = self.ocm._get_payment_provider()
         prov.settings.set('_fee_percent', Decimal('10.00'))
         prov.settings.set('_fee_reverse_calc', False)
@@ -2226,6 +2350,93 @@ class OrderChangeManagerTests(TestCase):
         assert fee.canceled
         self.order.refresh_from_db()
         assert self.order.total == Decimal('46.00')
+
+    @classscope(attr='o')
+    def test_change_taxrate(self):
+        self.ocm.change_tax_rule(self.op1, self.tr19)
+        self.ocm.commit()
+        self.order.refresh_from_db()
+        nop = self.order.positions.first()
+        assert nop.price == Decimal('23.00')
+        assert nop.tax_rule != self.ticket.tax_rule
+        assert nop.tax_rate == self.tr19.rate
+        assert round_decimal(nop.price * (1 - 100 / (100 + self.tr19.rate))) == nop.tax_value
+
+    @classscope(attr='o')
+    def test_change_taxrate_and_product(self):
+        self.ocm.change_item(self.op1, self.shirt, None)
+        self.ocm.change_tax_rule(self.op1, self.tr7)
+        self.ocm.commit()
+        self.order.refresh_from_db()
+        nop = self.order.positions.first()
+        assert nop.item == self.shirt
+        assert nop.price == Decimal('23.00')
+        assert nop.tax_rule != self.shirt.tax_rule
+        assert nop.tax_rate == self.tr7.rate
+        assert round_decimal(nop.price * (1 - 100 / (100 + self.tr7.rate))) == nop.tax_value
+
+    @classscope(attr='o')
+    def test_change_taxrate_to_reverse_charge(self):
+        self.tr19.eu_reverse_charge = True
+        self.tr19.home_country = Country('DE')
+        self.tr19.save()
+        InvoiceAddress.objects.create(
+            order=self.order, is_business=True, vat_id='ATU1234567', vat_id_validated=True,
+            country=Country('AT')
+        )
+
+        self.ocm.change_tax_rule(self.op1, self.tr19)
+        self.ocm.commit()
+        self.order.refresh_from_db()
+        nop = self.order.positions.first()
+        assert nop.price == Decimal('23.00')
+        assert nop.tax_rule == self.tr19
+        assert nop.tax_rate == Decimal('0.00')
+        assert nop.tax_value == Decimal('0.00')
+
+    @classscope(attr='o')
+    def test_change_taxrate_to_country_specific(self):
+        self.tr19.eu_reverse_charge = True
+        self.tr19.custom_rules = json.dumps([
+            {'country': 'AT', 'address_type': '', 'action': 'vat', 'rate': '100.00'}
+        ])
+        self.tr19.save()
+        InvoiceAddress.objects.create(
+            order=self.order, is_business=True, vat_id='ATU1234567', vat_id_validated=True,
+            country=Country('AT')
+        )
+
+        self.ocm.change_tax_rule(self.op1, self.tr19)
+        self.ocm.commit()
+        self.order.refresh_from_db()
+        nop = self.order.positions.first()
+        assert nop.price == Decimal('23.00')
+        assert nop.tax_rule == self.tr19
+        assert nop.tax_rate == Decimal('100.00')
+        assert nop.tax_value == Decimal('19.33')
+
+    @classscope(attr='o')
+    def test_change_taxrate_from_reverse_charge(self):
+        self.tr7.eu_reverse_charge = True
+        self.tr7.home_country = Country('DE')
+        self.tr7.save()
+        nop = self.order.positions.first()
+        nop.tax_value = Decimal('0.00')
+        nop.tax_rate = Decimal('0.00')
+        nop.save()
+        InvoiceAddress.objects.create(
+            order=self.order, is_business=True, vat_id='ATU1234567', vat_id_validated=True,
+            country=Country('AT')
+        )
+
+        self.ocm.change_tax_rule(self.op1, self.tr19)
+        self.ocm.commit()
+        self.order.refresh_from_db()
+        nop = self.order.positions.first()
+        assert nop.price == Decimal('23.00')
+        assert nop.tax_rule == self.tr19
+        assert nop.tax_rate == Decimal('19.00')
+        assert nop.tax_value == Decimal('3.67')
 
 
 @pytest.mark.django_db
@@ -2270,7 +2481,7 @@ def test_saleschannel_testmode_restriction(event):
 
     order = _create_order(event, email='dummy@example.org', positions=[cp1],
                           now_dt=today, payment_provider=FreeOrderProvider(event),
-                          locale='de', sales_channel=FoobarSalesChannel.identifier)[0]
+                          locale='de', sales_channel=FoobazSalesChannel.identifier)[0]
     assert not order.testmode
 
     event.testmode = True
@@ -2281,7 +2492,7 @@ def test_saleschannel_testmode_restriction(event):
 
     order = _create_order(event, email='dummy@example.org', positions=[cp1],
                           now_dt=today, payment_provider=FreeOrderProvider(event),
-                          locale='de', sales_channel=FoobarSalesChannel.identifier)[0]
+                          locale='de', sales_channel=FoobazSalesChannel.identifier)[0]
     assert not order.testmode
 
 
@@ -2454,3 +2665,120 @@ def test_issue_when_paid_and_changed(event):
     op2 = order.positions.last()
     gc2 = op2.issued_gift_cards.get()
     assert gc2.value == op2.price
+
+
+class OrderReactivateTest(TestCase):
+    def setUp(self):
+        super().setUp()
+        self.o = Organizer.objects.create(name='Dummy', slug='dummy')
+        with scope(organizer=self.o):
+            self.event = Event.objects.create(organizer=self.o, name='Dummy', slug='dummy', date_from=now(),
+                                              plugins='tests.testdummy')
+            self.order = Order.objects.create(
+                code='FOO', event=self.event, email='dummy@dummy.test',
+                status=Order.STATUS_CANCELED, locale='en',
+                datetime=now(), expires=now() + timedelta(days=1),
+                cancellation_date=now(),
+                total=Decimal('46.00'),
+            )
+            self.ticket = Item.objects.create(event=self.event, name='Early-bird ticket',
+                                              default_price=Decimal('23.00'), admission=True)
+            self.op1 = OrderPosition.objects.create(
+                order=self.order, item=self.ticket, variation=None,
+                price=Decimal("23.00"), attendee_name_parts={'full_name': "Peter"}, positionid=1
+            )
+            self.op2 = OrderPosition.objects.create(
+                order=self.order, item=self.ticket, variation=None,
+                price=Decimal("23.00"), attendee_name_parts={'full_name': "Dieter"}, positionid=2
+            )
+            self.stalls = Item.objects.create(event=self.event, name='Stalls',
+                                              default_price=Decimal('23.00'), admission=True)
+            self.plan = SeatingPlan.objects.create(
+                name="Plan", organizer=self.o, layout="{}"
+            )
+            self.event.seat_category_mappings.create(
+                layout_category='Stalls', product=self.stalls
+            )
+            self.quota = self.event.quotas.create(name='Test', size=None)
+            self.quota.items.add(self.stalls)
+            self.quota.items.add(self.ticket)
+            self.seat_a1 = self.event.seats.create(seat_number="A1", product=self.stalls, seat_guid="A1")
+            generate_invoice(self.order)
+            djmail.outbox = []
+
+    @classscope(attr='o')
+    def test_paid(self):
+        self.order.status = Order.STATUS_PAID
+        self.order.save()
+        with pytest.raises(OrderError):
+            reactivate_order(self.order)
+
+    @classscope(attr='o')
+    def test_reactivate_unpaid(self):
+        e = self.order.expires
+        reactivate_order(self.order)
+        self.order.refresh_from_db()
+        assert self.order.status == Order.STATUS_PENDING
+        assert self.order.all_logentries().last().action_type == 'pretix.event.order.reactivated'
+        assert self.order.invoices.count() == 3
+        assert self.order.expires > e > now()
+
+    @classscope(attr='o')
+    def test_reactivate_paid(self):
+        self.order.payments.create(state=OrderPayment.PAYMENT_STATE_CONFIRMED, amount=48.5)
+        reactivate_order(self.order)
+        self.order.refresh_from_db()
+        assert self.order.status == Order.STATUS_PAID
+        assert self.order.all_logentries().last().action_type == 'pretix.event.order.reactivated'
+        assert self.order.invoices.count() == 3
+        assert not self.order.cancellation_date
+
+    @classscope(attr='o')
+    def test_reactivate_sold_out(self):
+        self.quota.size = 0
+        self.quota.save()
+        with pytest.raises(OrderError):
+            reactivate_order(self.order)
+
+    @classscope(attr='o')
+    def test_reactivate_seat_taken(self):
+        self.op1.item = self.stalls
+        self.op1.seat = self.seat_a1
+        self.op1.save()
+        self.seat_a1.blocked = True
+        self.seat_a1.save()
+        with pytest.raises(OrderError):
+            reactivate_order(self.order)
+
+    @classscope(attr='o')
+    def test_reactivate_voucher_ok(self):
+        self.op1.voucher = self.event.vouchers.create(code="FOO", item=self.ticket, redeemed=0, max_usages=1)
+        self.op1.save()
+        reactivate_order(self.order)
+        v = self.op1.voucher
+        v.refresh_from_db()
+        assert v.redeemed == 1
+
+    @classscope(attr='o')
+    def test_reactivate_voucher_budget(self):
+        self.op1.voucher = self.event.vouchers.create(code="FOO", item=self.ticket, budget=Decimal('0.00'))
+        self.op1.price_before_voucher = self.op1.price * 2
+        self.op1.save()
+        with pytest.raises(OrderError):
+            reactivate_order(self.order)
+
+    @classscope(attr='o')
+    def test_reactivate_voucher_used(self):
+        self.op1.voucher = self.event.vouchers.create(code="FOO", item=self.ticket, redeemed=1, max_usages=1)
+        self.op1.save()
+        with pytest.raises(OrderError):
+            reactivate_order(self.order)
+        v = self.op1.voucher
+        v.refresh_from_db()
+        assert v.redeemed == 1
+
+    @classscope(attr='o')
+    def test_reactivate_gift_card(self):
+        gc = self.o.issued_gift_cards.create(currency="EUR", issued_in=self.op1)
+        reactivate_order(self.order)
+        assert gc.value == 23

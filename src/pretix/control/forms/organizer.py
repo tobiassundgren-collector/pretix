@@ -7,16 +7,17 @@ from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.db.models import Q
 from django.utils.safestring import mark_safe
-from django.utils.translation import pgettext_lazy, ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _, pgettext_lazy
 from django_scopes.forms import SafeModelMultipleChoiceField
 from i18nfield.forms import I18nFormField, I18nTextarea
 
 from pretix.api.models import WebHook
 from pretix.api.webhooks import get_all_webhook_events
 from pretix.base.forms import I18nModelForm, SettingsForm
+from pretix.base.forms.widgets import SplitDateTimePickerWidget
 from pretix.base.models import Device, GiftCard, Organizer, Team
 from pretix.control.forms import (
-    ExtFileField, FontSelect, MultipleLanguagesWidget,
+    ExtFileField, FontSelect, MultipleLanguagesWidget, SplitDateTimeField,
 )
 from pretix.control.forms.event import SafeEventMultipleChoiceField
 from pretix.multidomain.models import KnownDomain
@@ -95,9 +96,10 @@ class OrganizerUpdateForm(OrganizerForm):
                 raise ValidationError(
                     _('You cannot choose the base domain of this installation.')
                 )
-            if KnownDomain.objects.filter(domainname=d).exclude(organizer=self.instance.pk).exists():
+            if KnownDomain.objects.filter(domainname=d).exclude(organizer=self.instance.pk,
+                                                                event__isnull=True).exists():
                 raise ValidationError(
-                    _('This domain is already in use for a different organizer.')
+                    _('This domain is already in use for a different event or organizer.')
                 )
         return d
 
@@ -250,6 +252,20 @@ class OrganizerSettingsForm(SettingsForm):
         ],
         widget=forms.TextInput(attrs={'class': 'colorpickerfield'})
     )
+    theme_color_background = forms.CharField(
+        label=_("Page background color"),
+        required=False,
+        validators=[
+            RegexValidator(regex='^#[0-9a-fA-F]{6}$',
+                           message=_('Please enter the hexadecimal code of a color, e.g. #990000.')),
+
+        ],
+        widget=forms.TextInput(attrs={'class': 'colorpickerfield no-contrast'})
+    )
+    theme_round_borders = forms.BooleanField(
+        label=_("Use round edges"),
+        required=False,
+    )
     organizer_homepage_text = I18nFormField(
         label=_('Homepage text'),
         required=False,
@@ -257,17 +273,26 @@ class OrganizerSettingsForm(SettingsForm):
         help_text=_('This will be displayed on the organizer homepage.')
     )
     organizer_logo_image = ExtFileField(
-        label=_('Logo image'),
+        label=_('Header image'),
         ext_whitelist=(".png", ".jpg", ".gif", ".jpeg"),
+        max_size=10 * 1024 * 1024,
         required=False,
         help_text=_('If you provide a logo image, we will by default not show your organization name '
-                    'in the page header. We will show your logo with a maximal height of 120 pixels.')
+                    'in the page header. By default, we show your logo with a size of up to 1140x120 pixels. You '
+                    'can increase the size with the setting below. We recommend not using small details on the picture '
+                    'as it will be resized on smaller screens.')
+    )
+    organizer_logo_image_large = forms.BooleanField(
+        label=_('Use header image in its full size'),
+        help_text=_('We recommend to upload a picture at least 1170 pixels wide.'),
+        required=False,
     )
     event_list_type = forms.ChoiceField(
         label=_('Default overview style'),
         choices=(
             ('list', _('List')),
-            ('calendar', _('Calendar'))
+            ('week', _('Week calendar')),
+            ('calendar', _('Month calendar')),
         )
     )
     event_list_availability = forms.BooleanField(
@@ -299,13 +324,20 @@ class OrganizerSettingsForm(SettingsForm):
         label=_('Favicon'),
         ext_whitelist=(".ico", ".png", ".jpg", ".gif", ".jpeg"),
         required=False,
+        max_size=1 * 1024 * 1024,
         help_text=_('If you provide a favicon, we will show it instead of the default pretix icon. '
-                    'We recommend a size of at least 200x200px to accomodate most devices.')
+                    'We recommend a size of at least 200x200px to accommodate most devices.')
     )
     giftcard_length = forms.IntegerField(
         label=_('Length of gift card codes'),
         help_text=_('The system generates by default {}-character long gift card codes. However, if a different length '
                     'is required, it can be set here.'.format(settings.ENTROPY['giftcard_secret'])),
+        required=False
+    )
+    giftcard_expiry_years = forms.IntegerField(
+        label=_('Validity of gift card codes in years'),
+        help_text=_('If you set a number here, gift cards will by default expire at the end of the year after this '
+                    'many years. If you keep it empty, gift cards do not have an explicit expiry date.'),
         required=False
     )
 
@@ -356,12 +388,15 @@ class GiftCardCreateForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         self.organizer = kwargs.pop('organizer')
+        initial = kwargs.pop('initial', {})
+        initial['expires'] = self.organizer.default_gift_card_expiry
+        kwargs['initial'] = initial
         super().__init__(*args, **kwargs)
 
     def clean_secret(self):
         s = self.cleaned_data['secret']
         if GiftCard.objects.filter(
-            secret__iexact=s
+                secret__iexact=s
         ).filter(
             Q(issuer=self.organizer) | Q(issuer__gift_card_collector_acceptance__collector=self.organizer)
         ).exists():
@@ -372,4 +407,24 @@ class GiftCardCreateForm(forms.ModelForm):
 
     class Meta:
         model = GiftCard
-        fields = ['secret', 'currency', 'testmode']
+        fields = ['secret', 'currency', 'testmode', 'expires', 'conditions']
+        field_classes = {
+            'expires': SplitDateTimeField
+        }
+        widgets = {
+            'expires': SplitDateTimePickerWidget,
+            'conditions': forms.Textarea(attrs={"rows": 2})
+        }
+
+
+class GiftCardUpdateForm(forms.ModelForm):
+    class Meta:
+        model = GiftCard
+        fields = ['expires', 'conditions']
+        field_classes = {
+            'expires': SplitDateTimeField
+        }
+        widgets = {
+            'expires': SplitDateTimePickerWidget,
+            'conditions': forms.Textarea(attrs={"rows": 2})
+        }
