@@ -57,7 +57,7 @@
             {% block above %}
             {% endblock %}
 
-           
+            {% if not request.event %}
             <div class="navbar navbar-fixed-top custom-navbar top-nav-collapse" role="navigation">
                 <div class="container">
                     <!-- navbar header -->
@@ -74,7 +74,7 @@
                             </svg><br />
                         </a>
                     </div>
-                    {% if not request.event %}
+                    
                     <div class="collapse navbar-collapse" id="tt-navbar">
                         <ul class="nav navbar-nav navbar-right">
                             <li><a href="/">Evenemang</a></li>
@@ -82,9 +82,10 @@
                             <li><a href="/pages/info">Om TobTic</a></li>
                         </ul>
                     </div>
-                    {% endif %}
+                  
                 </div>
             </div>
+            {% endif %}
            
 
             <div class="container">
