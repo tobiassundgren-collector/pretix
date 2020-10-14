@@ -1,8 +1,9 @@
 På servern
 
 su - pretix
-source /var/pretix/venv/bin/activate
+source /var/pretix/venv3/bin/activate
 pip3 install -U "git+https://github.com/tobiassundgren-collector/pretix.git#egg=pretix&subdirectory=src"
+pip install -r requirements.txt
 python -m pretix migrate
 python -m pretix rebuild
 python -m pretix updatestyles

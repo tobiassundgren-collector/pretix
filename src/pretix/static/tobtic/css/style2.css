@@ -25,11 +25,25 @@ body {
   overflow: hidden;
   display: block;
   position: relative;
-  padding-bottom: 120px; /* height of your footer */
+  padding-bottom: 10em; /* height of your footer */
 }
 
 .tt-top {
   padding:50px 0 10px 0;
+}
+
+.tt-footer {
+
+}
+
+.tt-poweredby {
+  color: #ffffff;
+}
+
+.pretix-footer {
+  background-color: #ffffff;
+  text-align: center;
+  font-weight: bold;
 }
 
 .main-search 
@@ -185,7 +199,7 @@ arranger-img {
   position: absolute;
   bottom: 0;
   width: 100%;
-  height: 10rem;
+  height: 10em;
   color: #000;
   border-top: solid 1px #cccccc;
   }

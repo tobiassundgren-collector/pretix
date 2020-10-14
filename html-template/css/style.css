@@ -26,6 +26,23 @@ ol, ul {
     background-color: #ffffff !important;
 }
 
+#tobtic-footer {
+  color: #999
+}
+
+#tobtic-footer p {
+  margin-bottom: 12px
+}
+
+#tobtic-footer {
+  padding: 0px;
+  font-family: Consolas, "Andale Mono WT", "Andale Mono", "Lucida Console", "Lucida Sans Typewriter", "DejaVu Sans Mono", "Bitstream Vera Sans Mono", "Liberation Mono", "Nimbus Mono L", Monaco, "Courier New", Courier, monospace;
+  font-size: 1em;
+  background: none;
+  border: none;
+  color: #999
+}
+
 .navbar-light .navbar-nav .nav-link {
   color: r#557a95;
 }

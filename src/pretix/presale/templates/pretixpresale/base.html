@@ -4,14 +4,14 @@
 {% load safelink %}
 {% load statici18n %}
 {% load thumb %}
-<!DOCTYPE html>
-<html{% if rtl %} dir="rtl" class="rtl"{% endif %} lang="{{ html_locale }}">
-<head>
-    <title>{% block thetitle %}{% endblock %}</title>
-    {% compress css %}
+<!DOCTYPE html<html{% if rtl %} dir="rtl" class="rtl" {% endif %} lang="{{ html_locale }}">
+
+    <head>
+        <title>{% block thetitle %}{% endblock %}</title>
+        {% compress css %}
         <link rel="stylesheet" type="text/x-scss" href="{% static "lightbox/css/lightbox.scss" %}" />
-    {% endcompress %}
-    {% if css_file %}
+        {% endcompress %}
+        {% if css_file %}
         <link rel="stylesheet" type="text/css" href="{{ css_file }}" />
         {% else %}
         {% compress css %}
@@ -56,11 +56,14 @@
             {{ html_page_header|safe }}
             {% block above %}
             {% endblock %}
+
+           
             <div class="navbar navbar-fixed-top custom-navbar top-nav-collapse" role="navigation">
                 <div class="container">
                     <!-- navbar header -->
                     <div class="navbar-header">
-                        <button class="navbar-toggle" data-toggle="collapse" data-target="#tt-navbar"  aria-expanded="false" >
+                        <button class="navbar-toggle" data-toggle="collapse" data-target="#tt-navbar"
+                            aria-expanded="false">
                             <span class="icon icon-bar"></span>
                             <span class="icon icon-bar"></span>
                             <span class="icon icon-bar"></span>
@@ -71,37 +74,51 @@
                             </svg><br />
                         </a>
                     </div>
-
+                    {% if not request.event %}
                     <div class="collapse navbar-collapse" id="tt-navbar">
                         <ul class="nav navbar-nav navbar-right">
-                            <li><a href="/" >Evenemang</a></li>
-                            <li><a href="/pages/arranger" >Arrangör</a></li>
+                            <li><a href="/">Evenemang</a></li>
+                            <li><a href="/pages/arranger">Arrangör</a></li>
                             <li><a href="/pages/info">Om TobTic</a></li>
                         </ul>
                     </div>
+                    {% endif %}
                 </div>
             </div>
+           
+
             <div class="container">
-                    <div class="row justify-content-center tt-top">
-                    </div>
+                <div class="row justify-content-center tt-top">
+                </div>
                 {% block page %}
                 {% endblock %}
+
+                <div class="row">
+                    <div class="col-md-12 col-sm-12 col-xs-12 ">
+
+                        <div class="pretix-footer">
+                            {% block footer %}
+                            {% endblock %}
+                            {% if footer_text %}
+                            {{ footer_text }}
+                            &middot;
+                            {% endif %}
+                            {% for f in footer %}
+                            <a href="{% safelink f.url %}" target="_blank" rel="noopener">{{ f.label }}</a>
+                            &middot;
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
             </div>
 
 
             <footer class="footer">
-                {% block footer %}
-                {% endblock %}
-                {% if footer_text %}
-                {{ footer_text }}
-                &middot;
-                {% endif %}
-                {% for f in footer %}
-                <a href="{% safelink f.url %}" target="_blank" rel="noopener">{{ f.label }}</a>
-                &middot;
-                {% endfor %}
-                {% include "pretixpresale/base_footer.html" %}
+                <div class="tt-footer">
+                    {% include "pretixpresale/base_footer.html" %}
+                </div>
             </footer>
+
         </div>
         {% include "pretixpresale/fragment_modals.html" %}
         {% block tobticjs %}
