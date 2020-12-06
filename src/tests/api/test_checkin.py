@@ -2,6 +2,9 @@ import datetime
 import time
 from decimal import Decimal
 from unittest import mock
+# deprecated: from django.utils.http import urlquote
+# use urlib instead
+from urllib.parse import quote as urlquote
 
 import pytest
 from django.utils.timezone import now
@@ -142,6 +145,7 @@ TEST_LIST_RES = {
     "allow_multiple_entries": False,
     "allow_entry_after_exit": True,
     "subevent": None,
+    "exit_all_at": None,
     "rules": {}
 }
 
@@ -402,6 +406,7 @@ def test_list_all_items_positions(token_client, organizer, event, clist, clist_a
         c = order.positions.first().checkins.create(list=clist_all)
     p1['checkins'] = [
         {
+            'id': c.pk,
             'list': clist_all.pk,
             'datetime': c.datetime.isoformat().replace('+00:00', 'Z'),
             'auto_checked_in': False,
@@ -441,6 +446,7 @@ def test_list_all_items_positions(token_client, organizer, event, clist, clist_a
         c = order.positions.last().checkins.create(list=clist_all)
     p2['checkins'] = [
         {
+            'id': c.pk,
             'list': clist_all.pk,
             'datetime': c.datetime.isoformat().replace('+00:00', 'Z'),
             'auto_checked_in': False,
@@ -562,6 +568,7 @@ def test_status(token_client, organizer, event, clist_all, item, other_item, ord
     assert resp.status_code == 200
     assert resp.data['checkin_count'] == 1
     assert resp.data['position_count'] == 2
+    assert resp.data['inside_count'] == 1
     assert resp.data['items'] == [
         {
             'name': str(item.name),
@@ -636,6 +643,19 @@ def test_by_secret(token_client, organizer, clist, event, order):
         p = order.positions.first()
     resp = token_client.post('/api/v1/organizers/{}/events/{}/checkinlists/{}/positions/{}/redeem/'.format(
         organizer.slug, event.slug, clist.pk, p.secret
+    ), {}, format='json')
+    assert resp.status_code == 201
+    assert resp.data['status'] == 'ok'
+
+
+@pytest.mark.django_db
+def test_by_secret_special_chars(token_client, organizer, clist, event, order):
+    with scopes_disabled():
+        p = order.positions.first()
+    p.secret = "abc+-/=="
+    p.save()
+    resp = token_client.post('/api/v1/organizers/{}/events/{}/checkinlists/{}/positions/{}/redeem/'.format(
+        organizer.slug, event.slug, clist.pk, urlquote(p.secret, safe='')
     ), {}, format='json')
     assert resp.status_code == 201
     assert resp.data['status'] == 'ok'

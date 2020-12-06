@@ -12,7 +12,8 @@ Core
 
 .. automodule:: pretix.base.signals
    :members: periodic_task, event_live_issues, event_copy_data, email_filter, register_notification_types,
-      item_copy_data, register_sales_channels, register_global_settings, quota_availability, global_email_filter
+      item_copy_data, register_sales_channels, register_global_settings, quota_availability, global_email_filter,
+      register_ticket_secret_generators
 
 Order events
 """"""""""""
@@ -33,7 +34,7 @@ Frontend
 --------
 
 .. automodule:: pretix.presale.signals
-   :members: html_head, html_footer, footer_link, front_page_top, front_page_bottom, front_page_bottom_widget, fee_calculation_for_cart, contact_form_fields, question_form_fields, checkout_confirm_messages, checkout_confirm_page_content, checkout_all_optional, html_page_header, sass_preamble, sass_postamble, render_seating_plan, checkout_flow_steps, position_info, position_info_top, item_description, global_html_head, global_html_footer, global_html_page_header
+   :members: html_head, html_footer, footer_link, front_page_top, front_page_bottom, front_page_bottom_widget, fee_calculation_for_cart, contact_form_fields, question_form_fields, contact_form_fields_overrides, question_form_fields_overrides, checkout_confirm_messages, checkout_confirm_page_content, checkout_all_optional, html_page_header, sass_preamble, sass_postamble, render_seating_plan, checkout_flow_steps, position_info, position_info_top, item_description, global_html_head, global_html_footer, global_html_page_header
 
 
 .. automodule:: pretix.presale.signals
@@ -57,7 +58,7 @@ Backend
 .. automodule:: pretix.control.signals
    :members: nav_event, html_head, html_page_start, quota_detail_html, nav_topbar, nav_global, nav_organizer, nav_event_settings,
              order_info, event_settings_widget, oauth_application_registered, order_position_buttons, subevent_forms,
-             item_formsets, order_search_filter_q
+             item_formsets, order_search_filter_q, order_search_forms
 
 .. automodule:: pretix.base.signals
    :members: logentry_display, logentry_object_link, requiredaction_display, timeline_events

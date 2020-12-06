@@ -260,11 +260,16 @@ Vue.component('availbox', {
             return this.avail[0] < 100 && this.$root.waiting_list_enabled && this.item.allow_waitinglist;
         },
         waiting_list_url: function () {
+            var u
             if (this.item.has_variations) {
-                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&var=' + this.variation.id + '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
+                u = this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&var=' + this.variation.id + '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
             } else {
-                return this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
+                u = this.$root.target_url + 'w/' + widget_id + '/waitinglist/?item=' + this.item.id + '&widget_data=' + encodeURIComponent(this.$root.widget_data_json);
             }
+            if (this.$root.subevent) {
+                u += '&subevent=' + this.$root.subevent
+            }
+            return u
         }
     }
 });
@@ -873,6 +878,9 @@ Vue.component('pretix-widget-event-list-entry', {
                 'pretix-widget-event-list-entry': true
             };
             o['pretix-widget-event-availability-' + this.event.availability.color] = true;
+            if (this.event.availability.reason) {
+                o['pretix-widget-event-availability-' + this.event.availability.reason] = true;
+            }
             return o
         },
         location: function () {
@@ -932,6 +940,9 @@ Vue.component('pretix-widget-event-calendar-event', {
                 'pretix-widget-event-calendar-event': true
             };
             o['pretix-widget-event-availability-' + this.event.availability.color] = true;
+            if (this.event.availability.reason) {
+                o['pretix-widget-event-availability-' + this.event.availability.reason] = true;
+            }
             return o
         }
     },

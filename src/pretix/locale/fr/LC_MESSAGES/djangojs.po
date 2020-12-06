@@ -6,9 +6,9 @@ msgid ""
 msgstr ""
 "Project-Id-Version: French\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-09-14 12:00+0000\n"
-"PO-Revision-Date: 2020-02-26 03:00+0000\n"
-"Last-Translator: David100mark <david.hundertmark@gmx.net>\n"
+"POT-Creation-Date: 2020-11-24 09:10+0000\n"
+"PO-Revision-Date: 2020-09-15 17:00+0000\n"
+"Last-Translator: Martin Gross <martin@pc-coholic.de>\n"
 "Language-Team: French <https://translate.pretix.eu/projects/pretix/pretix-js/"
 "fr/>\n"
 "Language: fr\n"
@@ -46,16 +46,16 @@ msgstr "chiffre d'affaires total"
 msgid "Contacting Stripe …"
 msgstr "Contacter Stripe …"
 
-#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:57
+#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:60
 msgid "Total"
 msgstr "Total"
 
-#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:146
-#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:177
+#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:152
+#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:183
 msgid "Confirming your payment …"
 msgstr "Confirmation de votre paiment…"
 
-#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:153
+#: pretix/plugins/stripe/static/pretixplugins/stripe/pretix-stripe.js:159
 msgid "Contacting your bank …"
 msgstr "Communication avec votre banque …"
 
@@ -164,7 +164,7 @@ msgstr ""
 
 #: pretix/static/pretixcontrol/js/ui/checkinrules.js:54
 msgid "Product"
-msgstr ""
+msgstr "Produit"
 
 #: pretix/static/pretixcontrol/js/ui/checkinrules.js:58
 #, fuzzy
@@ -369,30 +369,30 @@ msgstr[1] "Les articles de votre panier vous sont réservés pour {num} minutes.
 msgid "Please enter a quantity for one of the ticket types."
 msgstr "SVP entrez une quantité pour un de vos types de billets."
 
-#: pretix/static/pretixpresale/js/ui/main.js:387
+#: pretix/static/pretixpresale/js/ui/main.js:386
 #, fuzzy
 #| msgctxt "widget"
 #| msgid "from %(currency)s %(price)s"
 msgid "The organizer keeps %(currency)s %(amount)s"
 msgstr "de %(currency)s %(price)s"
 
-#: pretix/static/pretixpresale/js/ui/main.js:395
+#: pretix/static/pretixpresale/js/ui/main.js:394
 #, fuzzy
 #| msgctxt "widget"
 #| msgid "from %(currency)s %(price)s"
 msgid "You get %(currency)s %(amount)s back"
 msgstr "de %(currency)s %(price)s"
 
-#: pretix/static/pretixpresale/js/ui/main.js:411
+#: pretix/static/pretixpresale/js/ui/main.js:410
 msgid "Please enter the amount the organizer can keep."
 msgstr ""
 
-#: pretix/static/pretixpresale/js/ui/main.js:425
-#: pretix/static/pretixpresale/js/ui/main.js:438
+#: pretix/static/pretixpresale/js/ui/main.js:424
+#: pretix/static/pretixpresale/js/ui/main.js:437
 msgid "Time zone:"
 msgstr ""
 
-#: pretix/static/pretixpresale/js/ui/main.js:430
+#: pretix/static/pretixpresale/js/ui/main.js:429
 msgid "Your local time:"
 msgstr ""
 

@@ -1,4 +1,5 @@
 from django import forms
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _, pgettext_lazy
 from django_scopes.forms import SafeModelMultipleChoiceField
@@ -6,7 +7,9 @@ from i18nfield.forms import I18nFormField, I18nTextarea, I18nTextInput
 
 from pretix.base.email import get_available_placeholders
 from pretix.base.forms import PlaceholderValidator
+from pretix.base.forms.widgets import SplitDateTimePickerWidget
 from pretix.base.models import CheckinList, Item, Order, SubEvent
+from pretix.control.forms import CachedFileField
 from pretix.control.forms.widgets import Select2, Select2Multiple
 
 
@@ -20,6 +23,18 @@ class MailForm(forms.Form):
     sendto = forms.MultipleChoiceField()  # overridden later
     subject = forms.CharField(label=_("Subject"))
     message = forms.CharField(label=_("Message"))
+    attachment = CachedFileField(
+        label=_("Attachment"),
+        required=False,
+        ext_whitelist=(
+            ".png", ".jpg", ".gif", ".jpeg", ".pdf", ".txt", ".docx", ".gif", ".svg",
+            ".pptx", ".ppt", ".doc", ".xlsx", ".xls", ".jfif", ".heic", ".heif", ".pages",
+            ".bmp", ".tif", ".tiff"
+        ),
+        help_text=_('Sending an attachment increases the chance of your email not arriving or being sorted into spam folders. We recommend only using PDFs '
+                    'of no more than 2 MB in size.'),
+        max_size=10 * 1024 * 1024
+    )  # TODO i18n
     items = forms.ModelMultipleChoiceField(
         widget=forms.CheckboxSelectMultiple(
             attrs={'class': 'scrolling-multiple-choice'}
@@ -40,6 +55,24 @@ class MailForm(forms.Form):
         required=False,
         empty_label=pgettext_lazy('subevent', 'All dates')
     )
+    subevents_from = forms.SplitDateTimeField(
+        widget=SplitDateTimePickerWidget(),
+        label=pgettext_lazy('subevent', 'Only send to customers of dates starting at or after'),
+        required=False,
+    )
+    subevents_to = forms.SplitDateTimeField(
+        widget=SplitDateTimePickerWidget(),
+        label=pgettext_lazy('subevent', 'Only send to customers of dates starting before'),
+        required=False,
+    )
+
+    def clean(self):
+        d = super().clean()
+        if d.get('subevent') and d.get('subevents_from'):
+            raise ValidationError(pgettext_lazy('subevent', 'Please either select a specific date or a date range, not both.'))
+        if bool(d.get('subevents_from')) != bool(d.get('subevents_to')):
+            raise ValidationError(pgettext_lazy('subevent', 'If you set a date range, please set both a start and an end.'))
+        return d
 
     def _set_field_placeholders(self, fn, base_parameters):
         phs = [
@@ -84,7 +117,9 @@ class MailForm(forms.Form):
         )
         self._set_field_placeholders('subject', ['event', 'order', 'position_or_address'])
         self._set_field_placeholders('message', ['event', 'order', 'position_or_address'])
-        choices = list(Order.STATUS_CHOICE)
+        choices = [(e, l) for e, l in Order.STATUS_CHOICE if e != 'n']
+        choices.insert(0, ('na', _('payment pending (except unapproved)')))
+        choices.insert(0, ('pa', _('approval pending')))
         if not event.settings.get('payment_term_expire_automatically', as_type=bool):
             choices.append(
                 ('overdue', _('pending with payment overdue'))
@@ -97,7 +132,10 @@ class MailForm(forms.Form):
             choices=choices
         )
         if not self.initial.get('sendto'):
-            self.initial['sendto'] = ['p', 'n']
+            self.initial['sendto'] = ['p', 'na']
+        elif 'n' in self.initial['sendto']:
+            self.initial['sendto'].append('pa')
+            self.initial['sendto'].append('na')
 
         self.fields['items'].queryset = event.items.all()
         if not self.initial.get('items'):
@@ -132,3 +170,5 @@ class MailForm(forms.Form):
             self.fields['subevent'].widget.choices = self.fields['subevent'].choices
         else:
             del self.fields['subevent']
+            del self.fields['subevents_from']
+            del self.fields['subevents_to']

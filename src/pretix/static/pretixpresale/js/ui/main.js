@@ -282,8 +282,7 @@ $(function () {
         return true;
     });
 
-    // Invoice address form
-    $("input[data-required-if]").each(function () {
+    $("input[data-required-if], select[data-required-if], textarea[data-required-if]").each(function () {
         var dependent = $(this),
             dependency = $($(this).attr("data-required-if")),
             update = function (ev) {
@@ -298,7 +297,7 @@ $(function () {
         dependency.closest('.form-group').find('input[name=' + dependency.attr("name") + ']').on("dp.change", update);
     });
 
-    $("input[data-display-dependency], div[data-display-dependency]").each(function () {
+    $("input[data-display-dependency], div[data-display-dependency], select[data-display-dependency], textarea[data-display-dependency]").each(function () {
         var dependent = $(this),
             dependency = $($(this).attr("data-display-dependency")),
             update = function (ev) {
@@ -439,6 +438,14 @@ $(function () {
             });
         }
     });
+
+    // Week calendar
+    // On mobile, auto-collapse all days except today, if we have more than 15 events in total
+    if ($(window).width() < 992 && $(".week-calendar .event").length > 15) {
+        $(".week-calendar .weekday:not(.today)").each(function () {
+            $(this).prop("open", false);
+        });
+    }
 
     // Lightbox
     lightbox.init();

@@ -1,11 +1,13 @@
 import string
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Max
 from django.utils.crypto import get_random_string
 from django.utils.translation import gettext_lazy as _
 from django_scopes import ScopedManager, scopes_disabled
 
+from pretix.api.auth.devicesecurity import DEVICE_SECURITY_PROFILES
 from pretix.base.models import LoggedModel
 
 
@@ -33,10 +35,62 @@ def generate_api_token():
     return token
 
 
+class Gate(LoggedModel):
+    organizer = models.ForeignKey(
+        'pretixbase.Organizer',
+        on_delete=models.PROTECT,
+        related_name='gates'
+    )
+    name = models.CharField(
+        verbose_name=_("Name"),
+        max_length=190,
+    )
+    identifier = models.CharField(
+        max_length=190, blank=True,
+        verbose_name=_("Internal identifier"),
+        help_text=_('You can enter any value here to make it easier to match the data with other sources. If you do '
+                    'not input one, we will generate one automatically.')
+    )
+
+    class Meta:
+        ordering = ('name',)
+
+    def __str__(self):
+        return self.name
+
+    def clean_identifier(self, code):
+        Gate._clean_identifier(self.organizer, code, self)
+
+    @staticmethod
+    def _clean_identifier(organizer, code, instance=None):
+        qs = Gate.objects.filter(organizer=organizer, identifier__iexact=code)
+        if instance:
+            qs = qs.exclude(pk=instance.pk)
+        if qs.exists():
+            raise ValidationError(_('This identifier is already used for a different question.'))
+
+    def save(self, *args, **kwargs):
+        if not self.identifier:
+            charset = list('ABCDEFGHJKLMNPQRSTUVWXYZ3789')
+            while True:
+                code = get_random_string(length=8, allowed_chars=charset)
+                if not Gate.objects.filter(organizer=self.organizer, identifier=code).exists():
+                    self.identifier = code
+                    break
+        return super().save(*args, **kwargs)
+
+
 class Device(LoggedModel):
     organizer = models.ForeignKey(
         'pretixbase.Organizer',
         on_delete=models.PROTECT,
+        related_name='devices'
+    )
+    gate = models.ForeignKey(
+        'pretixbase.Gate',
+        verbose_name=_('Gate'),
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
         related_name='devices'
     )
     device_id = models.PositiveIntegerField()
@@ -73,6 +127,13 @@ class Device(LoggedModel):
     software_version = models.CharField(
         max_length=190,
         null=True, blank=True
+    )
+    security_profile = models.CharField(
+        max_length=190,
+        choices=[(k, v.verbose_name) for k, v in DEVICE_SECURITY_PROFILES.items()],
+        default='full',
+        null=True,
+        blank=False
     )
 
     objects = ScopedManager(organizer='organizer')
@@ -161,3 +222,15 @@ class Device(LoggedModel):
             return self.organizer.events.all()
         else:
             return self.limit_events.all()
+
+    def get_events_with_permission(self, permission, request=None):
+        """
+        Returns a queryset of events the device has a specific permissions to.
+
+        :param request: Ignored, for compatibility with User model
+        :return: Iterable of Events
+        """
+        if permission in self.permission_set():
+            return self.get_events_with_any_permission()
+        else:
+            return self.organizer.events.none()

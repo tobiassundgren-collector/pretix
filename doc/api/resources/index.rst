@@ -24,7 +24,9 @@ Resources and endpoints
    giftcards
    carts
    teams
+   devices
    webhooks
    seatingplans
+   exporters
    billing_invoices
    billing_var

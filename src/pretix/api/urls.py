@@ -7,8 +7,8 @@ from rest_framework import routers
 from pretix.api.views import cart
 
 from .views import (
-    checkin, device, event, item, oauth, order, organizer, user, version,
-    voucher, waitinglist, webhooks,
+    checkin, device, event, exporters, item, oauth, order, organizer, user,
+    version, voucher, waitinglist, webhooks,
 )
 
 router = routers.DefaultRouter()
@@ -21,6 +21,8 @@ orga_router.register(r'webhooks', webhooks.WebHookViewSet)
 orga_router.register(r'seatingplans', organizer.SeatingPlanViewSet)
 orga_router.register(r'giftcards', organizer.GiftCardViewSet)
 orga_router.register(r'teams', organizer.TeamViewSet)
+orga_router.register(r'devices', organizer.DeviceViewSet)
+orga_router.register(r'exporters', exporters.OrganizerExportersViewSet, basename='exporters')
 
 team_router = routers.DefaultRouter()
 team_router.register(r'members', organizer.TeamMemberViewSet)
@@ -38,13 +40,15 @@ event_router.register(r'vouchers', voucher.VoucherViewSet)
 event_router.register(r'orders', order.OrderViewSet)
 event_router.register(r'orderpositions', order.OrderPositionViewSet)
 event_router.register(r'invoices', order.InvoiceViewSet)
+event_router.register(r'revokedsecrets', order.RevokedSecretViewSet, basename='revokedsecrets')
 event_router.register(r'taxrules', event.TaxRuleViewSet)
 event_router.register(r'waitinglistentries', waitinglist.WaitingListViewSet)
 event_router.register(r'checkinlists', checkin.CheckinListViewSet)
 event_router.register(r'cartpositions', cart.CartPositionViewSet)
+event_router.register(r'exporters', exporters.EventExportersViewSet, basename='exporters')
 
 checkinlist_router = routers.DefaultRouter()
-checkinlist_router.register(r'positions', checkin.CheckinListPositionViewSet)
+checkinlist_router.register(r'positions', checkin.CheckinListPositionViewSet, basename='checkinlistpos')
 
 question_router = routers.DefaultRouter()
 question_router.register(r'options', item.QuestionOptionViewSet)
@@ -84,6 +88,7 @@ urlpatterns = [
     url(r"^device/update$", device.UpdateView.as_view(), name="device.update"),
     url(r"^device/roll$", device.RollKeyView.as_view(), name="device.roll"),
     url(r"^device/revoke$", device.RevokeKeyView.as_view(), name="device.revoke"),
+    url(r"^device/eventselection$", device.EventSelectionView.as_view(), name="device.eventselection"),
     url(r"^me$", user.MeView.as_view(), name="user.me"),
     url(r"^version$", version.VersionView.as_view(), name="version"),
 ]

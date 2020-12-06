@@ -53,8 +53,22 @@ class OrderListExporter(MultiSheetListExporter):
                      initial=True,
                      required=False
                  )),
+                ('include_payment_amounts',
+                 forms.BooleanField(
+                     label=_('Include payment amounts'),
+                     initial=False,
+                     required=False
+                 )),
             ]
         )
+
+    def _get_all_payment_methods(self, qs):
+        pps = dict(get_all_payment_providers())
+        return sorted([(pp, pps[pp]) for pp in set(
+            OrderPayment.objects.exclude(provider='free').filter(order__event__in=self.events).values_list(
+                'provider', flat=True
+            ).distinct()
+        )], key=lambda pp: pp[0])
 
     def _get_all_tax_rates(self, qs):
         tax_rates = set(
@@ -150,6 +164,10 @@ class OrderListExporter(MultiSheetListExporter):
         headers.append(_('Comment'))
         headers.append(_('Positions'))
         headers.append(_('Payment providers'))
+        if form_data.get('include_payment_amounts'):
+            payment_methods = self._get_all_payment_methods(qs)
+            for id, vn in payment_methods:
+                headers.append(_('Paid by {method}').format(method=vn))
 
         yield headers
 
@@ -163,6 +181,23 @@ class OrderListExporter(MultiSheetListExporter):
                 taxsum=Sum('tax_value'), grosssum=Sum('value')
             )
         }
+        if form_data.get('include_payment_amounts'):
+            payment_sum_cache = {
+                (o['order__id'], o['provider']): o['grosssum'] for o in
+                OrderPayment.objects.values('provider', 'order__id').order_by().filter(
+                    state__in=[OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED]
+                ).annotate(
+                    grosssum=Sum('amount')
+                )
+            }
+            refund_sum_cache = {
+                (o['order__id'], o['provider']): o['grosssum'] for o in
+                OrderRefund.objects.values('provider', 'order__id').order_by().filter(
+                    state__in=[OrderRefund.REFUND_STATE_DONE, OrderRefund.REFUND_STATE_TRANSIT]
+                ).annotate(
+                    grosssum=Sum('amount')
+                )
+            }
         sum_cache = {
             (o['order__id'], o['tax_rate']): o for o in
             OrderPosition.objects.values('tax_rate', 'order__id').order_by().annotate(
@@ -234,6 +269,14 @@ class OrderListExporter(MultiSheetListExporter):
                 str(self.providers.get(p, p)) for p in sorted(set((order.payment_providers or '').split(',')))
                 if p and p != 'free'
             ]))
+
+            if form_data.get('include_payment_amounts'):
+                payment_methods = self._get_all_payment_methods(qs)
+                for id, vn in payment_methods:
+                    row.append(
+                        payment_sum_cache.get((order.id, id), Decimal('0.00')) -
+                        refund_sum_cache.get((order.id, id), Decimal('0.00'))
+                    )
             yield row
 
     def iterate_fees(self, form_data: dict):
@@ -388,6 +431,12 @@ class OrderListExporter(MultiSheetListExporter):
             pgettext('address', 'State'),
             _('Voucher'),
             _('Pseudonymization ID'),
+            _('Seat ID'),
+            _('Seat name'),
+            _('Seat zone'),
+            _('Seat row'),
+            _('Seat number'),
+            _('Order comment'),
         ]
 
         questions = list(Question.objects.filter(event__in=self.events))
@@ -471,6 +520,19 @@ class OrderListExporter(MultiSheetListExporter):
                     op.voucher.code if op.voucher else '',
                     op.pseudonymization_id,
                 ]
+
+                if op.seat:
+                    row += [
+                        op.seat.seat_guid,
+                        str(op.seat),
+                        op.seat.zone_name,
+                        op.seat.row_name,
+                        op.seat.seat_number,
+                    ]
+                else:
+                    row += ['', '', '', '', '']
+
+                row.append(order.comment)
                 acache = {}
                 for a in op.answers.all():
                     # We do not want to localize Date, Time and Datetime question answers, as those can lead
@@ -511,7 +573,7 @@ class OrderListExporter(MultiSheetListExporter):
                     row += [''] * (8 + (len(name_scheme['fields']) if name_scheme and len(name_scheme['fields']) > 1 else 0))
                 row += [
                     order.sales_channel,
-                    order.locale
+                    order.locale,
                 ]
                 row.append(', '.join([
                     str(self.providers.get(p, p)) for p in sorted(set((op.payment_providers or '').split(',')))
@@ -645,11 +707,13 @@ class GiftcardRedemptionListExporter(ListExporter):
     def iterate_list(self, form_data):
         payments = OrderPayment.objects.filter(
             order__event__in=self.events,
-            provider='giftcard'
+            provider='giftcard',
+            state__in=(OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED),
         ).order_by('created')
         refunds = OrderRefund.objects.filter(
             order__event__in=self.events,
-            provider='giftcard'
+            provider='giftcard',
+            state=OrderRefund.REFUND_STATE_DONE
         ).order_by('created')
 
         objs = sorted(list(payments) + list(refunds), key=lambda o: (o.order.code, o.created))

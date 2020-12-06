@@ -176,7 +176,7 @@ def get_event_navigation(request: HttpRequest):
                     'event': request.event.slug,
                     'organizer': request.event.organizer.slug,
                 }),
-                'active': url.url_name in ('event.orders', 'event.order') or "event.order." in url.url_name,
+                'active': url.url_name in ('event.orders', 'event.order', 'event.orders.search') or "event.order." in url.url_name,
             },
             {
                 'label': _('Overview'),
@@ -454,8 +454,23 @@ def get_organizer_navigation(request):
             'url': reverse('control:organizer.devices', kwargs={
                 'organizer': request.organizer.slug
             }),
-            'active': 'organizer.device' in url.url_name,
             'icon': 'tablet',
+            'children': [
+                {
+                    'label': _('Devices'),
+                    'url': reverse('control:organizer.devices', kwargs={
+                        'organizer': request.organizer.slug
+                    }),
+                    'active': 'organizer.device' in url.url_name,
+                },
+                {
+                    'label': _('Gates'),
+                    'url': reverse('control:organizer.gates', kwargs={
+                        'organizer': request.organizer.slug
+                    }),
+                    'active': 'organizer.gate' in url.url_name,
+                }
+            ]
         })
     if 'can_manage_gift_cards' in request.orgapermset:
         nav.append({

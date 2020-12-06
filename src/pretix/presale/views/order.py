@@ -23,7 +23,7 @@ from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.generic import TemplateView, View
 
 from pretix.base.models import (
-    CachedTicket, GiftCard, Invoice, Order, OrderPosition, Quota,
+    CachedTicket, GiftCard, Invoice, Order, OrderPosition, Quota, TaxRule,
 )
 from pretix.base.models.orders import (
     CachedCombinedTicket, InvoiceAddress, OrderFee, OrderPayment, OrderRefund,
@@ -50,6 +50,7 @@ from pretix.helpers.safedownload import check_token
 from pretix.multidomain.urlreverse import build_absolute_uri, eventreverse
 from pretix.presale.forms.checkout import InvoiceAddressForm, QuestionsForm
 from pretix.presale.forms.order import OrderPositionChangeForm
+from pretix.presale.signals import question_form_fields_overrides
 from pretix.presale.views import (
     CartMixin, EventViewMixin, iframe_entry_view_wrapper,
 )
@@ -134,10 +135,17 @@ class TicketPageMixin:
         can_download = all([r for rr, r in allow_ticket_download.send(self.request.event, order=self.order)])
         if self.request.event.settings.ticket_download_date:
             ctx['ticket_download_date'] = self.order.ticket_download_date
-        ctx['can_download'] = (
+        can_download = (
             can_download and self.order.ticket_download_available and
             list(self.order.positions_with_tickets)
         )
+        ctx['download_email_required'] = can_download and (
+            self.request.event.settings.ticket_download_require_validated_email and
+            self.order.sales_channel == 'web' and
+            not self.order.email_known_to_work
+        )
+        ctx['can_download'] = can_download and not ctx['download_email_required']
+
         ctx['download_buttons'] = self.download_buttons
 
         ctx['backend_user'] = (
@@ -219,7 +227,7 @@ class OrderDetails(EventViewMixin, OrderDetailMixin, CartMixin, TicketPageMixin,
 
             if lp and lp.state not in (OrderPayment.PAYMENT_STATE_CONFIRMED, OrderPayment.PAYMENT_STATE_REFUNDED,
                                        OrderPayment.PAYMENT_STATE_CANCELED):
-                ctx['last_payment'] = self.order.payments.last()
+                ctx['last_payment'] = lp
 
                 pp = lp.payment_provider
                 ctx['last_payment_info'] = pp.payment_pending_render(self.request, ctx['last_payment'])
@@ -408,7 +416,10 @@ class OrderPaymentConfirm(EventViewMixin, OrderDetailMixin, TemplateView):
         ctx = super().get_context_data(**kwargs)
         ctx['order'] = self.order
         ctx['payment'] = self.payment
-        ctx['payment_info'] = self.payment.payment_provider.checkout_confirm_render(self.request)
+        if 'order' in inspect.signature(self.payment.payment_provider.checkout_confirm_render).parameters:
+            ctx['payment_info'] = self.payment.payment_provider.checkout_confirm_render(self.request, order=self.order)
+        else:
+            ctx['payment_info'] = self.payment.payment_provider.checkout_confirm_render(self.request)
         ctx['payment_provider'] = self.payment.payment_provider
         return ctx
 
@@ -560,7 +571,9 @@ class OrderPayChangeMethod(EventViewMixin, OrderDetailMixin, TemplateView):
                 continue
             current_fee = sum(f.value for f in self.open_fees) or Decimal('0.00')
             fee = provider.calculate_fee(pending_sum - current_fee)
-            if 'total' in inspect.signature(provider.payment_form_render).parameters:
+            if 'order' in inspect.signature(provider.payment_form_render).parameters:
+                form = provider.payment_form_render(self.request, abs(pending_sum + fee - current_fee), order=self.order)
+            elif 'total' in inspect.signature(provider.payment_form_render).parameters:
                 form = provider.payment_form_render(self.request, abs(pending_sum + fee - current_fee))
             else:
                 form = provider.payment_form_render(self.request)
@@ -666,12 +679,33 @@ class OrderModify(EventViewMixin, OrderDetailMixin, OrderQuestionsViewMixin, Tem
             return []
         return super().positions
 
+    def get_question_override_sets(self, order_position):
+        override_sets = [
+            resp for recv, resp in question_form_fields_overrides.send(
+                self.request.event,
+                position=order_position,
+                request=self.request
+            )
+        ]
+        for override in override_sets:
+            for k in override:
+                # We don't want initial values to be modified, they should come from the order directly
+                override[k].pop('initial', None)
+        return override_sets
+
     def post(self, request, *args, **kwargs):
         failed = not self.save() or not self.invoice_form.is_valid()
         if failed:
             messages.error(self.request,
                            _("We had difficulties processing your input. Please review the errors below."))
             return self.get(request, *args, **kwargs)
+        if 'country' in self.invoice_form.cleaned_data:
+            trs = TaxRule.objects.filter(id__in=[p.tax_rule_id for p in self.positions])
+            for tr in trs:
+                if tr.get_matching_rule(self.invoice_form.instance).get('action', 'vat') == 'block':
+                    messages.error(self.request,
+                                   _('One of the selected products is not available in the selected country.'))
+                    return self.get(request, *args, **kwargs)
         if hasattr(self.invoice_form, 'save'):
             self.invoice_form.save()
         self.order.log_action('pretix.event.order.modified', {
@@ -788,7 +822,7 @@ class OrderCancelDo(EventViewMixin, OrderDetailMixin, AsyncAction, View):
                 except:
                     messages.error(request, _('You chose an invalid cancellation fee.'))
                     return redirect(self.get_order_url())
-            if fee <= custom_fee <= self.order.payment_refund_sum:
+            if custom_fee and fee <= custom_fee <= self.order.payment_refund_sum:
                 fee = custom_fee
             else:
                 messages.error(request, _('You chose an invalid cancellation fee.'))
@@ -873,6 +907,13 @@ class OrderDownloadMixin:
             return self.error(OrderError(_('Ticket download is not (yet) enabled for this order.')))
         if 'position' in kwargs and not self.order_position.generate_ticket:
             return self.error(OrderError(_('Ticket download is not enabled for this product.')))
+
+        if (
+            self.request.event.settings.ticket_download_require_validated_email and
+            self.order.sales_channel == 'web' and
+            not self.order.email_known_to_work
+        ):
+            return self.error(OrderError(_('Please click the link we sent you via email to download your tickets.')))
 
         ct = self.get_last_ct()
         if ct:

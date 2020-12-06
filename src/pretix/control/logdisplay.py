@@ -165,21 +165,42 @@ def _display_checkin(event, logentry):
     if logentry.action_type == 'pretix.event.checkin.unknown':
         if show_dt:
             return _(
-                'Unknown scan of code "{barcode}" at {datetime} for list "{list}", type "{type}".'
+                'Unknown scan of code "{barcode}…" at {datetime} for list "{list}", type "{type}".'
             ).format(
                 posid=data.get('positionid'),
                 type=data.get('type'),
-                barcode=data.get('barcode'),
+                barcode=data.get('barcode')[:16],
                 datetime=dt_formatted,
                 list=checkin_list
             )
         else:
             return _(
-                'Unknown scan of code "{barcode}" for list "{list}", type "{type}".'
+                'Unknown scan of code "{barcode}…" for list "{list}", type "{type}".'
             ).format(
                 posid=data.get('positionid'),
                 type=data.get('type'),
-                barcode=data.get('barcode'),
+                barcode=data.get('barcode')[:16],
+                list=checkin_list
+            )
+
+    if logentry.action_type == 'pretix.event.checkin.revoked':
+        if show_dt:
+            return _(
+                'Scan scan of revoked code "{barcode}…" at {datetime} for list "{list}", type "{type}", was uploaded.'
+            ).format(
+                posid=data.get('positionid'),
+                type=data.get('type'),
+                barcode=data.get('barcode')[:16],
+                datetime=dt_formatted,
+                list=checkin_list
+            )
+        else:
+            return _(
+                'Scan of revoked code "{barcode}" for list "{list}", type "{type}", was uploaded.'
+            ).format(
+                posid=data.get('positionid'),
+                type=data.get('type'),
+                barcode=data.get('barcode')[:16],
                 list=checkin_list
             )
 
@@ -376,7 +397,7 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.event.testmode.activated': _('The shop has been taken into test mode.'),
         'pretix.event.testmode.deactivated': _('The test mode has been disabled.'),
         'pretix.event.added': _('The event has been created.'),
-        'pretix.event.changed': _('The event settings have been changed.'),
+        'pretix.event.changed': _('The event details have been changed.'),
         'pretix.event.question.option.added': _('An answer option has been added to the question.'),
         'pretix.event.question.option.deleted': _('An answer option has been removed from the question.'),
         'pretix.event.question.option.changed': _('An answer option has been changed.'),
@@ -391,6 +412,9 @@ def pretixcontrol_logentry_display(sender: Event, logentry: LogEntry, **kwargs):
         'pretix.team.created': _('The team has been created.'),
         'pretix.team.changed': _('The team settings have been changed.'),
         'pretix.team.deleted': _('The team has been deleted.'),
+        'pretix.gate.created': _('The gate has been created.'),
+        'pretix.gate.changed': _('The gate has been changed.'),
+        'pretix.gate.deleted': _('The gate has been deleted.'),
         'pretix.subevent.deleted': pgettext_lazy('subevent', 'The event date has been deleted.'),
         'pretix.subevent.canceled': pgettext_lazy('subevent', 'The event date has been canceled.'),
         'pretix.subevent.changed': pgettext_lazy('subevent', 'The event date has been changed.'),

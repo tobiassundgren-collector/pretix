@@ -378,6 +378,55 @@ class CheckoutTestCase(BaseCheckoutTestCase, TestCase):
         cr1.refresh_from_db()
         assert cr1.price == Decimal('23.00')
 
+    def test_custom_tax_rules_blocked(self):
+        self.tr19.custom_rules = json.dumps([
+            {'country': 'AT', 'address_type': 'business_vat_id', 'action': 'reverse'},
+            {'country': 'ZZ', 'address_type': '', 'action': 'block'},
+        ])
+        self.tr19.save()
+        self.event.settings.invoice_address_vatid = True
+
+        with scopes_disabled():
+            cr1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+
+        r = self.client.post('/%s/%s/checkout/questions/' % (self.orga.slug, self.event.slug), {
+            'is_business': 'business',
+            'company': 'Foo',
+            'name': 'Bar',
+            'street': 'Baz',
+            'zipcode': '12345',
+            'city': 'Here',
+            'country': 'DE',
+            'email': 'admin@localhost'
+        }, follow=True)
+        doc = BeautifulSoup(r.rendered_content, "lxml")
+        assert doc.select(".alert-danger")
+
+        cr1.refresh_from_db()
+        assert cr1.price == Decimal('23.00')
+
+        with mock.patch('vat_moss.id.validate') as mock_validate:
+            mock_validate.return_value = ('AT', 'AT123456', 'Foo')
+            r = self.client.post('/%s/%s/checkout/questions/' % (self.orga.slug, self.event.slug), {
+                'is_business': 'business',
+                'company': 'Foo',
+                'name': 'Bar',
+                'street': 'Baz',
+                'zipcode': '12345',
+                'city': 'Here',
+                'country': 'AT',
+                'vat_id': 'AT123456',
+                'email': 'admin@localhost'
+            }, follow=True)
+        doc = BeautifulSoup(r.rendered_content, "lxml")
+        assert not doc.select(".alert-danger")
+
+        cr1.refresh_from_db()
+        assert cr1.price == Decimal('19.33')
+
     def test_country_taxing(self):
         self._enable_country_specific_taxing()
 
@@ -401,6 +450,44 @@ class CheckoutTestCase(BaseCheckoutTestCase, TestCase):
 
         cr1.refresh_from_db()
         assert cr1.price == Decimal('23.20')
+
+    def test_country_taxing_free_price_and_voucher(self):
+        self._enable_country_specific_taxing()
+
+        self.ticket.free_price = True
+        self.ticket.save()
+
+        with scopes_disabled():
+            cr1 = CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10),
+                voucher=self.event.vouchers.create()
+            )
+
+        with mock.patch('vat_moss.id.validate') as mock_validate:
+            mock_validate.return_value = ('AT', 'AT123456', 'Foo')
+            self.client.post('/%s/%s/checkout/questions/' % (self.orga.slug, self.event.slug), {
+                'is_business': 'individual',
+                'name': 'Bar',
+                'street': 'Baz',
+                'zipcode': '12345',
+                'city': 'Here',
+                'country': 'AT',
+                'email': 'admin@localhost'
+            }, follow=True)
+
+        cr1.refresh_from_db()
+        assert cr1.price == Decimal('23.20')
+
+        self.client.post('/%s/%s/checkout/payment/' % (self.orga.slug, self.event.slug), {
+            'payment': 'banktransfer'
+        }, follow=True)
+
+        self.client.post('/%s/%s/checkout/confirm/' % (self.orga.slug, self.event.slug), follow=True)
+        with scopes_disabled():
+            assert not CartPosition.objects.filter(pk=cr1.pk).exists()
+            o = Order.objects.last()
+            assert o.positions.get().price == Decimal('23.20')
 
     def test_country_taxing_switch(self):
         self.test_country_taxing()
@@ -604,7 +691,7 @@ class CheckoutTestCase(BaseCheckoutTestCase, TestCase):
     def test_attendee_name_scheme(self):
         self.event.settings.set('attendee_names_asked', True)
         self.event.settings.set('attendee_names_required', True)
-        self.event.settings.set('name_scheme', 'title_given_middle_family')
+        self.event.settings.set('name_scheme', 'salutation_title_given_family')
         with scopes_disabled():
             cr1 = CartPosition.objects.create(
                 event=self.event, cart_id=self.session_key, item=self.ticket,
@@ -612,17 +699,16 @@ class CheckoutTestCase(BaseCheckoutTestCase, TestCase):
             )
         response = self.client.get('/%s/%s/checkout/questions/' % (self.orga.slug, self.event.slug), follow=True)
         doc = BeautifulSoup(response.rendered_content, "lxml")
-        self.assertEqual(len(doc.select('input[name="%s-attendee_name_parts_0"]' % cr1.id)), 1)
+        self.assertEqual(len(doc.select('select[name="%s-attendee_name_parts_0"]' % cr1.id)), 1)
         self.assertEqual(len(doc.select('input[name="%s-attendee_name_parts_1"]' % cr1.id)), 1)
         self.assertEqual(len(doc.select('input[name="%s-attendee_name_parts_2"]' % cr1.id)), 1)
         self.assertEqual(len(doc.select('input[name="%s-attendee_name_parts_3"]' % cr1.id)), 1)
-
         # Not all required fields filled out, expect failure
         response = self.client.post('/%s/%s/checkout/questions/' % (self.orga.slug, self.event.slug), {
             '%s-attendee_name_parts_0' % cr1.id: 'Mr',
-            '%s-attendee_name_parts_1' % cr1.id: 'John',
-            '%s-attendee_name_parts_2' % cr1.id: 'F',
-            '%s-attendee_name_parts_3' % cr1.id: 'Kennedy',
+            '%s-attendee_name_parts_1' % cr1.id: '',
+            '%s-attendee_name_parts_2' % cr1.id: 'John',
+            '%s-attendee_name_parts_3' % cr1.id: 'Doe',
             'email': 'admin@localhost'
         })
         self.assertRedirects(response, '/%s/%s/checkout/payment/' % (self.orga.slug, self.event.slug),
@@ -630,13 +716,13 @@ class CheckoutTestCase(BaseCheckoutTestCase, TestCase):
 
         with scopes_disabled():
             cr1 = CartPosition.objects.get(id=cr1.id)
-        self.assertEqual(cr1.attendee_name, 'Mr John F Kennedy')
+        self.assertEqual(cr1.attendee_name, 'John Doe')
         self.assertEqual(cr1.attendee_name_parts, {
+            'salutation': 'Mr',
+            'title': '',
             'given_name': 'John',
-            'title': 'Mr',
-            'middle_name': 'F',
-            'family_name': 'Kennedy',
-            "_scheme": "title_given_middle_family"
+            'family_name': 'Doe',
+            "_scheme": "salutation_title_given_family"
         })
 
     def test_attendee_name_optional(self):
@@ -1008,6 +1094,46 @@ class CheckoutTestCase(BaseCheckoutTestCase, TestCase):
 
         assert '-€20.00' in response.rendered_content
         assert '3.00' in response.rendered_content
+
+    def test_giftcard_full_with_multiple(self):
+        gc = self.orga.issued_gift_cards.create(currency="EUR")
+        gc.transactions.create(value=20)
+        gc2 = self.orga.issued_gift_cards.create(currency="EUR")
+        gc2.transactions.create(value=20)
+        self.event.settings.set('payment_stripe__enabled', True)
+        self.event.settings.set('payment_banktransfer__enabled', True)
+        with scopes_disabled():
+            CartPosition.objects.create(
+                event=self.event, cart_id=self.session_key, item=self.ticket,
+                price=23, expires=now() + timedelta(minutes=10)
+            )
+        response = self.client.get('/%s/%s/checkout/payment/' % (self.orga.slug, self.event.slug), follow=True)
+        doc = BeautifulSoup(response.rendered_content, "lxml")
+        self.assertEqual(len(doc.select('input[name="payment"]')), 3)
+        response = self.client.post('/%s/%s/checkout/payment/' % (self.orga.slug, self.event.slug), {
+            'payment': 'giftcard',
+            'giftcard': gc.secret
+        }, follow=True)
+        self.assertRedirects(response, '/%s/%s/checkout/payment/' % (self.orga.slug, self.event.slug),
+                             target_status_code=200)
+        assert '-€20.00' in response.rendered_content
+        assert '3.00' in response.rendered_content
+        assert 'alert-success' in response.rendered_content
+
+        response = self.client.post('/%s/%s/checkout/payment/' % (self.orga.slug, self.event.slug), {
+            'payment': 'giftcard',
+            'giftcard': gc2.secret
+        }, follow=True)
+        self.assertRedirects(response, '/%s/%s/checkout/confirm/' % (self.orga.slug, self.event.slug),
+                             target_status_code=200)
+
+        response = self.client.post('/%s/%s/checkout/confirm/' % (self.orga.slug, self.event.slug), follow=True)
+        doc = BeautifulSoup(response.rendered_content, "lxml")
+        self.assertEqual(len(doc.select(".thank-you")), 1)
+        with scopes_disabled():
+            o = Order.objects.last()
+            assert o.payments.get(provider='giftcard', amount=Decimal('20.00'))
+            assert o.payments.get(provider='giftcard', amount=Decimal('20.00'))
 
     def test_giftcard_full(self):
         gc = self.orga.issued_gift_cards.create(currency="EUR")

@@ -40,13 +40,14 @@ from pretix.base.i18n import language
 from pretix.base.models import (
     CachedCombinedTicket, CachedFile, CachedTicket, Checkin, Invoice,
     InvoiceAddress, Item, ItemVariation, LogEntry, Order, QuestionAnswer,
-    Quota, generate_position_secret, generate_secret,
+    Quota, generate_secret,
 )
 from pretix.base.models.orders import (
     CancellationRequest, OrderFee, OrderPayment, OrderPosition, OrderRefund,
 )
-from pretix.base.models.tax import EU_COUNTRIES, cc_to_vat_prefix
+from pretix.base.models.tax import cc_to_vat_prefix, is_eu_country
 from pretix.base.payment import PaymentException
+from pretix.base.secrets import assign_ticket_secret
 from pretix.base.services import tickets
 from pretix.base.services.cancelevent import cancel_event
 from pretix.base.services.export import export
@@ -73,16 +74,18 @@ from pretix.base.templatetags.rich_text import markdown_compile_email
 from pretix.base.views.mixins import OrderQuestionsViewMixin
 from pretix.base.views.tasks import AsyncAction
 from pretix.control.forms.filter import (
-    EventOrderFilterForm, OverviewFilterForm, RefundFilterForm,
+    EventOrderExpertFilterForm, EventOrderFilterForm, OverviewFilterForm,
+    RefundFilterForm,
 )
 from pretix.control.forms.orders import (
     CancelForm, CommentForm, ConfirmPaymentForm, EventCancelForm, ExporterForm,
     ExtendForm, MarkPaidForm, OrderContactForm, OrderFeeChangeForm,
     OrderLocaleForm, OrderMailForm, OrderPositionAddForm,
-    OrderPositionAddFormset, OrderPositionChangeForm, OrderRefundForm,
-    OtherOperationsForm,
+    OrderPositionAddFormset, OrderPositionChangeForm, OrderPositionMailForm,
+    OrderRefundForm, OtherOperationsForm,
 )
 from pretix.control.permissions import EventPermissionRequiredMixin
+from pretix.control.signals import order_search_forms
 from pretix.control.views import PaginationMixin
 from pretix.helpers.safedownload import check_token
 from pretix.presale.signals import question_form_fields
@@ -90,7 +93,31 @@ from pretix.presale.signals import question_form_fields
 logger = logging.getLogger(__name__)
 
 
-class OrderList(EventPermissionRequiredMixin, PaginationMixin, ListView):
+class OrderSearchMixin:
+    def get_forms(self):
+        f = [
+            EventOrderExpertFilterForm(
+                data=self.request.GET,
+                event=self.request.event,
+                prefix='expert',
+            )
+        ]
+        for recv, resp in order_search_forms.send(sender=self.request.event, request=self.request):
+            f.append(resp)
+        return f
+
+
+class OrderSearch(OrderSearchMixin, EventPermissionRequiredMixin, TemplateView):
+    template_name = 'pretixcontrol/orders/search.html'
+    permission = 'can_view_orders'
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx['forms'] = self.get_forms()
+        return ctx
+
+
+class OrderList(OrderSearchMixin, EventPermissionRequiredMixin, PaginationMixin, ListView):
     model = Order
     context_object_name = 'orders'
     template_name = 'pretixcontrol/orders/index.html'
@@ -104,11 +131,20 @@ class OrderList(EventPermissionRequiredMixin, PaginationMixin, ListView):
         if self.filter_form.is_valid():
             qs = self.filter_form.filter_qs(qs)
 
+        for f in self.get_forms():
+            if any(k.startswith(f.prefix) for k in self.request.GET.keys()) and f.is_valid():
+                qs = f.filter_qs(qs)
+
         return qs
 
     def get_context_data(self, **kwargs):
         ctx = super().get_context_data(**kwargs)
         ctx['filter_form'] = self.filter_form
+
+        ctx['filter_strings'] = []
+        for f in self.get_forms():
+            if any(k.startswith(f.prefix) for k in self.request.GET.keys()) and f.is_valid():
+                ctx['filter_strings'] += f.filter_to_strings()
 
         # Only compute this annotations for this page (query optimization)
         s = OrderPosition.objects.filter(
@@ -565,16 +601,17 @@ class OrderRefundProcess(OrderView):
         if self.refund.state == OrderRefund.REFUND_STATE_EXTERNAL:
             self.refund.done(user=self.request.user)
 
-            if self.request.POST.get("action") == "r" and (self.order.status != Order.STATUS_CANCELED and self.order.positions.exists()):
-                mark_order_refunded(self.order, user=self.request.user)
-            elif not (self.order.status == Order.STATUS_PAID and self.order.pending_sum <= 0):
-                self.order.status = Order.STATUS_PENDING
-                self.order.set_expires(
-                    now(),
-                    self.order.event.subevents.filter(
-                        id__in=self.order.positions.values_list('subevent_id', flat=True))
-                )
-                self.order.save(update_fields=['status', 'expires'])
+            if self.order.status != Order.STATUS_CANCELED and self.order.positions.exists():
+                if self.request.POST.get("action") == "r":
+                    mark_order_refunded(self.order, user=self.request.user)
+                elif not (self.order.status == Order.STATUS_PAID and self.order.pending_sum <= 0):
+                    self.order.status = Order.STATUS_PENDING
+                    self.order.set_expires(
+                        now(),
+                        self.order.event.subevents.filter(
+                            id__in=self.order.positions.values_list('subevent_id', flat=True))
+                    )
+                    self.order.save(update_fields=['status', 'expires'])
 
             messages.success(self.request, _('The refund has been processed.'))
         else:
@@ -1129,7 +1166,7 @@ class OrderCheckVATID(OrderView):
                 messages.error(self.request, _('No country specified.'))
                 return redirect(self.get_order_url())
 
-            if str(ia.country) not in EU_COUNTRIES:
+            if not is_eu_country(ia.country):
                 messages.error(self.request, _('VAT ID could not be checked since a non-EU country has been '
                                                'specified.'))
                 return redirect(self.get_order_url())
@@ -1514,7 +1551,7 @@ class OrderChange(OrderView):
                 elif change_subevent is not None:
                     ocm.change_subevent(p, *change_subevent)
 
-                if p.form.cleaned_data.get('seat') and (not p.seat or p.form.cleaned_data['seat'] != p.seat.seat_guid):
+                if p.form.cleaned_data.get('seat') and (not p.seat or p.form.cleaned_data['seat'] != p.seat.seat_guid or change_subevent):
                     ocm.change_seat(p, p.form.cleaned_data['seat'])
 
                 if p.form.cleaned_data['price'] is not None and p.form.cleaned_data['price'] != p.price:
@@ -1644,8 +1681,9 @@ class OrderContactChange(OrderView):
                 changed = True
                 self.order.secret = generate_secret()
                 for op in self.order.all_positions.all():
-                    op.secret = generate_position_secret()
-                    op.save()
+                    assign_ticket_secret(
+                        self.request.event, position=op, force_invalidate=True, save=True
+                    )
                 tickets.invalidate_cache.apply_async(kwargs={'event': self.request.event.pk, 'order': self.order.pk})
                 self.order.log_action('pretix.event.order.secret.changed', user=self.request.user)
 
@@ -1779,6 +1817,57 @@ class OrderSendMail(EventPermissionRequiredMixin, OrderViewMixin, FormView):
         ctx = super().get_context_data(*args, **kwargs)
         ctx['preview_output'] = getattr(self, 'preview_output', None)
         return ctx
+
+
+class OrderPositionSendMail(OrderSendMail):
+    form_class = OrderPositionMailForm
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['position'] = get_object_or_404(
+            OrderPosition,
+            order__event=self.request.event,
+            order__code=self.kwargs['code'].upper(),
+            pk=self.kwargs['position'],
+            attendee_email__isnull=False
+        )
+        return kwargs
+
+    def form_valid(self, form):
+        position = get_object_or_404(
+            OrderPosition,
+            order__event=self.request.event,
+            order__code=self.kwargs['code'].upper(),
+            pk=self.kwargs['position'],
+            attendee_email__isnull=False
+        )
+        self.preview_output = {}
+        with language(position.order.locale):
+            email_context = get_email_context(event=position.order.event, order=position.order, position=position)
+        email_template = LazyI18nString(form.cleaned_data['message'])
+        email_subject = str(form.cleaned_data['subject']).format_map(TolerantDict(email_context))
+        email_content = render_mail(email_template, email_context)
+        if self.request.POST.get('action') == 'preview':
+            self.preview_output = {
+                'subject': _('Subject: {subject}').format(subject=email_subject),
+                'html': markdown_compile_email(email_content)
+            }
+            return self.get(self.request, *self.args, **self.kwargs)
+        else:
+            try:
+                position.send_mail(
+                    form.cleaned_data['subject'],
+                    email_template,
+                    email_context,
+                    'pretix.event.order.position.email.custom_sent',
+                    self.request.user
+                )
+                messages.success(self.request,
+                                 _('Your message has been queued and will be sent to {}.'.format(position.attendee_email)))
+            except SendMailException:
+                messages.error(self.request,
+                               _('Failed to send mail to the following user: {}'.format(position.attendee_email)))
+            return super(OrderSendMail, self).form_valid(form)
 
 
 class OrderEmailHistory(EventPermissionRequiredMixin, OrderViewMixin, ListView):
@@ -2021,12 +2110,15 @@ class EventCancel(EventPermissionRequiredMixin, AsyncAction, FormView):
         return self.do(
             self.request.event.pk,
             subevent=form.cleaned_data['subevent'].pk if form.cleaned_data.get('subevent') else None,
+            subevents_from=form.cleaned_data.get('subevents_from'),
+            subevents_to=form.cleaned_data.get('subevents_to'),
             auto_refund=form.cleaned_data.get('auto_refund'),
             manual_refund=form.cleaned_data.get('manual_refund'),
             refund_as_giftcard=form.cleaned_data.get('refund_as_giftcard'),
             giftcard_expires=form.cleaned_data.get('gift_card_expires'),
             giftcard_conditions=form.cleaned_data.get('gift_card_conditions'),
             keep_fee_fixed=form.cleaned_data.get('keep_fee_fixed'),
+            keep_fee_per_ticket=form.cleaned_data.get('keep_fee_per_ticket'),
             keep_fee_percentage=form.cleaned_data.get('keep_fee_percentage'),
             keep_fees=form.cleaned_data.get('keep_fees'),
             send=form.cleaned_data.get('send'),

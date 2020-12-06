@@ -39,7 +39,6 @@ superuser_urls = [
     "sudo/sessions/",
 ]
 
-
 staff_urls = [
     "global/update/",
     "sudo/",
@@ -118,6 +117,8 @@ event_urls = [
     "orders/ABC/refunds/1/process",
     "orders/ABC/refunds/1/done",
     "orders/ABC/delete",
+    "orders/ABC/sendmail",
+    "orders/ABC/1/sendmail",
     "orders/ABC/",
     "orders/",
     "orders/import/",
@@ -143,6 +144,10 @@ organizer_urls = [
     'organizer/abc/device/1/edit',
     'organizer/abc/device/1/connect',
     'organizer/abc/device/1/revoke',
+    'organizer/abc/gates',
+    'organizer/abc/gate/add',
+    'organizer/abc/gate/1/edit',
+    'organizer/abc/gate/1/delete',
     'organizer/abc/webhooks',
     'organizer/abc/webhook/add',
     'organizer/abc/webhook/1/edit',
@@ -287,6 +292,8 @@ event_permission_urls = [
     ("can_change_orders", "orders/FOO/delete", 302),
     ("can_change_orders", "orders/FOO/comment", 405),
     ("can_change_orders", "orders/FOO/locale", 200),
+    ("can_change_orders", "orders/FOO/sendmail", 200),
+    ("can_change_orders", "orders/FOO/1/sendmail", 404),
     ("can_change_orders", "orders/import/", 200),
     ("can_change_orders", "orders/import/0ab7b081-92d3-4480-82de-2f8b056fd32f/", 404),
     ("can_view_orders", "orders/FOO/answer/5/", 404),
@@ -305,6 +312,14 @@ event_permission_urls = [
     ("can_change_event_settings", "checkinlists/add", 200),
     ("can_change_event_settings", "checkinlists/1/change", 404),
     ("can_change_event_settings", "checkinlists/1/delete", 404),
+
+    # bank transfer
+    ("can_change_orders", "banktransfer/import/", 200),
+    ("can_change_orders", "banktransfer/job/1/", 404),
+    ("can_change_orders", "banktransfer/action/", 200),
+    ("can_change_orders", "banktransfer/refunds/", 200),
+    ("can_change_orders", "banktransfer/export/1/", 404),
+    ("can_change_orders", "banktransfer/sepa-export/1/", 404),
 ]
 
 
@@ -409,10 +424,22 @@ organizer_permission_urls = [
     ("can_change_organizer_settings", "organizer/dummy/device/1/edit", 404),
     ("can_change_organizer_settings", "organizer/dummy/device/1/connect", 404),
     ("can_change_organizer_settings", "organizer/dummy/device/1/revoke", 404),
+    ("can_change_organizer_settings", "organizer/dummy/gates", 200),
+    ("can_change_organizer_settings", "organizer/dummy/gate/add", 200),
+    ("can_change_organizer_settings", "organizer/dummy/gate/1/edit", 404),
+    ("can_change_organizer_settings", "organizer/dummy/gate/1/delete", 404),
     ("can_manage_gift_cards", "organizer/dummy/giftcards", 200),
     ("can_manage_gift_cards", "organizer/dummy/giftcard/add", 200),
     ("can_manage_gift_cards", "organizer/dummy/giftcard/1/", 404),
     ("can_manage_gift_cards", "organizer/dummy/giftcard/1/edit", 404),
+
+    # bank transfer
+    ("can_change_orders", "organizer/dummy/banktransfer/import/", 200),
+    ("can_change_orders", "organizer/dummy/banktransfer/job/1/", 404),
+    ("can_change_orders", "organizer/dummy/banktransfer/action/", 200),
+    ("can_change_orders", "organizer/dummy/banktransfer/refunds/", 200),
+    ("can_change_orders", "organizer/dummy/banktransfer/export/1/", 404),
+    ("can_change_orders", "organizer/dummy/banktransfer/sepa-export/1/", 404),
 ]
 
 

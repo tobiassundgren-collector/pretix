@@ -104,7 +104,7 @@ setup(
         'Pillow==7.*',
         'PyPDF2==1.26.*',
         'django-libsass==0.8',
-        'libsass==0.19.2',  # Bump when https://github.com/sass/libsass/issues/3053 is fixed
+        'libsass==0.20.*',
         'django-otp==0.7.*,>=0.7.5',
         'webauthn==0.4.*',
         'python-u2flib-server==4.*',
@@ -120,7 +120,7 @@ setup(
         'dj-static',
         'csscompressor',
         'django-markup',
-        'markdown<=2.2',
+        'markdown==3.3.*',
         'bleach>=3.1.4,<3.2.0',
         'sentry-sdk==0.14.*',
         'babel',
@@ -142,7 +142,6 @@ setup(
         'defusedcsv>=1.1.0',
         'vat_moss_forked==2020.3.20.0.11.0',
         'django-localflavor>=2.2',
-        'django-localflavor',
         'jsonschema',
         'django-hijack>=2.1.10,<2.2.0',
         'openpyxl==3.0.*',
@@ -154,7 +153,10 @@ setup(
         'arabic-reshaper==2.0.15',  # Support for Arabic in reportlab
         'packaging',
         'tlds>=2020041600',
-        'text-unidecode==1.*'
+        'text-unidecode==1.*',
+        'protobuf==3.13.*',
+        'cryptography',
+        'sepaxml==2.3.*',
     ],
     extras_require={
         'dev': [
@@ -165,12 +167,12 @@ setup(
             'pep8-naming',
             'coveralls',
             'coverage',
-            'pytest==5.3.*',
-            'pytest-django',
+            'pytest==6.*',
+            'pytest-django==4.*',
             'pytest-xdist==1.31.*',
             'isort',
             'pytest-mock==2.0.*',
-            'pytest-rerunfailures==8.*',
+            'pytest-rerunfailures==9.*',
             'responses',
             'potypo',
             'freezegun',

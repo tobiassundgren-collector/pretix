@@ -11,16 +11,19 @@ from pkg_resources import iter_entry_points
 from pycountry import currencies
 
 from . import __version__
+from .helpers.config import EnvOrParserConfig
+
 
 from django.contrib.messages import constants as messages  # NOQA
 from django.utils.translation import gettext_lazy as _  # NOQA
 
-config = configparser.RawConfigParser()
+_config = configparser.RawConfigParser()
 if 'PRETIX_CONFIG_FILE' in os.environ:
-    config.read_file(open(os.environ.get('PRETIX_CONFIG_FILE'), encoding='utf-8'))
+    _config.read_file(open(os.environ.get('PRETIX_CONFIG_FILE'), encoding='utf-8'))
 else:
-    config.read(['/etc/pretix/pretix.cfg', os.path.expanduser('~/.pretix.cfg'), 'pretix.cfg'],
-                encoding='utf-8')
+    _config.read(['/etc/pretix/pretix.cfg', os.path.expanduser('~/.pretix.cfg'), 'pretix.cfg'],
+                 encoding='utf-8')
+config = EnvOrParserConfig(_config)
 
 CONFIG_FILE = config
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -126,6 +129,7 @@ PRETIX_ADMIN_AUDIT_COMMENTS = config.getboolean('pretix', 'audit_comments', fall
 PRETIX_OBLIGATORY_2FA = config.getboolean('pretix', 'obligatory_2fa', fallback=False)
 PRETIX_SESSION_TIMEOUT_RELATIVE = 3600 * 3
 PRETIX_SESSION_TIMEOUT_ABSOLUTE = 3600 * 12
+PRETIX_PRIMARY_COLOR = '#8E44B3'
 
 SITE_URL = config.get('pretix', 'url', fallback='http://localhost')
 if SITE_URL.endswith('/'):
@@ -209,6 +213,7 @@ if HAS_REDIS:
         "LOCATION": config.get('redis', 'location'),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "REDIS_CLIENT_KWARGS": {"health_check_interval": 30}
         }
     }
     CACHES['redis_sessions'] = {
@@ -217,6 +222,7 @@ if HAS_REDIS:
         "TIMEOUT": 3600 * 24 * 30,
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "REDIS_CLIENT_KWARGS": {"health_check_interval": 30}
         }
     }
     if not HAS_MEMCACHED:
@@ -343,12 +349,13 @@ CORE_MODULES = {
     "pretix.presale",
     "pretix.control",
     "pretix.plugins.checkinlists",
+    "pretix.plugins.reports",
 }
 
 MIDDLEWARE = [
     'pretix.api.middleware.IdempotencyMiddleware',
     'pretix.multidomain.middlewares.MultiDomainMiddleware',
-    'django.middleware.common.CommonMiddleware',
+    'pretix.base.middleware.CustomCommonMiddleware',
     'pretix.multidomain.middlewares.SessionMiddleware',
     'pretix.multidomain.middlewares.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -372,7 +379,7 @@ except ImportError:
 
 
 if METRICS_ENABLED:
-    MIDDLEWARE.insert(MIDDLEWARE.index('django.middleware.common.CommonMiddleware') + 1,
+    MIDDLEWARE.insert(MIDDLEWARE.index('pretix.base.middleware.CustomCommonMiddleware') + 1,
                       'pretix.helpers.metrics.middleware.MetricsMiddleware')
 
 
@@ -415,10 +422,12 @@ ALL_LANGUAGES = [
     ('nl', _('Dutch')),
     ('nl-informal', _('Dutch (informal)')),
     ('fr', _('French')),
+    ('fi', _('Finnish')),
     ('el', _('Greek')),
     ('it', _('Italian')),
     ('lv', _('Latvian')),
     ('pl', _('Polish')),
+    ('pt-pt', _('Portuguese (Portugal)')),
     ('pt-br', _('Portuguese (Brazil)')),
     ('ru', _('Russian')),
     ('es', _('Spanish')),
@@ -429,7 +438,7 @@ LANGUAGES_OFFICIAL = {
     'en', 'de', 'de-informal'
 }
 LANGUAGES_INCUBATING = {
-    'pt-br', 'pl',
+    'pl', 'fi', 'pt-br'
 } - set(config.get('languages', 'allow_incubating', fallback='').split(','))
 LANGUAGES_RTL = {
     'ar', 'hw'
@@ -467,6 +476,12 @@ EXTRA_LANG_INFO = {
         'code': 'lv',
         'name': 'Latvian',
         'name_local': 'Latviešu'
+    },
+    'pt-pt': {
+        'bidi': False,
+        'code': 'pt-pt',
+        'name': 'Portuguese',
+        'name_local': 'Português',
     },
 }
 
@@ -561,7 +576,7 @@ MESSAGE_TAGS = {
 }
 MESSAGE_STORAGE = 'django.contrib.messages.storage.session.SessionStorage'
 
-loglevel = 'DEBUG' if DEBUG else 'INFO'
+loglevel = 'DEBUG' if DEBUG else config.get('pretix', 'loglevel', fallback='INFO')
 
 LOGGING = {
     'version': 1,
@@ -718,6 +733,7 @@ OAUTH2_PROVIDER_ACCESS_TOKEN_MODEL = 'pretixapi.OAuthAccessToken'
 OAUTH2_PROVIDER_REFRESH_TOKEN_MODEL = 'pretixapi.OAuthRefreshToken'
 OAUTH2_PROVIDER = {
     'SCOPES': {
+        'profile': _('User profile only'),
         'read': _('Read access'),
         'write': _('Write access'),
     },

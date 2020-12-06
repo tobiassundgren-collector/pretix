@@ -25,6 +25,8 @@ event_urls = [
 event_permission_sub_urls = [
     ('get', 'can_change_event_settings', 'settings/', 200),
     ('patch', 'can_change_event_settings', 'settings/', 200),
+    ('get', 'can_view_orders', 'revokedsecrets/', 200),
+    ('get', 'can_view_orders', 'revokedsecrets/1/', 404),
     ('get', 'can_view_orders', 'orders/', 200),
     ('get', 'can_view_orders', 'orderpositions/', 200),
     ('delete', 'can_change_orders', 'orderpositions/1/', 404),
@@ -130,6 +132,8 @@ event_permission_sub_urls = [
     ('get', 'can_view_orders', 'cartpositions/1/', 404),
     ('post', 'can_change_orders', 'cartpositions/', 400),
     ('delete', 'can_change_orders', 'cartpositions/1/', 404),
+    ('post', 'can_view_orders', 'exporters/invoicedata/run/', 400),
+    ('get', 'can_view_orders', 'exporters/invoicedata/download/bc3f9884-26ee-425b-8636-80613f84b6fa/3cb49ae6-eda3-4605-814e-099e23777b36/', 404),
 ]
 
 org_permission_sub_urls = [
@@ -144,6 +148,11 @@ org_permission_sub_urls = [
     ('get', 'can_manage_gift_cards', 'giftcards/1/', 404),
     ('put', 'can_manage_gift_cards', 'giftcards/1/', 404),
     ('patch', 'can_manage_gift_cards', 'giftcards/1/', 404),
+    ('get', 'can_change_organizer_settings', 'devices/', 200),
+    ('post', 'can_change_organizer_settings', 'devices/', 400),
+    ('get', 'can_change_organizer_settings', 'devices/1/', 404),
+    ('put', 'can_change_organizer_settings', 'devices/1/', 404),
+    ('patch', 'can_change_organizer_settings', 'devices/1/', 404),
     ('get', 'can_change_teams', 'teams/', 200),
     ('post', 'can_change_teams', 'teams/', 400),
     ('get', 'can_change_teams', 'teams/{team_id}/', 200),

@@ -29,6 +29,7 @@ from pretix.base.models.items import (
     ItemBundle, SubEventItem, SubEventItemVariation,
 )
 from pretix.base.services.quotas import QuotaAvailability
+from pretix.helpers.compat import date_fromisocalendar
 from pretix.multidomain.urlreverse import eventreverse
 from pretix.presale.ical import get_ical
 from pretix.presale.signals import item_description
@@ -410,7 +411,7 @@ class EventIndex(EventViewMixin, EventListMixin, CartMixin, TemplateView):
             context['frontpage_text'] = str(self.request.event.settings.frontpage_text)
 
         context['list_type'] = self.request.GET.get("style", self.request.event.settings.event_list_type)
-        if context['list_type'] not in ("calendar", "week") and self.request.event.subevents.count() > 100:
+        if context['list_type'] not in ("calendar", "week") and self.request.event.subevents.filter(date_from__gt=now()).count() > 50:
             if self.request.event.settings.event_list_type not in ("calendar", "week"):
                 self.request.event.settings.event_list_type = "calendar"
             context['list_type'] = "calendar"
@@ -465,8 +466,10 @@ class EventIndex(EventViewMixin, EventListMixin, CartMixin, TemplateView):
                 len(i) for i in ebd.values() if isinstance(i, list)
             ) < 2
             context['days'] = days_for_template(ebd, week)
-            context['weeks'] = [date(self.year, i + 1, 1) for i in range(12)]
-            context['weeks'] = [i + 1 for i in range(53)]
+            context['weeks'] = [
+                (date_fromisocalendar(self.year, i + 1, 1), date_fromisocalendar(self.year, i + 1, 7))
+                for i in range(53 if date(self.year, 12, 31).isocalendar()[1] == 53 else 52)
+            ]
             context['years'] = range(now().year - 2, now().year + 3)
             context['week_format'] = get_format('WEEK_FORMAT')
             if context['week_format'] == 'WEEK_FORMAT':

@@ -163,6 +163,10 @@ last_modified                         datetime                   Last modificati
 
    The ``exclude`` and ``subevent_after`` query parameter has been added.
 
+.. versionchanged:: 3.13
+
+   The ``subevent_before`` query parameter has been added.
+
 
 .. _order-position-resource:
 
@@ -201,6 +205,7 @@ addon_to                              integer                    Internal ID of 
 subevent                              integer                    ID of the date inside an event series this position belongs to (or ``null``).
 pseudonymization_id                   string                     A random ID, e.g. for use in lead scanning apps
 checkins                              list of objects            List of check-ins with this ticket
+├ id                                  integer                    Internal ID of the check-in event
 ├ list                                integer                    Internal ID of the check-in list
 ├ datetime                            datetime                   Time of check-in
 ├ type                                string                     Type of scan (defaults to ``entry``)
@@ -489,7 +494,8 @@ List of all orders
        recommend using this in combination with ``testmode=false``, since test mode orders can vanish at any time and
        you will not notice it using this method.
    :query datetime created_since: Only return orders that have been created since the given date.
-   :query datetime subevent_after: Only return orders that contain a ticket for a subevent taking place after the given date.
+   :query datetime subevent_after: Only return orders that contain a ticket for a subevent taking place after the given date. This is an exclusive after, and it considers the **end** of the subevent (or its start, if the end is not set).
+   :query datetime subevent_before: Only return orders that contain a ticket for a subevent taking place after the given date. This is an exclusive before, and it considers the **start** of the subevent.
    :query string exclude: Exclude a field from the output, e.g. ``fees`` or ``positions.downloads``. Can be used as a performance optimization. Can be passed multiple times.
    :param organizer: The ``slug`` field of the organizer to fetch
    :param event: The ``slug`` field of the event to fetch
@@ -1029,6 +1035,10 @@ Creating orders
 Order state operations
 ----------------------
 
+.. versionchanged:: 3.12
+
+   The ``mark_paid`` operation now takes a ``send_email`` parameter.
+
 .. http:post:: /api/v1/organizers/(organizer)/events/(event)/orders/(code)/mark_paid/
 
    Marks a pending or expired order as successfully paid.
@@ -1040,6 +1050,11 @@ Order state operations
       POST /api/v1/organizers/bigevents/events/sampleconf/orders/ABC12/mark_paid/ HTTP/1.1
       Host: pretix.eu
       Accept: application/json, text/javascript
+      Content-Type: application/json
+
+      {
+          "send_email": true
+      }
 
    **Example response**:
 
@@ -1722,6 +1737,10 @@ Order payment endpoints
 
    Payments can now be created through the API.
 
+.. versionchanged:: 3.12
+
+   The ``confirm`` operation now takes a ``send_email`` parameter.
+
 .. http:get:: /api/v1/organizers/(organizer)/events/(event)/orders/(code)/payments/
 
    Returns a list of all payments for an order.
@@ -1822,7 +1841,10 @@ Order payment endpoints
       Accept: application/json, text/javascript
       Content-Type: application/json
 
-      {"force": false}
+      {
+          "send_email": true,
+          "force": false
+      }
 
    **Example response**:
 
@@ -2246,3 +2268,57 @@ Order refund endpoints
    :statuscode 401: Authentication failure
    :statuscode 403: The requested organizer/event does not exist **or** you have no permission to view this resource.
    :statuscode 404: The requested order or refund does not exist.
+
+Revoked ticket secrets
+----------------------
+
+With some non-default ticket secret generation methods, a list of revoked ticket secrets is required for proper validation.
+
+.. versionchanged:: 3.12
+
+   Added revocation lists.
+
+.. http:get:: /api/v1/organizers/(organizer)/events/(event)/revokedsecrets/
+
+   Returns a list of all revoked secrets within a given event.
+
+   **Example request**:
+
+   .. sourcecode:: http
+
+      GET /api/v1/organizers/bigevents/events/sampleconf/revokedsecrets/ HTTP/1.1
+      Host: pretix.eu
+      Accept: application/json, text/javascript
+
+   **Example response**:
+
+   .. sourcecode:: http
+
+      HTTP/1.1 200 OK
+      Vary: Accept
+      Content-Type: application/json
+      X-Page-Generated: 2017-12-01T10:00:00Z
+
+      {
+        "count": 1,
+        "next": null,
+        "previous": null,
+        "results": [
+          {
+            "id": 1234,
+            "secret": "k24fiuwvu8kxz3y1",
+            "created": "2017-12-01T10:00:00Z",
+          }
+        ]
+      }
+
+   :query integer page: The page number in case of a multi-page result set, default is 1
+   :query string ordering: Manually set the ordering of results. Valid fields to be used are ``secret`` and ``created``. Default: ``-created``
+   :query datetime created_since: Only return revocations that have been created since the given date.
+   :param organizer: The ``slug`` field of the organizer to fetch
+   :param event: The ``slug`` field of the event to fetch
+   :resheader X-Page-Generated: The server time at the beginning of the operation. If you're using this API to fetch
+                                differences, this is the value you want to use as ``created_since`` in your next call.
+   :statuscode 200: no error
+   :statuscode 401: Authentication failure
+   :statuscode 403: The requested organizer/event does not exist **or** you have no permission to view this resource.

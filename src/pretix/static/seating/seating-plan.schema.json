@@ -40,6 +40,14 @@
           "type": "string",
           "description": "Name of the zone"
         },
+        "zone_id": {
+          "type": "string",
+          "description": "Internal ID of the zone. Currently not used in any way during plan rendering, but only to auto-generate seat GUIDs. May be missing since previous versions of the schema did not include this, in which case a fallback to the name is expected."
+        },
+        "uuid": {
+          "type": "string",
+          "description": "Unique ID of this object. May not under any circumstances be duplicate, not even between different object types. Should be an UUID-4. May be missing since previous versions of the schema did not include this."
+        },
         "position": { "$ref": "#/definitions/position" },
         "rows": {
           "type": "array",
@@ -50,12 +58,6 @@
           "type": "array",
           "description": "List of areas",
           "items": { "$ref": "#/definitions/area" }
-        },
-        "row_number_position": {
-          "type": ["string", "null"],
-          "enum": ["left", "right", null],
-          "description": "Should the row numbers be hidden?",
-          "$comment": "Currently not implemented."
         }
       },
       "required": ["position", "rows"],
@@ -71,25 +73,25 @@
         },
         "row_label": {
           "type": ["string", "null"],
-          "description": "Human-readable name for the row. May include %s as a placeholder for the row_number value. Not used for rendering the plan, but for describing the seats in text."
+          "description": "Human-readable name for the row. Not used for rendering the plan, but for describing the seats in text."
         },
         "seat_label": {
           "type": ["string", "null"],
           "description": "Human-readable name for the seats in this. May include %s as a placeholder for the seat_number values. Not used for rendering the plan, but for describing the seats in text."
+        },
+        "uuid": {
+          "type": "string",
+          "description": "Unique ID of this object. May not under any circumstances be duplicate, not even between different object types. Should be an UUID-4. May be missing since previous versions of the schema did not include this."
         },
         "seats": {
           "type": "array",
           "description": "List of seats in this row",
           "items": { "$ref": "#/definitions/seat" }
         },
-        "seats_spacing": {
-          "type": "integer",
-          "description": "How far apart should the seats be positioned? This value is ignored for rendering, it is just useful to keep to modify the row later."
-        },
         "row_number_position": {
           "type": ["string", "null"],
-          "enum": ["left", "right", null],
-          "description": "Should the row numbers be hidden? (Overrides the zone setting)"
+          "enum": ["start", "end", "both", null],
+          "description": "Should the row numbers be shown?"
         },
         "position": {
           "$ref": "#/definitions/position"
@@ -110,12 +112,16 @@
           "type": "string",
           "description": "Human-readable seat number."
         },
+        "uuid": {
+          "type": "string",
+          "description": "Unique ID of this object. May not under any circumstances be duplicate, not even between different object types. Should be an UUID-4. May be missing since previous versions of the schema did not include this."
+        },
         "start_direction": {
           "type": ["string", "null"],
           "description": "Declares this seat as a start point for ordered booking in its row. Can contain '<', '>' or '<>'."
         },
         "radius": {
-          "type": "integer",
+          "type": "number",
           "description": "Defaults to 10"
         },
         "position": { "$ref": "#/definitions/position" },
@@ -140,6 +146,10 @@
         "position": {
           "$ref": "#/definitions/position"
         },
+        "uuid": {
+          "type": "string",
+          "description": "Unique ID of this object. May not under any circumstances be duplicate, not even between different object types. Should be an UUID-4. May be missing since previous versions of the schema did not include this."
+        },
         "shape": {
           "type": "string",
           "enum": ["polygon", "rectangle", "ellipse", "circle", "text"]
@@ -159,10 +169,10 @@
           "type": "object",
           "properties": {
             "width": {
-              "type": "integer"
+              "type": "number"
             },
             "height": {
-              "type": "integer"
+              "type": "number"
             }
           },
           "required": ["width", "height"],
@@ -180,7 +190,7 @@
           "type": "object",
           "properties": {
             "radius": {
-              "type": "integer"
+              "type": "number"
             }
           },
           "required": ["radius"],
@@ -192,7 +202,7 @@
             "text": { "type": "string" },
             "color": { "type": "string" },
             "size": {
-              "type": "integer",
+              "type": "number",
               "description": "Defaults to 16"
             },
             "position": {

@@ -21,6 +21,11 @@ class CheckinList(LoggedModel):
                                           default=False,
                                           help_text=_('With this option, people will be able to check in even if the '
                                                       'order have not been paid.'))
+    gates = models.ManyToManyField(
+        'Gate', verbose_name=_("Gates"), blank=True,
+        help_text=_("Does not have any effect for the validation of tickets, only for the automatic configuration of "
+                    "check-in devices.")
+    )
     allow_entry_after_exit = models.BooleanField(
         verbose_name=_('Allow re-entering after an exit scan'),
         default=True
@@ -30,7 +35,10 @@ class CheckinList(LoggedModel):
         help_text=_('Use this option to turn off warnings if a ticket is scanned a second time.'),
         default=False
     )
-
+    exit_all_at = models.DateTimeField(
+        verbose_name=_('Automatically check out everyone at'),
+        null=True, blank=True
+    )
     auto_checkin_sales_channels = MultiStringField(
         default=[],
         blank=True,
@@ -62,7 +70,7 @@ class CheckinList(LoggedModel):
         return qs
 
     @property
-    def inside_count(self):
+    def positions_inside(self):
         return self.positions.annotate(
             last_entry=Subquery(
                 Checkin.objects.filter(
@@ -87,7 +95,11 @@ class CheckinList(LoggedModel):
             & Q(
                 Q(last_exit__isnull=True) | Q(last_exit__lt=F('last_entry'))
             )
-        ).count()
+        )
+
+    @property
+    def inside_count(self):
+        return self.positions_inside.count()
 
     @property
     @scopes_disabled()
@@ -151,6 +163,9 @@ class Checkin(models.Model):
     forced = models.BooleanField(default=False)
     device = models.ForeignKey(
         'pretixbase.Device', related_name='checkins', on_delete=models.PROTECT, null=True, blank=True
+    )
+    gate = models.ForeignKey(
+        'pretixbase.Gate', related_name='checkins', on_delete=models.SET_NULL, null=True, blank=True
     )
     auto_checked_in = models.BooleanField(default=False)
 

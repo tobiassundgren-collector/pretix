@@ -22,6 +22,7 @@ from django.views import View
 from django.views.generic import FormView, ListView, TemplateView, UpdateView
 from django_otp.plugins.otp_static.models import StaticDevice
 from django_otp.plugins.otp_totp.models import TOTPDevice
+from django_scopes import scopes_disabled
 
 from pretix.base.auth import get_auth_backends
 from pretix.base.forms.auth import ReauthForm
@@ -114,6 +115,9 @@ class ReauthView(TemplateView):
         u = backend.request_authenticate(request)
         if u and u == request.user:
             next_url = backend.get_next_url(request)
+            t = int(time.time())
+            request.session['pretix_auth_login_time'] = t
+            request.session['pretix_auth_last_used'] = t
             if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts=None):
                 return redirect(next_url)
             return redirect(reverse('control:index'))
@@ -573,7 +577,13 @@ class User2FARegenerateEmergencyView(RecentAuthenticationRequiredMixin, Template
 
 
 class UserNotificationsDisableView(TemplateView):
-    def get(self, request, *args, **kwargs):
+    template_name = 'pretixcontrol/user/notifications_disable.html'
+
+    @scopes_disabled()
+    def dispatch(self, request, *args, **kwargs):
+        return super().dispatch(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
         user = get_object_or_404(User, notifications_token=kwargs.get('token'), pk=kwargs.get('id'))
         user.notifications_send = False
         user.save()

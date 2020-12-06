@@ -115,7 +115,7 @@ class LoginFormTest(TestCase):
         response = self.client.get('/control/login')
         self.assertEqual(response.status_code, 200)
         assert b'Form' in response.content
-        assert b'pretix User' in response.content
+        assert b'pretix.eu User' in response.content
         assert b'Request' not in response.content
 
     def test_form_backend(self):
@@ -783,7 +783,7 @@ def test_impersonate(user, client):
     response = client.get('/control/global/settings/')
     assert response.status_code == 403
     response = client.get('/control/')
-    response = client.post('/control/users/impersonate/stop', follow=True)
+    response = client.post('/control/users/impersonate/stop/', follow=True)
     assert b'dummy@' in response.content
     assert b'dummy2@' not in response.content
     response = client.get('/control/global/settings/')
@@ -825,7 +825,8 @@ def test_staff_session(user, client):
     assert response['Location'] == '/control/'
     response = client.get('/control/global/settings/')
     assert response.status_code == 200
-    client.post('/control/sudo/stop', follow=True)
+    response = client.get('/control/sudo/stop/', follow=True)
+    assert response.status_code == 200
     response = client.get('/control/global/settings/')
     assert response.status_code == 302
     assert user.staffsession_set.last().logs.filter(url='/control/global/settings/').exists()

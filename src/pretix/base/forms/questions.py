@@ -34,10 +34,12 @@ from pretix.base.forms.widgets import (
 )
 from pretix.base.i18n import language
 from pretix.base.models import InvoiceAddress, Question, QuestionOption
-from pretix.base.models.tax import EU_COUNTRIES, cc_to_vat_prefix
+from pretix.base.models.tax import (
+    EU_COUNTRIES, cc_to_vat_prefix, is_eu_country,
+)
 from pretix.base.settings import (
-    COUNTRIES_WITH_STATE_IN_ADDRESS, PERSON_NAME_SCHEMES,
-    PERSON_NAME_TITLE_GROUPS,
+    COUNTRIES_WITH_STATE_IN_ADDRESS, PERSON_NAME_SALUTATIONS,
+    PERSON_NAME_SCHEMES, PERSON_NAME_TITLE_GROUPS,
 )
 from pretix.base.templatetags.rich_text import rich_text
 from pretix.control.forms import ExtFileField, SplitDateTimeField
@@ -49,7 +51,7 @@ from pretix.presale.signals import question_form_fields
 logger = logging.getLogger(__name__)
 
 
-REQUIRED_NAME_PARTS = ['given_name', 'family_name', 'full_name']
+REQUIRED_NAME_PARTS = ['salutation', 'given_name', 'family_name', 'full_name']
 
 
 class NamePartsWidget(forms.MultiWidget):
@@ -73,6 +75,8 @@ class NamePartsWidget(forms.MultiWidget):
             a['data-fname'] = fname
             if fname == 'title' and self.titles:
                 widgets.append(Select(attrs=a, choices=[('', '')] + [(d, d) for d in self.titles[1]]))
+            elif fname == 'salutation':
+                widgets.append(Select(attrs=a, choices=[('', '---')] + [(s, s) for s in PERSON_NAME_SALUTATIONS]))
             else:
                 widgets.append(self.widget(attrs=a))
         super().__init__(widgets, attrs)
@@ -162,12 +166,18 @@ class NamePartsFormField(forms.MultiValueField):
                     **d,
                     choices=[('', '')] + [(d, d) for d in self.scheme_titles[1]]
                 )
-                field.part_name = fname
-                fields.append(field)
+
+            elif fname == 'salutation':
+                d = dict(defaults)
+                d.pop('max_length', None)
+                field = forms.ChoiceField(
+                    **d,
+                    choices=[('', '---')] + [(s, s) for s in PERSON_NAME_SALUTATIONS]
+                )
             else:
                 field = forms.CharField(**defaults)
-                field.part_name = fname
-                fields.append(field)
+            field.part_name = fname
+            fields.append(field)
         super().__init__(
             fields=fields, require_all_fields=False, *args, **kwargs
         )
@@ -640,7 +650,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         self.fields['state'].widget.is_required = True
 
         # Without JavaScript the VAT ID field is not hidden, so we empty the field if a country outside the EU is selected.
-        if cc and cc not in EU_COUNTRIES and fprefix + 'vat_id' in self.data:
+        if cc and not is_eu_country(cc) and fprefix + 'vat_id' in self.data:
             self.data = self.data.copy()
             del self.data[fprefix + 'vat_id']
 
@@ -690,7 +700,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
         if not data.get('is_business'):
             data['company'] = ''
             data['vat_id'] = ''
-        if data.get('is_business') and not data.get('country') in EU_COUNTRIES:
+        if data.get('is_business') and not is_eu_country(data.get('country')):
             data['vat_id'] = ''
         if self.event.settings.invoice_address_required:
             if data.get('is_business') and not data.get('company'):
@@ -714,7 +724,7 @@ class BaseInvoiceAddressForm(forms.ModelForm):
             self.cleaned_data['country'] = ''
         if self.validate_vat_id and self.instance.vat_id_validated and 'vat_id' not in self.changed_data:
             pass
-        elif self.validate_vat_id and data.get('is_business') and data.get('country') in EU_COUNTRIES and data.get('vat_id'):
+        elif self.validate_vat_id and data.get('is_business') and is_eu_country(data.get('country')) and data.get('vat_id'):
             if data.get('vat_id')[:2] != cc_to_vat_prefix(str(data.get('country'))):
                 raise ValidationError(_('Your VAT ID does not match the selected country.'))
             try:

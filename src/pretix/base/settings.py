@@ -374,6 +374,10 @@ DEFAULTS = {
         'default': 'classic',
         'type': str,
     },
+    'ticket_secret_generator': {
+        'default': 'random',
+        'type': str,
+    },
     'reservation_time': {
         'default': '30',
         'type': int,
@@ -668,8 +672,8 @@ DEFAULTS = {
         'type': str,
         'form_class': forms.ChoiceField,
         'serializer_class': serializers.ChoiceField,
-        'serializer_kwargs': country_choice_kwargs,
-        'form_kwargs': country_choice_kwargs,
+        'serializer_kwargs': lambda: dict(**country_choice_kwargs()),
+        'form_kwargs': lambda: dict(label=_('Country'), **country_choice_kwargs()),
     },
     'invoice_address_from_tax_id': {
         'default': '',
@@ -969,6 +973,19 @@ DEFAULTS = {
             help_text=_('If turned off, ticket downloads are only possible after an order has been marked as paid.'),
             widget=forms.CheckboxInput(attrs={'data-checkbox-dependency': '#id_ticket_download',
                                               'data-checkbox-dependency-visual': 'on'}),
+        )
+    },
+    'ticket_download_require_validated_email': {
+        'default': 'False',
+        'type': bool,
+        'serializer_class': serializers.BooleanField,
+        'form_class': forms.BooleanField,
+        'form_kwargs': dict(
+            label=_("Do not issue ticket before email address is validated"),
+            help_text=_("If turned on, tickets will not be offered for download directly after purchase. They will "
+                        "be attached to the payment confirmation email (if the file size is not too large), and the "
+                        "customer will be able to download them from the page as soon as they clicked a link in "
+                        "the email. Does not affect orders performed through other sales channels."),
         )
     },
     'event_list_availability': {
@@ -1580,7 +1597,7 @@ Your {event} team"""))
         'type': bool
     },
     'primary_color': {
-        'default': '#8E44B3',
+        'default': settings.PRETIX_PRIMARY_COLOR,
         'type': str,
     },
     'theme_color_success': {
@@ -1825,6 +1842,15 @@ Your {event} team"""))
     'seating_distance_within_row': {
         'default': 'False',
         'type': bool
+    },
+    'checkout_show_copy_answers_button': {
+        'default': 'True',
+        'type': bool,
+        'form_class': forms.BooleanField,
+        'serializer_class': serializers.BooleanField,
+        'form_kwargs': dict(
+            label=_("Show button to copy user input from other products"),
+        ),
     }
 }
 PERSON_NAME_TITLE_GROUPS = OrderedDict([
@@ -1836,7 +1862,7 @@ PERSON_NAME_TITLE_GROUPS = OrderedDict([
         'Mx',
         'Dr',
         'Professor',
-        'Sir'
+        'Sir',
     ))),
     ('german_common', (_('Most common German titles'), (
         'Dr.',
@@ -1844,9 +1870,16 @@ PERSON_NAME_TITLE_GROUPS = OrderedDict([
         'Prof. Dr.',
     )))
 ])
+
+PERSON_NAME_SALUTATIONS = [
+    pgettext_lazy("person_name_salutation", "Ms"),
+    pgettext_lazy("person_name_salutation", "Mr"),
+]
+
 PERSON_NAME_SCHEMES = OrderedDict([
     ('given_family', {
         'fields': (
+            # field_name, label, weight for widget width
             ('given_name', _('Given name'), 1),
             ('family_name', _('Family name'), 1),
         ),
@@ -2001,6 +2034,24 @@ PERSON_NAME_SCHEMES = OrderedDict([
             '_scheme': 'full_transcription',
         },
     }),
+    ('salutation_title_given_family', {
+        'fields': (
+            ('salutation', pgettext_lazy('person_name', 'Salutation'), 1),
+            ('title', pgettext_lazy('person_name', 'Title'), 1),
+            ('given_name', _('Given name'), 2),
+            ('family_name', _('Family name'), 2),
+        ),
+        'concatenation': lambda d: ' '.join(
+            str(p) for p in (d.get(key, '') for key in ["title", "given_name", "family_name"]) if p
+        ),
+        'sample': {
+            'salutation': pgettext_lazy('person_name_sample', 'Mr'),
+            'title': pgettext_lazy('person_name_sample', 'Dr'),
+            'given_name': pgettext_lazy('person_name_sample', 'John'),
+            'family_name': pgettext_lazy('person_name_sample', 'Doe'),
+            '_scheme': 'salutation_title_given_family',
+        },
+    }),
 ])
 COUNTRIES_WITH_STATE_IN_ADDRESS = {
     # Source: http://www.bitboost.com/ref/international-address-formats.html
@@ -2015,7 +2066,6 @@ COUNTRIES_WITH_STATE_IN_ADDRESS = {
     'MX': (['State', 'Federal District'], 'short'),
     'US': (['State', 'Outlying area', 'District'], 'short'),
 }
-
 
 settings_hierarkey = Hierarkey(attribute_name='settings')
 
@@ -2086,7 +2136,7 @@ class SettingsSandbox:
     def __delattr__(self, key: str) -> None:
         del self._event.settings[self._convert_key(key)]
 
-    def get(self, key: str, default: Any=None, as_type: type=str):
+    def get(self, key: str, default: Any = None, as_type: type = str):
         return self._event.settings.get(self._convert_key(key), default=default, as_type=as_type)
 
     def set(self, key: str, value: Any):

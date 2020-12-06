@@ -192,7 +192,7 @@ class WidgetAPIProductList(EventListMixin, View):
             qs = qs.filter(category__pk__in=self.request.GET.get('categories').split(","))
 
         items, display_add_to_cart = get_grouped_items(
-            self.request.event, subevent=self.subevent, voucher=self.voucher, channel='web',
+            self.request.event, subevent=self.subevent, voucher=self.voucher, channel=self.request.sales_channel.identifier,
             base_qs=qs
         )
 
@@ -309,28 +309,48 @@ class WidgetAPIProductList(EventListMixin, View):
             if ev.best_availability_state == Quota.AVAILABILITY_OK:
                 availability['color'] = 'green'
                 availability['text'] = gettext('Book now')
+                availability['reason'] = 'ok'
             elif event.settings.waiting_list_enabled and ev.best_availability_state >= 0:
                 availability['color'] = 'orange'
                 availability['text'] = gettext('Waiting list')
+                availability['reason'] = 'waitinglist'
             elif ev.best_availability_state == Quota.AVAILABILITY_RESERVED:
                 availability['color'] = 'orange'
                 availability['text'] = gettext('Reserved')
+                availability['reason'] = 'reserved'
             elif ev.best_availability_state < Quota.AVAILABILITY_RESERVED:
                 availability['color'] = 'red'
-                availability['text'] = gettext('Sold out')
+                if ev.has_paid_item:
+                    availability['text'] = gettext('Sold out')
+                else:
+                    availability['text'] = gettext('Fully booked')
+                availability['reason'] = 'full'
         elif ev.presale_is_running:
             availability['color'] = 'green'
             availability['text'] = gettext('Book now')
+            availability['reason'] = 'ok'
         elif ev.presale_has_ended:
             availability['color'] = 'red'
             availability['text'] = gettext('Sale over')
+            availability['reason'] = 'over'
         elif event.settings.presale_start_show_date and ev.presale_start:
             availability['color'] = 'orange'
             availability['text'] = gettext('from %(start_date)s') % {'start_date': date_format(ev.presale_start, "SHORT_DATE_FORMAT")}
+            availability['reason'] = 'soon'
         else:
             availability['color'] = 'orange'
-            availability['text'] = gettext('Sale soon')
+            availability['text'] = gettext('Soon')
+            availability['reason'] = 'soon'
         return availability
+
+    def _get_date_range(self, ev, event, tz=None):
+        tz = tz or event.timezone
+        dr = ev.get_date_range_display(tz)
+        if event.settings.show_times:
+            dr += " " + date_format(ev.date_from.astimezone(tz), "TIME_FORMAT")
+            if event.settings.show_date_to and ev.date_to and ev.date_from.astimezone(tz).date() == ev.date_to.astimezone(tz).date():
+                dr += " – " + date_format(ev.date_to.astimezone(tz), "TIME_FORMAT")
+        return dr
 
     def _serialize_events(self, ebd):
         events = []
@@ -341,15 +361,15 @@ class WidgetAPIProductList(EventListMixin, View):
             else:
                 event = ev
             tz = pytz.timezone(e['timezone'])
+            time = date_format(ev.date_from.astimezone(tz), 'TIME_FORMAT') if e.get('time') and event.settings.show_times else None
+            if time and ev.date_to and ev.date_from.astimezone(tz).date() == ev.date_to.astimezone(tz).date() and event.settings.show_date_to:
+                time += ' – ' + date_format(ev.date_to.astimezone(tz), 'TIME_FORMAT')
             events.append({
                 'name': str(ev.name),
-                'time': date_format(ev.date_from.astimezone(tz), 'TIME_FORMAT') if e.get('time') and event.settings.show_times else
-                None,
+                'time': time,
                 'continued': e['continued'],
                 'location': str(ev.location),
-                'date_range': ev.get_date_range_display() + (
-                    " " + date_format(ev.date_from.astimezone(tz), "TIME_FORMAT") if event.settings.show_times else ""
-                ),
+                'date_range': self._get_date_range(ev, event),
                 'availability': self._get_availability(ev, event),
                 'event_url': build_absolute_uri(event, 'presale:event.index'),
                 'subevent': ev.pk if isinstance(ev, SubEvent) else None,
@@ -363,7 +383,7 @@ class WidgetAPIProductList(EventListMixin, View):
         data['list_type'] = list_type
 
         if hasattr(self.request, 'event') and data['list_type'] not in ("calendar", "week"):
-            if self.request.event.subevents.count() > 100:
+            if self.request.event.subevents.filter(date_from__gt=now()).count() > 50:
                 if self.request.event.settings.event_list_type not in ("calendar", "week"):
                     self.request.event.settings.event_list_type = "calendar"
                 data['list_type'] = list_type = 'calendar'
@@ -474,9 +494,7 @@ class WidgetAPIProductList(EventListMixin, View):
                     {
                         'name': str(ev.name),
                         'location': str(ev.location),
-                        'date_range': ev.get_date_range_display(tz) + (
-                            (" " + ev.get_time_from_display(tz)) if ev.event.settings.show_times else ""
-                        ),
+                        'date_range': self._get_date_range(ev, ev.event, tz),
                         'availability': self._get_availability(ev, ev.event),
                         'event_url': build_absolute_uri(ev.event, 'presale:event.index'),
                         'subevent': ev.pk,
@@ -494,9 +512,7 @@ class WidgetAPIProductList(EventListMixin, View):
                         )
                         avail = {'color': 'none', 'text': gettext('Event series')}
                     else:
-                        dr = event.get_date_range_display(tz) + (
-                            " " + event.get_time_from_display(tz) if event.settings.show_times else ""
-                        )
+                        dr = self._get_date_range(event, event, tz)
                         avail = self._get_availability(event, event)
                     data['events'].append({
                         'name': str(event.name),
@@ -520,6 +536,7 @@ class WidgetAPIProductList(EventListMixin, View):
             str(self.subevent.pk) if self.subevent else "",
             request.GET.urlencode(),
             get_language(),
+            request.sales_channel.identifier,
         ])
         if "cart_id" not in request.GET:
             cached_data = cache.get(cache_key)
@@ -541,11 +558,7 @@ class WidgetAPIProductList(EventListMixin, View):
 
         ev = self.subevent or request.event
         data['name'] = str(ev.name)
-        data['date_range'] = ev.get_date_range_display() + (
-            " " + date_format(
-                ev.date_from.astimezone(request.event.timezone), "TIME_FORMAT"
-            ) if request.event.settings.show_times else ""
-        )
+        data['date_range'] = self._get_date_range(ev, request.event)
         fail = False
 
         if not ev.presale_is_running:
@@ -556,8 +569,8 @@ class WidgetAPIProductList(EventListMixin, View):
                     data['error'] = gettext('The presale period for this event is over.')
             elif request.event.settings.presale_start_show_date:
                 data['error'] = gettext('The presale for this event will start on %(date)s at %(time)s.') % {
-                    'date': date_format(ev.presale_start.astimezone(request.event.timezone), "SHORT_DATE_FORMAT"),
-                    'time': date_format(ev.presale_start.astimezone(request.event.timezone), "TIME_FORMAT"),
+                    'date': date_format(ev.effective_presale_start.astimezone(request.event.timezone), "SHORT_DATE_FORMAT"),
+                    'time': date_format(ev.effective_presale_start.astimezone(request.event.timezone), "TIME_FORMAT"),
                 }
             else:
                 data['error'] = gettext('The presale for this event has not yet started.')

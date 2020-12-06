@@ -10,7 +10,7 @@ from django.db.models.functions import Coalesce, Greatest
 from django.http import Http404, HttpResponse
 from django.utils.decorators import method_decorator
 from django.utils.formats import date_format, get_format
-from django.utils.timezone import now
+from django.utils.timezone import get_current_timezone, now
 from django.views import View
 from django.views.decorators.cache import cache_page
 from django.views.generic import ListView, TemplateView
@@ -21,6 +21,7 @@ from pretix.base.models import (
     Event, EventMetaValue, SubEvent, SubEventMetaValue,
 )
 from pretix.base.services.quotas import QuotaAvailability
+from pretix.helpers.compat import date_fromisocalendar
 from pretix.helpers.daterange import daterange
 from pretix.helpers.formats.de.formats import WEEK_FORMAT
 from pretix.multidomain.urlreverse import eventreverse
@@ -315,6 +316,7 @@ def add_events_for_days(request, baseqs, before, after, ebd, timezones):
         datetime_from = event.date_from.astimezone(tz)
         date_from = datetime_from.date()
         if event.settings.show_date_to and event.date_to:
+            datetime_to = event.date_to.astimezone(tz)
             date_to = event.date_to.astimezone(tz).date()
             d = max(date_from, before.date())
             while d <= date_to and d <= after.date():
@@ -323,6 +325,13 @@ def add_events_for_days(request, baseqs, before, after, ebd, timezones):
                     'event': event,
                     'continued': not first,
                     'time': datetime_from.time().replace(tzinfo=None) if first and event.settings.show_times else None,
+                    'time_end': (
+                        datetime_to.time().replace(tzinfo=None)
+                        if (date_to == date_from or (
+                            date_to == date_from + timedelta(days=1) and datetime_to.time() < datetime_from.time()
+                        )) and event.settings.show_times
+                        else None
+                    ),
                     'url': eventreverse(event, 'presale:event.index'),
                     'timezone': event.settings.timezone,
                 })
@@ -376,6 +385,7 @@ def add_subevents_for_days(qs, before, after, ebd, timezones, event=None, cart_n
         elif str(se.name) != name:
             ebd['_subevents_different_names'] = True
         if se.event.settings.show_date_to and se.date_to:
+            datetime_to = se.date_to.astimezone(tz)
             date_to = se.date_to.astimezone(tz).date()
             d = max(date_from, before.date())
             while d <= date_to and d <= after.date():
@@ -384,6 +394,13 @@ def add_subevents_for_days(qs, before, after, ebd, timezones, event=None, cart_n
                     'continued': not first,
                     'timezone': settings.timezone,
                     'time': datetime_from.time().replace(tzinfo=None) if first and settings.show_times else None,
+                    'time_end': (
+                        datetime_to.time().replace(tzinfo=None)
+                        if (date_to == date_from or (
+                            date_to == date_from + timedelta(days=1) and datetime_to.time() < datetime_from.time()
+                        )) and settings.show_times
+                        else None
+                    ),
                     'event': se,
                     'url': eventreverse(se.event, 'presale:event.index', kwargs=kwargs)
                 })
@@ -411,6 +428,7 @@ def days_for_template(ebd, week):
         {
             'day_formatted': date_format(day, day_format),
             'date': day,
+            'today': day == now().astimezone(get_current_timezone()).date(),
             'events': sorted(ebd.get(day), key=sort_ev) if day in ebd else []
         }
         for day in week.days()
@@ -506,8 +524,10 @@ class WeekCalendarView(OrganizerViewMixin, EventListMixin, TemplateView):
         ebd = self._events_by_day(before, after)
 
         ctx['days'] = days_for_template(ebd, week)
-        ctx['weeks'] = [date(self.year, i + 1, 1) for i in range(12)]
-        ctx['weeks'] = [i + 1 for i in range(53)]
+        ctx['weeks'] = [
+            (date_fromisocalendar(self.year, i + 1, 1), date_fromisocalendar(self.year, i + 1, 7))
+            for i in range(53 if date(self.year, 12, 31).isocalendar()[1] == 53 else 52)
+        ]
         ctx['years'] = range(now().year - 2, now().year + 3)
         ctx['week_format'] = get_format('WEEK_FORMAT')
         if ctx['week_format'] == 'WEEK_FORMAT':

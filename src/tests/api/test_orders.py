@@ -282,6 +282,19 @@ def test_order_list_filter_subevent_date(token_client, organizer, event, order, 
     assert resp.status_code == 200
     assert [res] == resp.data['results']
 
+    resp = token_client.get('/api/v1/organizers/{}/events/{}/orders/?subevent_before={}'.format(
+        organizer.slug, event.slug,
+        (subevent.date_from - datetime.timedelta(hours=1)).isoformat().replace('+00:00', 'Z')
+    ))
+    assert resp.status_code == 200
+    assert [] == resp.data['results']
+    resp = token_client.get('/api/v1/organizers/{}/events/{}/orders/?subevent_before={}'.format(
+        organizer.slug, event.slug,
+        (subevent.date_from + datetime.timedelta(hours=1)).isoformat().replace('+00:00', 'Z')
+    ))
+    assert resp.status_code == 200
+    assert [res] == resp.data['results']
+
 
 @pytest.mark.django_db
 def test_order_list(token_client, organizer, event, order, item, taxrule, question):
@@ -469,11 +482,24 @@ def test_payment_confirm(token_client, organizer, event, order):
         p = order.payments.get(local_id=2)
     assert resp.status_code == 200
     assert p.state == OrderPayment.PAYMENT_STATE_CONFIRMED
+    assert len(djmail.outbox) == 1
 
     resp = token_client.post('/api/v1/organizers/{}/events/{}/orders/{}/payments/2/confirm/'.format(
         organizer.slug, event.slug, order.code
     ), format='json', data={'force': True})
     assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_payment_confirm_no_email(token_client, organizer, event, order):
+    resp = token_client.post('/api/v1/organizers/{}/events/{}/orders/{}/payments/2/confirm/'.format(
+        organizer.slug, event.slug, order.code
+    ), format='json', data={'force': True, 'send_email': False})
+    with scopes_disabled():
+        p = order.payments.get(local_id=2)
+    assert resp.status_code == 200
+    assert p.state == OrderPayment.PAYMENT_STATE_CONFIRMED
+    assert len(djmail.outbox) == 0
 
 
 @pytest.mark.django_db
@@ -810,8 +836,14 @@ def test_orderposition_list(token_client, organizer, event, order, item, subeven
 
     with scopes_disabled():
         cl = event.checkin_lists.create(name="Default")
-        op.checkins.create(datetime=datetime.datetime(2017, 12, 26, 10, 0, 0, tzinfo=UTC), list=cl)
-    res['checkins'] = [{'datetime': '2017-12-26T10:00:00Z', 'list': cl.pk, 'auto_checked_in': False, 'type': 'entry'}]
+        c = op.checkins.create(datetime=datetime.datetime(2017, 12, 26, 10, 0, 0, tzinfo=UTC), list=cl)
+    res['checkins'] = [{
+        'id': c.pk,
+        'datetime': '2017-12-26T10:00:00Z',
+        'list': cl.pk,
+        'auto_checked_in': False,
+        'type': 'entry'
+    }]
     resp = token_client.get(
         '/api/v1/organizers/{}/events/{}/orderpositions/?has_checkin=true'.format(organizer.slug, event.slug))
     assert [res] == resp.data['results']
@@ -1052,6 +1084,7 @@ def test_order_mark_paid_pending(token_client, organizer, event, order):
         )
     )
     assert resp.status_code == 200
+    assert len(djmail.outbox) == 1
     assert resp.data['status'] == Order.STATUS_PAID
 
 
@@ -1076,10 +1109,15 @@ def test_order_mark_paid_expired_quota_free(token_client, organizer, event, orde
     resp = token_client.post(
         '/api/v1/organizers/{}/events/{}/orders/{}/mark_paid/'.format(
             organizer.slug, event.slug, order.code
-        )
+        ),
+        format='json',
+        data={
+            'send_email': False
+        }
     )
     assert resp.status_code == 200
     order.refresh_from_db()
+    assert len(djmail.outbox) == 0
     assert order.status == Order.STATUS_PAID
 
 
@@ -4527,3 +4565,18 @@ def test_orderposition_price_calculation_reverse_charge(token_client, organizer,
         'tax_rule': taxrule.pk,
         'tax': Decimal('0.00')
     }
+
+
+@pytest.mark.django_db
+def test_revoked_secret_list(token_client, organizer, event):
+    r = event.revoked_secrets.create(secret="abcd")
+    res = {
+        "id": r.id,
+        "secret": "abcd",
+        "created": r.created.isoformat().replace("+00:00", "Z")
+    }
+    resp = token_client.get('/api/v1/organizers/{}/events/{}/revokedsecrets/'.format(
+        organizer.slug, event.slug,
+    ))
+    assert resp.status_code == 200
+    assert [res] == resp.data['results']

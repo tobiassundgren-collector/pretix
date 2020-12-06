@@ -522,6 +522,7 @@ class EventSettingsForm(SettingsForm):
         'banner_text_bottom',
         'order_email_asked_twice',
         'last_order_modification_date',
+        'checkout_show_copy_answers_button',
     ]
 
     def clean(self):
@@ -656,6 +657,8 @@ class ProviderForm(SettingsForm):
         enabled = cleaned_data.get(self.settingspref + '_enabled')
         if not enabled:
             return
+        if cleaned_data.get(self.settingspref + '_hidden_url', None):
+            cleaned_data[self.settingspref + '_hidden_url'] = None
         for k, v in self.fields.items():
             val = cleaned_data.get(k)
             if v._required and not val:
@@ -1066,7 +1069,22 @@ class TicketSettingsForm(SettingsForm):
         'ticket_download_addons',
         'ticket_download_nonadm',
         'ticket_download_pending',
+        'ticket_download_require_validated_email',
     ]
+    ticket_secret_generator = forms.ChoiceField(
+        label=_("Ticket code generator"),
+        help_text=_("For advanced users, usually does not need to be changed."),
+        required=True,
+        widget=forms.RadioSelect,
+        choices=[]
+    )
+
+    def __init__(self, *args, **kwargs):
+        event = kwargs.get('obj')
+        super().__init__(*args, **kwargs)
+        self.fields['ticket_secret_generator'].choices = [
+            (r.identifier, r.verbose_name) for r in event.ticket_secret_generators.values()
+        ]
 
     def prepare_fields(self):
         # See clean()
@@ -1130,6 +1148,7 @@ class TaxRuleLineForm(forms.Form):
             ('vat', _('Charge VAT')),
             ('reverse', _('Reverse charge')),
             ('no', _('No VAT')),
+            ('block', _('Sale not allowed')),
         ],
     )
     rate = forms.DecimalField(

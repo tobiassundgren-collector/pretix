@@ -114,7 +114,7 @@ class TemplateBasedMailRenderer(BaseHTMLMailRenderer):
             'site_url': settings.SITE_URL,
             'body': body_md,
             'subject': str(subject),
-            'color': '#8E44B3',
+            'color': settings.PRETIX_PRIMARY_COLOR,
             'rtl': get_language() in settings.LANGUAGES_RTL
         }
         if self.event:
@@ -222,6 +222,7 @@ class SimpleFunctionalMailTextPlaceholder(BaseMailTextPlaceholder):
 def get_available_placeholders(event, base_parameters):
     if 'order' in base_parameters:
         base_parameters.append('invoice_address')
+        base_parameters.append('position_or_address')
     params = {}
     for r, val in register_mail_placeholders.send(sender=event):
         if not isinstance(val, (list, tuple)):
@@ -240,7 +241,9 @@ def get_email_context(**kwargs):
         try:
             kwargs['invoice_address'] = kwargs['order'].invoice_address
         except InvoiceAddress.DoesNotExist:
-            kwargs['invoice_address'] = InvoiceAddress()
+            kwargs['invoice_address'] = InvoiceAddress(order=kwargs['order'])
+        finally:
+            kwargs.setdefault("position_or_address", kwargs['invoice_address'])
     ctx = {}
     for r, val in register_mail_placeholders.send(sender=event):
         if not isinstance(val, (list, tuple)):
@@ -268,7 +271,8 @@ def get_best_name(position_or_address, parts=False):
     if isinstance(position_or_address, InvoiceAddress):
         if position_or_address.name:
             return position_or_address.name_parts if parts else position_or_address.name
-        position_or_address = position_or_address.order.positions.exclude(attendee_name_cached="").exclude(attendee_name_cached__isnull=True).first()
+        elif position_or_address.order:
+            position_or_address = position_or_address.order.positions.exclude(attendee_name_cached="").exclude(attendee_name_cached__isnull=True).first()
 
     if isinstance(position_or_address, OrderPosition):
         if position_or_address.attendee_name:

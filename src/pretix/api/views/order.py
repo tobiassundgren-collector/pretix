@@ -26,15 +26,18 @@ from pretix.api.serializers.order import (
     InvoiceSerializer, OrderCreateSerializer, OrderPaymentCreateSerializer,
     OrderPaymentSerializer, OrderPositionSerializer,
     OrderRefundCreateSerializer, OrderRefundSerializer, OrderSerializer,
-    PriceCalcSerializer, SimulatedOrderSerializer,
+    PriceCalcSerializer, RevokedTicketSecretSerializer,
+    SimulatedOrderSerializer,
 )
 from pretix.base.i18n import language
 from pretix.base.models import (
     CachedCombinedTicket, CachedTicket, Device, Event, Invoice, InvoiceAddress,
     Order, OrderFee, OrderPayment, OrderPosition, OrderRefund, Quota, SubEvent,
-    TeamAPIToken, generate_position_secret, generate_secret,
+    TaxRule, TeamAPIToken, generate_secret,
 )
+from pretix.base.models.orders import RevokedTicketSecret
 from pretix.base.payment import PaymentException
+from pretix.base.secrets import assign_ticket_secret
 from pretix.base.services import tickets
 from pretix.base.services.invoices import (
     generate_cancellation, generate_invoice, invoice_pdf, invoice_qualified,
@@ -62,6 +65,7 @@ with scopes_disabled():
         modified_since = django_filters.IsoDateTimeFilter(field_name='last_modified', lookup_expr='gte')
         created_since = django_filters.IsoDateTimeFilter(field_name='datetime', lookup_expr='gte')
         subevent_after = django_filters.IsoDateTimeFilter(method='subevent_after_qs')
+        subevent_before = django_filters.IsoDateTimeFilter(method='subevent_before_qs')
         search = django_filters.CharFilter(method='search_qs')
 
         class Meta:
@@ -79,6 +83,19 @@ with scopes_disabled():
                     )
                 )
             ).filter(has_se_after=True)
+            return qs
+
+        def subevent_before_qs(self, qs, name, value):
+            qs = qs.annotate(
+                has_se_before=Exists(
+                    OrderPosition.all.filter(
+                        subevent_id__in=SubEvent.objects.filter(
+                            Q(date_from__lt=value), event=OuterRef(OuterRef('event_id'))
+                        ).values_list('id'),
+                        order_id=OuterRef('pk'),
+                    )
+                )
+            ).filter(has_se_before=True)
             return qs
 
         def search_qs(self, qs, name, value):
@@ -228,6 +245,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'])
     def mark_paid(self, request, **kwargs):
         order = self.get_object()
+        send_mail = request.data.get('send_email', True)
 
         if order.status in (Order.STATUS_PENDING, Order.STATUS_EXPIRED):
 
@@ -269,6 +287,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             try:
                 p.confirm(auth=self.request.auth,
                           user=self.request.user if request.user.is_authenticated else None,
+                          send_mail=send_mail,
                           count_waitinglist=False)
             except Quota.QuotaExceededException as e:
                 return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -481,8 +500,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = self.get_object()
         order.secret = generate_secret()
         for op in order.all_positions.all():
-            op.secret = generate_position_secret()
-            op.save()
+            assign_ticket_secret(
+                request.event, op, force_invalidate=True, save=True
+            )
         order.save(update_fields=['secret'])
         CachedTicket.objects.filter(order_position__order=order).delete()
         CachedCombinedTicket.objects.filter(order=order).delete()
@@ -541,7 +561,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer = OrderCreateSerializer(data=request.data, context=self.get_serializer_context())
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
-            self.perform_create(serializer)
+            try:
+                self.perform_create(serializer)
+            except TaxRule.SaleNotAllowed:
+                raise ValidationError(_('One of the selected products is not available in the selected country.'))
             send_mail = serializer._send_mail
             order = serializer.instance
             if not order.pk:
@@ -976,6 +999,7 @@ class PaymentViewSet(CreateModelMixin, viewsets.ReadOnlyModelViewSet):
     def confirm(self, request, **kwargs):
         payment = self.get_object()
         force = request.data.get('force', False)
+        send_mail = request.data.get('send_email', True)
 
         if payment.state not in (OrderPayment.PAYMENT_STATE_PENDING, OrderPayment.PAYMENT_STATE_CREATED):
             return Response({'detail': 'Invalid state of payment'}, status=status.HTTP_400_BAD_REQUEST)
@@ -984,6 +1008,7 @@ class PaymentViewSet(CreateModelMixin, viewsets.ReadOnlyModelViewSet):
             payment.confirm(user=self.request.user if self.request.user.is_authenticated else None,
                             auth=self.request.auth,
                             count_waitinglist=False,
+                            send_mail=send_mail,
                             force=force)
         except Quota.QuotaExceededException as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1294,3 +1319,26 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                 auth=self.request.auth,
             )
             return Response(status=204)
+
+
+with scopes_disabled():
+    class RevokedSecretFilter(FilterSet):
+        created_since = django_filters.IsoDateTimeFilter(field_name='created', lookup_expr='gte')
+
+        class Meta:
+            model = RevokedTicketSecret
+            fields = []
+
+
+class RevokedSecretViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = RevokedTicketSecretSerializer
+    queryset = RevokedTicketSecret.objects.none()
+    filter_backends = (DjangoFilterBackend, OrderingFilter)
+    ordering = ('-created',)
+    ordering_fields = ('created', 'secret')
+    filterset_class = RevokedSecretFilter
+    permission = 'can_view_orders'
+    write_permission = 'can_change_orders'
+
+    def get_queryset(self):
+        return RevokedTicketSecret.objects.filter(event=self.request.event)

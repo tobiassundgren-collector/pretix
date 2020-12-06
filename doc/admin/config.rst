@@ -23,6 +23,14 @@ The config file may contain the following sections (all settings are optional an
 default values). We suggest that you start from the examples given in one of the
 installation tutorials.
 
+.. note::
+
+    The configuration file is the recommended way to configure pretix. However, you can
+    also set them through environment variables. In this case, the syntax is
+    ``PRETIX_SECTION_CONFIG``. For example, to configure the setting ``password_reset``
+    from the ``[pretix]`` section, set ``PRETIX_PRETIX_PASSWORD_RESET=off`` in your
+    environment.
+
 pretix settings
 ---------------
 
@@ -97,6 +105,9 @@ Example::
 
 ``csp_log``
     Log violations of the Content Security Policy (CSP). Defaults to ``on``.
+    
+``loglevel``
+    Set console and file log level (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR`` or ``CRITICAL``). Defaults to ``INFO``.
 
 Locale settings
 ---------------

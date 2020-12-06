@@ -12,7 +12,7 @@ from django.core.files.storage import default_storage
 from django.core.mail import get_connection
 from django.core.validators import RegexValidator
 from django.db import models
-from django.db.models import Exists, OuterRef, Prefetch, Q, Subquery
+from django.db.models import Exists, OuterRef, Prefetch, Q, Subquery, Value
 from django.template.defaultfilters import date as _date
 from django.utils.crypto import get_random_string
 from django.utils.formats import date_format
@@ -89,7 +89,7 @@ class EventMixin:
             self.date_from.astimezone(tz), "TIME_FORMAT"
         )
 
-    def get_date_to_display(self, tz=None, short=False) -> str:
+    def get_date_to_display(self, tz=None, show_times=True, short=False) -> str:
         """
         Returns a formatted string containing the start date of the event with respect
         to the current locale and to the ``show_times`` setting. Returns an empty string
@@ -100,14 +100,14 @@ class EventMixin:
             return ""
         return _date(
             self.date_to.astimezone(tz),
-            ("SHORT_" if short else "") + ("DATETIME_FORMAT" if self.settings.show_times else "DATE_FORMAT")
+            ("SHORT_" if short else "") + ("DATETIME_FORMAT" if self.settings.show_times and show_times else "DATE_FORMAT")
         )
 
     def get_date_range_display(self, tz=None, force_show_end=False) -> str:
         """
         Returns a formatted string containing the start date and the end date
-        of the event with respect to the current locale and to the ``show_times`` and
-        ``show_date_to`` settings.
+        of the event with respect to the current locale and to the ``show_date_to``
+        setting. Times are not shown.
         """
         tz = tz or self.timezone
         if (not self.settings.show_date_to and not force_show_end) or not self.date_to:
@@ -119,16 +119,40 @@ class EventMixin:
         return pytz.timezone(self.settings.timezone)
 
     @property
+    def effective_presale_end(self):
+        """
+        Returns the effective presale end date, taking for subevents into consideration if the presale end
+        date might have been further limited by the event-level presale end date
+        """
+        if isinstance(self, SubEvent):
+            presale_ends = [self.presale_end, self.event.presale_end]
+            return min(filter(lambda x: x is not None, presale_ends)) if any(presale_ends) else None
+        else:
+            return self.presale_end
+
+    @property
     def presale_has_ended(self):
         """
         Is true, when ``presale_end`` is set and in the past.
         """
-        if self.presale_end:
-            return now() > self.presale_end
+        if self.effective_presale_end:
+            return now() > self.effective_presale_end
         elif self.date_to:
             return now() > self.date_to
         else:
             return now().astimezone(self.timezone).date() > self.date_from.astimezone(self.timezone).date()
+
+    @property
+    def effective_presale_start(self):
+        """
+        Returns the effective presale start date, taking for subevents into consideration if the presale start
+        date might have been further limited by the event-level presale start date
+        """
+        if isinstance(self, SubEvent):
+            presale_starts = [self.presale_start, self.event.presale_start]
+            return max(filter(lambda x: x is not None, presale_starts)) if any(presale_starts) else None
+        else:
+            return self.presale_start
 
     @property
     def presale_is_running(self):
@@ -136,7 +160,7 @@ class EventMixin:
         Is true, when ``presale_end`` is not set or in the future and ``presale_start`` is not
         set or in the past.
         """
-        if self.presale_start and now() < self.presale_start:
+        if self.effective_presale_start and now() < self.effective_presale_start:
             return False
         return not self.presale_has_ended
 
@@ -189,7 +213,9 @@ class EventMixin:
         ).order_by().values_list('quotas__pk').annotate(
             items=GroupConcat('pk', delimiter=',')
         ).values('items')
-        return qs.prefetch_related(
+        return qs.annotate(
+            has_paid_item=Exists(Item.objects.filter(event_id=OuterRef(cls._event_id), default_price__gt=0))
+        ).prefetch_related(
             Prefetch(
                 'quotas',
                 to_attr='active_quotas',
@@ -242,6 +268,34 @@ class EventMixin:
             return Quota.AVAILABILITY_RESERVED
         return Quota.AVAILABILITY_GONE
 
+    def free_seats(self, ignore_voucher=None, sales_channel='web', include_blocked=False):
+        qs_annotated = self._seats(ignore_voucher=ignore_voucher)
+
+        qs = qs_annotated.filter(has_order=False, has_cart=False, has_voucher=False)
+        if self.settings.seating_minimal_distance > 0:
+            qs = qs.filter(has_closeby_taken=False)
+
+        if not (sales_channel in self.settings.seating_allow_blocked_seats_for_channel or include_blocked):
+            qs = qs.filter(blocked=False)
+        return qs
+
+    def total_seats(self, ignore_voucher=None):
+        return self._seats(ignore_voucher=ignore_voucher)
+
+    def taken_seats(self, ignore_voucher=None):
+        return self._seats(ignore_voucher=ignore_voucher).filter(has_order=True)
+
+    def blocked_seats(self, ignore_voucher=None):
+        qs = self._seats(ignore_voucher=ignore_voucher)
+        q = (
+            Q(has_cart=True)
+            | Q(has_voucher=True)
+            | Q(blocked=True)
+        )
+        if self.settings.seating_minimal_distance > 0:
+            q |= Q(has_closeby_taken=True, has_order=False)
+        return qs.filter(q)
+
 
 @settings_hierarkey.add(parent_field='organizer', cache_namespace='event')
 class Event(EventMixin, LoggedModel):
@@ -280,6 +334,7 @@ class Event(EventMixin, LoggedModel):
     """
 
     settings_namespace = 'event'
+    _event_id = 'pk'
     CURRENCY_CHOICES = [(c.alpha_3, c.alpha_3 + " - " + c.name) for c in settings.CURRENCIES]
     organizer = models.ForeignKey(Organizer, related_name="events", on_delete=models.PROTECT)
     testmode = models.BooleanField(default=False)
@@ -391,7 +446,7 @@ class Event(EventMixin, LoggedModel):
         if img:
             return urljoin(build_absolute_uri(self, 'presale:event.index'), img)
 
-    def free_seats(self, ignore_voucher=None, sales_channel='web', include_blocked=False):
+    def _seats(self, ignore_voucher=None):
         from .seating import Seat
 
         qs_annotated = Seat.annotated(self.seats, self.pk, None,
@@ -399,13 +454,7 @@ class Event(EventMixin, LoggedModel):
                                       minimal_distance=self.settings.seating_minimal_distance,
                                       distance_only_within_row=self.settings.seating_distance_within_row)
 
-        qs = qs_annotated.filter(has_order=False, has_cart=False, has_voucher=False)
-        if self.settings.seating_minimal_distance > 0:
-            qs = qs.filter(has_closeby_taken=False)
-
-        if not (sales_channel in self.settings.seating_allow_blocked_seats_for_channel or include_blocked):
-            qs = qs.filter(blocked=False)
-        return qs
+        return qs_annotated
 
     @property
     def presale_has_ended(self):
@@ -504,11 +553,14 @@ class Event(EventMixin, LoggedModel):
     def copy_data_from(self, other):
         from ..signals import event_copy_data
         from . import (
-            Item, ItemAddOn, ItemCategory, ItemMetaValue, Question, Quota,
+            Item, ItemAddOn, ItemBundle, ItemCategory, ItemMetaValue, Question,
+            Quota,
         )
 
         self.plugins = other.plugins
         self.is_public = other.is_public
+        if other.date_admission:
+            self.date_admission = self.date_from + (other.date_admission - other.date_from)
         self.testmode = other.testmode
         self.save()
         self.log_action('pretix.object.cloned', data={'source': other.slug, 'source_id': other.pk})
@@ -568,6 +620,14 @@ class Event(EventMixin, LoggedModel):
             ia.pk = None
             ia.base_item = item_map[ia.base_item.pk]
             ia.addon_category = category_map[ia.addon_category.pk]
+            ia.save()
+
+        for ia in ItemBundle.objects.filter(base_item__event=other).prefetch_related('base_item', 'bundled_item', 'bundled_variation'):
+            ia.pk = None
+            ia.base_item = item_map[ia.base_item.pk]
+            ia.bundled_item = item_map[ia.bundled_item.pk]
+            if ia.bundled_variation:
+                ia.bundled_variation = variation_map[ia.bundled_variation.pk]
             ia.save()
 
         for q in Quota.objects.filter(event=other, subevent__isnull=True).prefetch_related('items', 'variations'):
@@ -659,7 +719,14 @@ class Event(EventMixin, LoggedModel):
                 s.product = item_map[s.product_id]
             s.save()
 
+        skip_settings = (
+            'ticket_secrets_pretix_sig1_pubkey',
+            'ticket_secrets_pretix_sig1_privkey',
+        )
         for s in other.settings._objects.all():
+            if s.key in skip_settings:
+                continue
+
             s.object = self
             s.pk = None
             if s.value.startswith('file://'):
@@ -751,6 +818,31 @@ class Event(EventMixin, LoggedModel):
                 renderers[pp.identifier] = pp
         return renderers
 
+    @cached_property
+    def ticket_secret_generators(self) -> dict:
+        """
+        Returns a dictionary of cached initialized ticket secret generators mapped by their identifiers.
+        """
+        from ..signals import register_ticket_secret_generators
+
+        responses = register_ticket_secret_generators.send(self)
+        renderers = {}
+        for receiver, response in responses:
+            if not isinstance(response, list):
+                response = [response]
+            for p in response:
+                pp = p(self)
+                renderers[pp.identifier] = pp
+        return renderers
+
+    @property
+    def ticket_secret_generator(self):
+        """
+        Returns the currently configured ticket secret generator.
+        """
+        tsgs = self.ticket_secret_generators
+        return tsgs[self.settings.ticket_secret_generator]
+
     def get_data_shredders(self) -> dict:
         """
         Returns a dictionary of initialized data shredders mapped by their identifiers.
@@ -786,7 +878,12 @@ class Event(EventMixin, LoggedModel):
             'name_ascending': ('name', 'date_from'),
             'name_descending': ('-name', 'date_from'),
         }[ordering]
-        subevs = queryset.filter(
+        subevs = queryset.annotate(
+            has_paid_item=Value(
+                self.cache.get_or_set('has_paid_item', lambda: self.items.filter(default_price__gt=0).exists(), 3600),
+                output_field=models.BooleanField()
+            )
+        ).filter(
             Q(active=True) & Q(is_public=True) & (
                 Q(Q(date_to__isnull=True) & Q(date_from__gte=now() - timedelta(hours=24)))
                 | Q(date_to__gte=now() - timedelta(hours=24))
@@ -980,6 +1077,7 @@ class SubEvent(EventMixin, LoggedModel):
     :type location: str
     """
 
+    _event_id = 'event_id'
     event = models.ForeignKey(Event, related_name="subevents", on_delete=models.PROTECT)
     active = models.BooleanField(default=False, verbose_name=_("Active"),
                                  help_text=_("Only with this checkbox enabled, this date is visible in the "
@@ -1027,6 +1125,9 @@ class SubEvent(EventMixin, LoggedModel):
     )
     seating_plan = models.ForeignKey('SeatingPlan', on_delete=models.PROTECT, null=True, blank=True,
                                      related_name='subevents')
+    last_modified = models.DateTimeField(
+        auto_now=True, db_index=True
+    )
 
     items = models.ManyToManyField('Item', through='SubEventItem')
     variations = models.ManyToManyField('ItemVariation', through='SubEventItemVariation')
@@ -1045,19 +1146,13 @@ class SubEvent(EventMixin, LoggedModel):
             date_format(self.date_from.astimezone(self.timezone), "TIME_FORMAT") if self.settings.show_times else ""
         ).strip()
 
-    def free_seats(self, ignore_voucher=None, sales_channel='web', include_blocked=False):
+    def _seats(self, ignore_voucher=None):
         from .seating import Seat
         qs_annotated = Seat.annotated(self.seats, self.event_id, self,
                                       ignore_voucher_id=ignore_voucher.pk if ignore_voucher else None,
                                       minimal_distance=self.settings.seating_minimal_distance,
                                       distance_only_within_row=self.settings.seating_distance_within_row)
-        qs = qs_annotated.filter(has_order=False, has_cart=False, has_voucher=False)
-        if self.settings.seating_minimal_distance > 0:
-            qs = qs.filter(has_closeby_taken=False)
-
-        if not (sales_channel in self.settings.seating_allow_blocked_seats_for_channel or include_blocked):
-            qs = qs.filter(blocked=False)
-        return qs
+        return qs_annotated
 
     @cached_property
     def settings(self):

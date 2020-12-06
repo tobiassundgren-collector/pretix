@@ -66,6 +66,7 @@ error_messages = {
                                        "%(min)s items of it."),
     'not_started': _('The presale period for this event has not yet started.'),
     'ended': _('The presale period for this event has ended.'),
+    'payment_ended': _('All payments for this event need to be confirmed already, so no new orders can be created.'),
     'some_subevent_not_started': _('The presale period for this event has not yet started. The affected positions '
                                    'have been removed from your cart.'),
     'some_subevent_ended': _('The presale period for one of the events in your cart has ended. The affected '
@@ -105,6 +106,7 @@ error_messages = {
     'seat_unavailable': _('The seat you selected has already been taken. Please select a different seat.'),
     'seat_multiple': _('You can not select the same seat multiple times.'),
     'gift_card': _("You entered a gift card instead of a voucher. Gift cards can be entered later on when you're asked for your payment details."),
+    'country_blocked': _('One of the selected products is not available in the selected country.'),
 }
 
 
@@ -169,7 +171,7 @@ class CartManager:
                     time(hour=23, minute=59, second=59)
                 ), self.event.timezone)
                 if term_last < self.now_dt:
-                    raise CartError(error_messages['ended'])
+                    raise CartError(error_messages['payment_ended'])
 
     def _extend_expiry_of_valid_existing_positions(self):
         # Extend this user's cart session to ensure all items in the cart expire at the same time
@@ -304,7 +306,7 @@ class CartManager:
                         time(hour=23, minute=59, second=59)
                     ), self.event.timezone)
                     if term_last < self.now_dt:
-                        raise CartError(error_messages['ended'])
+                        raise CartError(error_messages['payment_ended'])
 
         if isinstance(op, self.AddOperation):
             if op.item.category and op.item.category.is_addon and not (op.addon_to and op.addon_to != 'FAKE'):
@@ -323,6 +325,8 @@ class CartManager:
                 custom_price_is_net=cp_is_net if cp_is_net is not None else self.event.settings.display_net_prices,
                 invoice_address=self.invoice_address, force_custom_price=force_custom_price, bundled_sum=bundled_sum
             )
+        except TaxRule.SaleNotAllowed:
+            raise CartError(error_messages['country_blocked'])
         except ValueError as e:
             if str(e) == 'price_too_high':
                 raise CartError(error_messages['price_too_high'])
@@ -1062,6 +1066,7 @@ def update_tax_rates(event: Event, cart_id: str, invoice_address: InvoiceAddress
         if pos.tax_rate != rate:
             current_net = pos.price - pos.tax_value
             new_gross = pos.item.tax(current_net, base_price_is='net', invoice_address=invoice_address).gross
+            totaldiff += new_gross - pos.price
             pos.price = new_gross
             pos.includes_tax = rate != Decimal('0.00')
             pos.override_tax_rate = rate
@@ -1085,16 +1090,14 @@ def get_fees(event, request, total, invoice_address, provider, positions):
     if cs.get('gift_cards'):
         gcs = cs['gift_cards']
         gc_qs = event.organizer.accepted_gift_cards.filter(pk__in=cs.get('gift_cards'), currency=event.currency)
-        summed = 0
         for gc in gc_qs:
             if gc.testmode != event.testmode:
                 gcs.remove(gc.pk)
                 continue
             fval = Decimal(gc.value)  # TODO: don't require an extra query
-            fval = min(fval, total - summed)
+            fval = min(fval, total)
             if fval > 0:
                 total -= fval
-                summed += fval
                 fees.append(OrderFee(
                     fee_type=OrderFee.FEE_TYPE_GIFTCARD,
                     internal_type='giftcard',

@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.formats import localize
+from django.utils.timezone import get_current_timezone, now
 from django.utils.translation import gettext_lazy as _
 from i18nfield.fields import I18nCharField
 
@@ -85,6 +86,14 @@ EU_CURRENCIES = {
 }
 
 
+def is_eu_country(cc):
+    cc = str(cc)
+    if cc == 'GB':
+        return now().astimezone(get_current_timezone()).year <= 2020
+    else:
+        return cc in EU_COUNTRIES
+
+
 def cc_to_vat_prefix(country_code):
     if country_code == 'GR':
         return 'EL'
@@ -126,6 +135,9 @@ class TaxRule(LoggedModel):
 
     class Meta:
         ordering = ('event', 'rate', 'id')
+
+    class SaleNotAllowed(Exception):
+        pass
 
     def allow_delete(self):
         from pretix.base.models.orders import OrderFee, OrderPosition
@@ -169,12 +181,14 @@ class TaxRule(LoggedModel):
             return Decimal('0.00')
         if self.has_custom_rules:
             rule = self.get_matching_rule(invoice_address)
+            if rule.get('action', 'vat') == 'block':
+                raise self.SaleNotAllowed()
             if rule.get('action', 'vat') == 'vat' and rule.get('rate') is not None:
                 return Decimal(rule.get('rate'))
         return Decimal(self.rate)
 
     def tax(self, base_price, base_price_is='auto', currency=None, override_tax_rate=None, invoice_address=None,
-            subtract_from_gross=Decimal('0.00')):
+            subtract_from_gross=Decimal('0.00'), gross_price_is_tax_rate: Decimal = None):
         from .event import Event
         try:
             currency = currency or self.event.currency
@@ -186,7 +200,9 @@ class TaxRule(LoggedModel):
             rate = override_tax_rate
         elif invoice_address:
             adjust_rate = self.tax_rate_for(invoice_address)
-            if adjust_rate != rate:
+            if adjust_rate == gross_price_is_tax_rate and base_price_is == 'gross':
+                rate = adjust_rate
+            elif adjust_rate != rate:
                 normal_price = self.tax(base_price, base_price_is, currency, subtract_from_gross=subtract_from_gross)
                 base_price = normal_price.net
                 base_price_is = 'net'
@@ -239,7 +255,7 @@ class TaxRule(LoggedModel):
         rules = self._custom_rules
         if invoice_address:
             for r in rules:
-                if r['country'] == 'EU' and str(invoice_address.country) not in EU_COUNTRIES:
+                if r['country'] == 'EU' and not is_eu_country(invoice_address.country):
                     continue
                 if r['country'] not in ('ZZ', 'EU') and r['country'] != str(invoice_address.country):
                     continue
@@ -263,7 +279,7 @@ class TaxRule(LoggedModel):
         if not invoice_address or not invoice_address.country:
             return False
 
-        if str(invoice_address.country) not in EU_COUNTRIES:
+        if not is_eu_country(invoice_address.country):
             return False
 
         if invoice_address.country == self.home_country:
@@ -277,6 +293,8 @@ class TaxRule(LoggedModel):
     def _tax_applicable(self, invoice_address):
         if self._custom_rules:
             rule = self.get_matching_rule(invoice_address)
+            if rule.get('action', 'vat') == 'block':
+                raise self.SaleNotAllowed()
             return rule.get('action', 'vat') == 'vat'
 
         if not self.eu_reverse_charge:
@@ -287,7 +305,7 @@ class TaxRule(LoggedModel):
             # No country specified? Always apply VAT!
             return True
 
-        if str(invoice_address.country) not in EU_COUNTRIES:
+        if not is_eu_country(invoice_address.country):
             # Non-EU country? Never apply VAT!
             return False
 

@@ -15,7 +15,7 @@ reportlab>=3.5.18*
 PyPDF2==1.26.*
 Pillow==7.*
 django-libsass==0.8
-libsass==0.19.2  # Bump when https://github.com/sass/libsass/issues/3053 is fixed
+libsass==0.20.*
 django-otp==0.7.*,>=0.7.5
 python-u2flib-server==4.*
 webauthn==0.4.*
@@ -31,7 +31,7 @@ static3==0.7.*
 dj-static
 csscompressor
 django-markup
-markdown<=2.2
+markdown==3.3.*
 bleach>=3.1.4,<3.2.0
 sentry-sdk==0.14.*
 babel
@@ -68,3 +68,6 @@ arabic-reshaper==2.0.15  # Support for Aabic in reportlab
 packaging
 tlds>=2020041600
 text-unidecode==1.*
+protobuf==3.13.*
+cryptography
+sepaxml==2.3.*
